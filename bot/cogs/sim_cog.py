@@ -26,13 +26,12 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
 
     @app_commands.command(name="rivalry", description="Sim CPU games until the next user matchup")
     async def rivalry(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_rivalry")
         await require_all_ready(interaction, league)
         await require_no_pending_trades(league)
-
-        await interaction.response.defer()
 
         pool = await get_pool()
         summary = await batch_sim_runner.sim_until_rival(
@@ -68,6 +67,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         count: int,
         force: bool = False,
     ) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_rivalry")
@@ -75,9 +75,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         await require_no_pending_trades(league)
 
         if count < 1 or count > 20:
-            await interaction.response.send_message(
-                "Count must be between 1 and 20.", ephemeral=True
-            )
+            await interaction.followup.send("Count must be between 1 and 20.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -90,13 +88,9 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             )
             if user_matchups:
                 embed = sim_embeds.user_matchup_warning(user_matchups)
-                embed.set_footer(
-                    text="Use /sim games force:True to sim through them anyway."
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                embed.set_footer(text="Use /sim games force:True to sim through them anyway.")
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
-
-        await interaction.response.defer()
 
         summary = await batch_sim_runner.sim_range(
             league.id,
@@ -117,11 +111,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             color=discord.Color.green(),
         )
         if summary.get("season_complete"):
-            embed.add_field(
-                name="Season Status",
-                value="Regular season is now complete.",
-                inline=False,
-            )
+            embed.add_field(name="Season Status", value="Regular season is now complete.", inline=False)
         await interaction.followup.send(embed=embed)
         await game_repo.reset_ready(pool, league.id)
 
@@ -132,6 +122,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         interaction: discord.Interaction,
         force: bool = False,
     ) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_season")
@@ -150,10 +141,8 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                 embed.set_footer(
                     text="Use /sim season force:True to sim through them, or /sim rivalry to stop at each."
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
-
-        await interaction.response.defer()
 
         summary = await batch_sim_runner.sim_range(
             league.id,
@@ -181,6 +170,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         interaction: discord.Interaction,
         force: bool = False,
     ) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_deadline")
@@ -194,7 +184,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             league.current_season,
         )
         if not total:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "No schedule found. Run `/season start` first.", ephemeral=True
             )
             return
@@ -203,7 +193,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
 
         if current_index >= deadline_index:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Already at or past the trade deadline (game {deadline_index} of {total}). "
                 "Use `/league advance TRADE_DEADLINE_OPEN` to open the window manually.",
                 ephemeral=True,
@@ -219,10 +209,8 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                 embed.set_footer(
                     text="Use /sim deadline force:True to sim through them, or handle them with /sim rivalry first."
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
-
-        await interaction.response.defer()
 
         summary = await batch_sim_runner.sim_range(
             league.id,
