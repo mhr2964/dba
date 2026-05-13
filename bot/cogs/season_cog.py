@@ -84,34 +84,50 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
 
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
         season = season_year if season_year is not None else league.current_season
-        result = await import_service.import_players_from_api(
-            league_id=league.id,
-            season=season,
-            guild=interaction.guild,
+
+        # Acknowledge immediately — import takes 2-5 min and Discord's token expires in 15 min
+        await interaction.followup.send(
+            f"Importing NBA rosters for season **{season}**. This takes a few minutes. "
+            "Results will be posted to **#league-news** when complete.",
+            ephemeral=True,
         )
 
-        embed = discord.Embed(
-            title="Player Import Complete",
-            color=discord.Color.green() if not result["errors"] else discord.Color.orange(),
-        )
-        embed.add_field(name="Teams Imported", value=str(result["teams_imported"]), inline=True)
-        embed.add_field(name="Players Imported", value=str(result["players_imported"]), inline=True)
+        async def _run_import() -> None:
+            import asyncio
+            result = await import_service.import_players_from_api(
+                league_id=league.id,
+                season=season,
+                guild=interaction.guild,
+            )
+            pool = await get_pool()
+            news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+            if news_channel_id:
+                channel = interaction.guild.get_channel(news_channel_id)
+                if channel:
+                    embed = discord.Embed(
+                        title="Player Import Complete",
+                        color=discord.Color.green() if not result["errors"] else discord.Color.orange(),
+                    )
+                    embed.add_field(name="Teams Imported", value=str(result["teams_imported"]), inline=True)
+                    embed.add_field(name="Players Imported", value=str(result["players_imported"]), inline=True)
+                    if result["errors"]:
+                        error_text = "\n".join(result["errors"][:10])
+                        if len(result["errors"]) > 10:
+                            error_text += f"\n… and {len(result['errors']) - 10} more"
+                        embed.add_field(name="Errors", value=error_text, inline=False)
+                    await channel.send(embed=embed)
+            log.info(
+                f"import-players: league={league.id} season={season} "
+                f"teams={result['teams_imported']} players={result['players_imported']} "
+                f"errors={len(result['errors'])}"
+            )
 
-        if result["errors"]:
-            error_text = "\n".join(result["errors"][:10])
-            if len(result["errors"]) > 10:
-                error_text += f"\n… and {len(result['errors']) - 10} more"
-            embed.add_field(name="Errors", value=error_text, inline=False)
-
-        await interaction.followup.send(embed=embed)
-        log.info(
-            f"import-players: league={league.id} season={season} "
-            f"teams={result['teams_imported']} players={result['players_imported']} "
-            f"errors={len(result['errors'])} requested_by={interaction.user.id}"
-        )
+        import asyncio
+        asyncio.create_task(_run_import())
+        log.info(f"import-players task started: league={league.id} season={season} by={interaction.user.id}")
 
     @app_commands.command(name="info", description="Show current season overview and top standings")
     async def info(self, interaction: discord.Interaction) -> None:
