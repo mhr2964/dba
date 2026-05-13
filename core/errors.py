@@ -44,8 +44,10 @@ async def handle_app_command_error(
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True)
-    except discord.HTTPException:
-        # Fallback: interaction may have been acknowledged by a concurrent path
+    except discord.HTTPException as e:
+        if e.code == 40060:
+            # Another delivery of this interaction already responded — do not double-send
+            return
         try:
             await interaction.followup.send(msg, ephemeral=True)
         except discord.HTTPException:

@@ -25,11 +25,10 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         interaction: discord.Interaction,
         season_year: Optional[int] = None,
     ) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "league_start")
-
-        await interaction.response.defer()
 
         season = season_year if season_year is not None else league.current_season
         game_count = await schedule_service.generate_season(league.id, season)
@@ -131,6 +130,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
 
     @app_commands.command(name="info", description="Show current season overview and top standings")
     async def info(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         pool = await get_pool()
 
@@ -150,7 +150,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         embed = season_embeds.season_info_embed(
             league, games_played, total_games, east_top3, west_top3
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="schedule", description="Show a team's next 10 scheduled games")
     @app_commands.describe(team_code="NBA team code (e.g. LAL) — defaults to your team")
@@ -159,20 +159,21 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         interaction: discord.Interaction,
         team_code: Optional[str] = None,
     ) -> None:
+        await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         pool = await get_pool()
 
         if team_code:
             team = await team_repo.get_by_code(pool, league.id, team_code)
             if not team:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"No team found with code **{team_code.upper()}**.", ephemeral=True
                 )
                 return
         else:
             team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
             if not team:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "You don't manage a team. Provide a `team_code` argument.", ephemeral=True
                 )
                 return
@@ -196,7 +197,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         )
 
         if not rows:
-            await interaction.response.send_message("No upcoming games found.", ephemeral=True)
+            await interaction.followup.send("No upcoming games found.", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -213,7 +214,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
                 f"Game #{r['game_index']} — {r['scheduled_date']}  {venue} **{opp_code}**{user_marker}"
             )
         embed.description = "\n".join(lines)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 class SeasonCog(commands.Cog):

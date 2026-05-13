@@ -93,7 +93,6 @@ def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
     season_str = f"{season}-{str(season + 1)[2:]}"
     stats = leaguedashplayerstats.LeagueDashPlayerStats(
         season=season_str,
-        per_mode_simple="PerGame",
         headers={"User-Agent": "Mozilla/5.0"},
     )
     df = stats.get_data_frames()[0]
