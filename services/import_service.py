@@ -84,6 +84,9 @@ def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
     Fetch per-game stats for all players in `season` from LeagueDashPlayerStats.
     Returns a dict keyed by PLAYER_ID (int).
     Raises on network or API failure — caller wraps in try/except.
+
+    Captures both overall-composite fields AND raw per-game fields needed for
+    tendency derivation (fga, tpa, fta, ast, stl, blk, usg_pct, min, pts, gp).
     """
     from nba_api.stats.endpoints import leaguedashplayerstats
 
@@ -132,9 +135,66 @@ def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
         overall = int(round(50 + composite * 49))
         overall = max(50, min(99, overall))
 
-        lookup[pid] = {"overall": overall, "gp": gp}
+        lookup[pid] = {
+            "overall": overall,
+            "gp": gp,
+            # Raw per-game fields used by _derive_tendencies
+            "fga": float(row.get("FGA", 0) or 0),
+            "tpa": float(row.get("FG3A", 0) or 0),
+            "fta": float(row.get("FTA", 0) or 0),
+            "ast": float(row.get("AST", 0) or 0),
+            "stl": float(row.get("STL", 0) or 0),
+            "blk": float(row.get("BLK", 0) or 0),
+            "usg_pct": float(row.get("USG_PCT", 0) or 0),
+            "min": float(row.get("MIN", 0) or 0),
+            "pts": float(row.get("PTS", 0) or 0),
+        }
 
     return lookup
+
+
+def _derive_tendencies(player_id: int, position: str, stats_lookup: dict) -> dict:
+    """
+    Derive the 8 tendency/role fields from per-game stats.
+    Returns an empty dict when insufficient data — DB column defaults (50/20) apply.
+    """
+    entry = stats_lookup.get(player_id)
+    if not entry or entry.get("gp", 0) < 5:
+        return {}  # use DB defaults
+
+    fga = entry.get("fga", 1) or 1
+    tpa = entry.get("tpa", 0)
+    fta = entry.get("fta", 0)
+    ast = entry.get("ast", 0)
+    usg = entry.get("usg_pct", 0.20)  # 0.0–1.0
+    stl = entry.get("stl", 0)
+    blk = entry.get("blk", 0)
+    pts = entry.get("pts", 0)
+
+    # Normalize to 0–100
+    three_rate = min(tpa / fga, 1.0)           # 3PA as % of FGA
+    drive_rate = min(fta / fga, 1.0)           # FTA as proxy for drives
+    mid_rate = max(0, 1.0 - three_rate - drive_rate * 0.5)
+    post_rate = 0.1 if position in ("C", "PF") else 0.0
+
+    tendency_3pt = int(round(three_rate * 100))
+    tendency_drive = int(round(drive_rate * 80))   # scale slightly — not all FTA = drive
+    tendency_mid = int(round(mid_rate * 70))
+    tendency_post = int(round(post_rate * 100))
+    tendency_pass = int(round(min(ast / max(pts / 10, 0.5), 1.0) * 80))
+    usage_weight = int(round(min(usg / 0.35, 1.0) * 100))  # 35% USG = max 100
+    defensive_effort = int(round(min((stl + blk) / 3.0, 1.0) * 90 + 10))
+
+    return {
+        "tendency_3pt": max(0, min(100, tendency_3pt)),
+        "tendency_drive": max(0, min(100, tendency_drive)),
+        "tendency_mid": max(0, min(100, tendency_mid)),
+        "tendency_post": max(0, min(100, tendency_post)),
+        "tendency_pass": max(0, min(100, tendency_pass)),
+        "usage_weight": max(10, min(100, usage_weight)),
+        "defensive_effort": max(10, min(100, defensive_effort)),
+        "clutch_rating": 50,  # set by caller based on overall tier
+    }
 
 
 def _overall_from_stats(player_id: int, stats_lookup: dict[int, dict], exp: int) -> int:
@@ -289,7 +349,9 @@ async def _insert_player_row(
             finishing, playmaking, defense, rebounding, iq,
             potential, peak_age_start, peak_age_end,
             loyalty, money_drive, win_drive,
-            market_pref, star_leverage
+            market_pref, star_leverage,
+            tendency_3pt, tendency_drive, tendency_mid, tendency_post,
+            tendency_pass, usage_weight, clutch_rating, defensive_effort
         ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8, $9, $10,
@@ -298,7 +360,9 @@ async def _insert_player_row(
             $17, $18, $19, $20, $21,
             $22, $23, $24,
             $25, $26, $27,
-            $28, $29
+            $28, $29,
+            $30, $31, $32, $33,
+            $34, $35, $36, $37
         )
         RETURNING id
         """,
@@ -311,6 +375,10 @@ async def _insert_player_row(
         p["potential"], p["peak_age_start"], p["peak_age_end"],
         p["loyalty"], p["money_drive"], p["win_drive"],
         p["market_pref"], p["star_leverage"],
+        p.get("tendency_3pt", 50), p.get("tendency_drive", 50),
+        p.get("tendency_mid", 50), p.get("tendency_post", 20),
+        p.get("tendency_pass", 50), p.get("usage_weight", 50),
+        p.get("clutch_rating", 50), p.get("defensive_effort", 50),
     )
 
 
@@ -387,7 +455,7 @@ async def import_players_from_api(
 
     For each of the 30 teams:
     1. Fetch roster from nba_api CommonTeamRoster
-    2. Generate ratings
+    2. Generate ratings (overall from 2K; tendencies from LeagueDashPlayerStats)
     3. Insert players + contracts
     4. Auto-generate lineup (top 5 OVR = starters)
     5. Update team offense_rating, defense_rating, pace
@@ -433,6 +501,15 @@ async def import_players_from_api(
     # Pre-load 2K ratings for the season (fast local JSON read — no network call needed).
     _load_2k_ratings()
     log.info(f"import_players: 2K ratings loaded for season={season}")
+
+    # Fetch per-game stats once for tendency derivation (separate from overall, which uses 2K).
+    stats_lookup: dict[int, dict] = {}
+    try:
+        loop = asyncio.get_event_loop()
+        stats_lookup = await loop.run_in_executor(None, _fetch_league_stats_sync, season)
+        log.info(f"import_players: LeagueDashPlayerStats fetched, {len(stats_lookup)} players")
+    except Exception as exc:
+        log.warning(f"import_players: LeagueDashPlayerStats failed, tendencies will use defaults — {exc}")
 
     for i, code in enumerate(_NBA_TEAM_CODES):
         nba_team_id = abbrev_to_nba_id.get(code)
@@ -481,6 +558,20 @@ async def import_players_from_api(
                 attrs = _generate_attributes(overall, position)
                 hidden = _generate_hidden(overall, exp)
 
+                player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
+                tendencies = _derive_tendencies(player_id_raw, position, stats_lookup)
+
+                # Set clutch_rating based on overall tier (overrides the 50 placeholder).
+                if tendencies:
+                    if overall >= 90:
+                        tendencies["clutch_rating"] = 85 + random.randint(0, 10)
+                    elif overall >= 80:
+                        tendencies["clutch_rating"] = 70 + random.randint(0, 10)
+                    elif overall >= 70:
+                        tendencies["clutch_rating"] = 55 + random.randint(0, 10)
+                    else:
+                        tendencies["clutch_rating"] = 40 + random.randint(0, 10)
+
                 player_data = {
                     "external_id": str(row.get("PLAYER_ID", "")),
                     "first_name": str(row.get("PLAYER", "")).split(" ")[0],
@@ -496,6 +587,7 @@ async def import_players_from_api(
                     **hidden,
                     "market_pref": _market_pref(),
                     "star_leverage": _star_leverage(overall),
+                    **tendencies,  # empty dict = DB defaults used
                 }
 
                 if is_rookie:

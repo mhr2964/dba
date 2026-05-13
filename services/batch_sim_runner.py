@@ -55,20 +55,84 @@ async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
         )
 
 
+def _apply_directives(p: dict) -> dict:
+    """Apply manager directives as effective-tendency overrides. Modifies in place."""
+    shot_diet = p.get("shot_diet") or "auto"
+    usage_mode = p.get("usage_mode") or "normal"
+    defense_mode = p.get("defense_mode") or "standard"
+    role_mode = p.get("role_mode") or "scorer"
+    clutch_mode = p.get("clutch_mode") or "normal"
+
+    def clamp(v: int) -> int:
+        return max(0, min(100, v))
+
+    if shot_diet == "force_3s":
+        p["tendency_3pt"] = clamp(p.get("tendency_3pt", 50) + 25)
+        p["tendency_mid"] = clamp(p.get("tendency_mid", 50) - 15)
+        p["tendency_drive"] = clamp(p.get("tendency_drive", 50) - 10)
+    elif shot_diet == "attack_rim":
+        p["tendency_drive"] = clamp(p.get("tendency_drive", 50) + 25)
+        p["tendency_3pt"] = clamp(p.get("tendency_3pt", 50) - 25)
+        p["tendency_mid"] = clamp(p.get("tendency_mid", 50) - 10)
+    elif shot_diet == "post_heavy":
+        p["tendency_post"] = clamp(p.get("tendency_post", 20) + 30)
+        p["tendency_3pt"] = clamp(p.get("tendency_3pt", 50) - 20)
+    elif shot_diet == "midrange":
+        p["tendency_mid"] = clamp(p.get("tendency_mid", 50) + 25)
+        p["tendency_3pt"] = clamp(p.get("tendency_3pt", 50) - 15)
+
+    if usage_mode == "feature":
+        p["usage_weight"] = clamp(int(p.get("usage_weight", 50) * 1.4))
+    elif usage_mode == "conserve":
+        p["usage_weight"] = clamp(int(p.get("usage_weight", 50) * 0.6))
+
+    if defense_mode == "lockdown":
+        p["defensive_effort"] = clamp(p.get("defensive_effort", 50) + 20)
+        # slight offensive penalty — reduce usage a touch
+        p["usage_weight"] = clamp(p.get("usage_weight", 50) - 5)
+    elif defense_mode == "off":
+        p["defensive_effort"] = clamp(p.get("defensive_effort", 50) - 20)
+        p["usage_weight"] = clamp(p.get("usage_weight", 50) + 5)
+
+    if role_mode == "creator":
+        p["tendency_pass"] = clamp(p.get("tendency_pass", 50) + 20)
+        p["usage_weight"] = clamp(p.get("usage_weight", 50) + 5)
+    elif role_mode == "spot_up":
+        p["tendency_3pt"] = clamp(p.get("tendency_3pt", 50) + 15)
+        p["tendency_pass"] = clamp(p.get("tendency_pass", 50) - 25)
+    elif role_mode == "scorer":
+        p["tendency_pass"] = clamp(p.get("tendency_pass", 50) - 10)
+        p["usage_weight"] = clamp(p.get("usage_weight", 50) + 5)
+
+    if clutch_mode == "hero":
+        p["clutch_rating"] = clamp(p.get("clutch_rating", 50) + 20)
+    elif clutch_mode == "hide":
+        p["clutch_rating"] = clamp(p.get("clutch_rating", 50) - 30)
+        p["usage_weight"] = clamp(int(p.get("usage_weight", 50) * 0.7))
+
+    return p
+
+
 async def _load_lineup_for_team(pool, league_id: int, team_id: int) -> List[dict]:
-    """Load players in lineup order for a team, returning dicts the sim engine expects."""
+    """Load players in lineup order for a team, returning dicts the sim engine expects.
+
+    LEFT JOINs player_directives so tendency overrides are available pre-sim.
+    _apply_directives is called on each player to fold directives into tendency fields.
+    """
     rows = await pool.fetch(
         """
-        SELECT p.*, l.is_starter, l.slot
+        SELECT p.*, l.is_starter, l.slot,
+               pd.shot_diet, pd.usage_mode, pd.defense_mode, pd.role_mode, pd.clutch_mode
         FROM lineups l
         JOIN players p ON p.id = l.player_id
+        LEFT JOIN player_directives pd ON pd.league_id = $1 AND pd.player_id = p.id
         WHERE l.league_id = $1 AND l.team_id = $2
         ORDER BY l.slot ASC
         """,
         league_id,
         team_id,
     )
-    return [dict(r) for r in rows]
+    return [_apply_directives(dict(r)) for r in rows]
 
 
 def _team_to_sim_dict(team: team_repo.Team) -> dict:

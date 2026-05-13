@@ -69,11 +69,16 @@ def _build_player_line(
     fg_pct = _player_fg_pct(player)
     three_pct = _player_3pct(player)
 
-    # Estimate shot mix: roughly 15% of points from 3s, rest from 2s and FTs
-    tpm = max(0, round(pts * 0.15 / 3))
+    # Tendency-driven shot mix: tendency_3pt=50 → ~15% of pts from 3; 100 → ~35%; 0 → ~5%
+    t3 = player.get("tendency_3pt", 50)
+    three_share = 0.05 + (t3 / 100.0) * 0.30   # 5% to 35% of points from 3s
+    tpm = max(0, round(pts * three_share / 3))
     tpa = max(tpm, round(tpm / max(three_pct, 0.01)))
 
-    ft_pts = max(0, round(pts * 0.12))
+    # Tendency-driven FT rate: tendency_drive=50 → ~13% of pts; 100 → ~20%; 0 → ~6%
+    t_drive = player.get("tendency_drive", 50)
+    ft_share = 0.06 + (t_drive / 100.0) * 0.14   # 6% to 20% of points from FTs
+    ft_pts = max(0, round(pts * ft_share))
     ftm = ft_pts
     fta = max(ftm, round(ftm / 0.75))
 
@@ -146,18 +151,29 @@ def _assign_team_stats(
 
     ast_total = rng.randint(20, 28)
     ast_weights = [
-        players[i].get("playmaking", 50) * _POSITION_PLAYMAKING_WEIGHT.get(players[i].get("position", "SF"), 1.0) * minutes_list[i]
+        players[i].get("playmaking", 50)
+        * _POSITION_PLAYMAKING_WEIGHT.get(players[i].get("position", "SF"), 1.0)
+        * (players[i].get("tendency_pass", 50) / 50.0)
+        * minutes_list[i]
         for i in range(n)
     ]
     asts = _distribute_proportional(rng, ast_total, ast_weights)
 
     stl_total = rng.randint(5, 10)
-    stl_weights = [players[i].get("defense", 50) * minutes_list[i] for i in range(n)]
+    stl_weights = [
+        players[i].get("defense", 50)
+        * (players[i].get("defensive_effort", 50) / 50.0)
+        * minutes_list[i]
+        for i in range(n)
+    ]
     stls = _distribute_proportional(rng, stl_total, stl_weights)
 
     blk_total = rng.randint(3, 7)
     blk_weights = [
-        players[i].get("defense", 50) * _POSITION_BLOCK_WEIGHT.get(players[i].get("position", "SF"), 1.0) * minutes_list[i]
+        players[i].get("defense", 50)
+        * _POSITION_BLOCK_WEIGHT.get(players[i].get("position", "SF"), 1.0)
+        * (players[i].get("defensive_effort", 50) / 50.0)
+        * minutes_list[i]
         for i in range(n)
     ]
     blks = _distribute_proportional(rng, blk_total, blk_weights)
@@ -225,7 +241,7 @@ def _build_box_for_team(
         total_w = sum(all_weights)
         minutes_list = [w / total_w * 240 for w in all_weights]
 
-    # Points: weight by minutes * position_scoring_weight * composite_rating.
+    # Points: weight by minutes * position_scoring_weight * composite_rating * usage_weight.
     team_avg_composite = sum(
         p.get("finishing", 50) + p.get("shooting_2pt", 50) + p.get("shooting_3pt", 50)
         for p in players
@@ -234,9 +250,10 @@ def _build_box_for_team(
     scoring_weights = []
     for i, p in enumerate(players):
         pos_w = _POSITION_SCORING_WEIGHT.get(p.get("position", "SF"), 1.0)
+        usage_w = p.get("usage_weight", 50) / 50.0  # 1.0 at default, up to 2.0 for 100
         composite = p.get("finishing", 50) + p.get("shooting_2pt", 50) + p.get("shooting_3pt", 50)
         rating_adj = composite / max(team_avg_composite, 1)
-        base = (minutes_list[i] / 48.0) * pos_w * rating_adj
+        base = (minutes_list[i] / 48.0) * pos_w * rating_adj * usage_w
         noise = rng.uniform(0.75, 1.25)
         scoring_weights.append(max(base * noise, 0.01))
 
@@ -259,6 +276,11 @@ def _build_box_for_team(
             else:
                 new_weights[i] = max(scoring_weights[i] * bench_factor, 0.01)
         scoring_weights = new_weights
+
+    # Clutch adjustment: in close games, high-clutch players get more late-game usage.
+    if abs(score_diff) < 12:
+        clutch_adj = [(p.get("clutch_rating", 50) - 50) / 100.0 for p in players]  # -0.5 to +0.5
+        scoring_weights = [max(scoring_weights[i] * (1 + clutch_adj[i] * 0.4), 0.01) for i in range(n)]
 
     pts_allocated = _distribute_proportional(rng, team_score, scoring_weights)
     for i, p in enumerate(players):

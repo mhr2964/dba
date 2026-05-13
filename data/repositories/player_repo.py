@@ -69,6 +69,15 @@ class Player:
     win_drive: int
     market_pref: str
     star_leverage: int
+    # Tendency and role fields — default 50 (or 20 for post) matching DB column defaults
+    tendency_3pt: int = 50
+    tendency_drive: int = 50
+    tendency_mid: int = 50
+    tendency_post: int = 20
+    tendency_pass: int = 50
+    usage_weight: int = 50
+    clutch_rating: int = 50
+    defensive_effort: int = 50
 
     @property
     def full_name(self) -> str:
@@ -91,6 +100,7 @@ class Contract:
 
 
 def _player_from_record(r: asyncpg.Record) -> Player:
+    keys = r.keys() if hasattr(r, "keys") else {}
     return Player(
         id=r["id"],
         league_id=r["league_id"],
@@ -123,6 +133,14 @@ def _player_from_record(r: asyncpg.Record) -> Player:
         win_drive=r["win_drive"],
         market_pref=r["market_pref"],
         star_leverage=r["star_leverage"],
+        tendency_3pt=r["tendency_3pt"] if "tendency_3pt" in keys else 50,
+        tendency_drive=r["tendency_drive"] if "tendency_drive" in keys else 50,
+        tendency_mid=r["tendency_mid"] if "tendency_mid" in keys else 50,
+        tendency_post=r["tendency_post"] if "tendency_post" in keys else 20,
+        tendency_pass=r["tendency_pass"] if "tendency_pass" in keys else 50,
+        usage_weight=r["usage_weight"] if "usage_weight" in keys else 50,
+        clutch_rating=r["clutch_rating"] if "clutch_rating" in keys else 50,
+        defensive_effort=r["defensive_effort"] if "defensive_effort" in keys else 50,
     )
 
 

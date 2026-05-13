@@ -21,6 +21,7 @@ COGS = [
     "bot.cogs.stats_cog",
     "bot.cogs.strategy_cog",
     "bot.cogs.admin_cog",
+    "bot.cogs.directive_cog",
 ]
 
 
