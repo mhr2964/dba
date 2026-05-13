@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from typing import List, Optional
 
 import asyncpg
@@ -279,17 +280,21 @@ async def is_back_to_back(
     game_date,
 ) -> bool:
     """Returns True if team_id played a game the day before game_date."""
+    if isinstance(game_date, datetime.date):
+        prev_date = game_date - datetime.timedelta(days=1)
+    else:
+        prev_date = game_date
     row = await pool.fetchrow(
         """
         SELECT 1 FROM games
         WHERE league_id = $1 AND season = $2
           AND status = 'simmed'
-          AND scheduled_date = $3 - 1
+          AND scheduled_date = $3
           AND (home_team_id = $4 OR away_team_id = $4)
         """,
         league_id,
         season,
-        game_date,
+        prev_date,
         team_id,
     )
     return row is not None
