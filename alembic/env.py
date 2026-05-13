@@ -10,11 +10,11 @@ alembic_config = context.config
 if alembic_config.config_file_name is not None:
     fileConfig(alembic_config.config_file_name)
 
-# Convert asyncpg URL to sync psycopg2 URL for alembic
+# Convert asyncpg/postgres URLs to sync psycopg2 URL for alembic
 db_url = os.getenv("DATABASE_URL", "")
 sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-if not sync_url.startswith("postgresql://"):
-    sync_url = db_url
+if sync_url.startswith("postgres://"):
+    sync_url = "postgresql://" + sync_url[len("postgres://"):]
 alembic_config.set_main_option("sqlalchemy.url", sync_url)
 
 
