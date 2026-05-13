@@ -32,24 +32,9 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         await require_all_ready(interaction, league)
         await require_no_pending_trades(league)
 
-        pool = await get_pool()
-        teams = await team_repo.get_all(pool, league.id)
-        human_teams = [t for t in teams if t.manager_user_id is not None]
-        ready_ids = set(await game_repo.get_ready_teams(pool, league.id))
-
-        not_ready = [t for t in human_teams if t.id not in ready_ids]
-        if not_ready:
-            names = ", ".join(
-                f"<@{t.manager_user_id}> ({t.nba_team_code})" for t in not_ready
-            )
-            await interaction.response.send_message(
-                f"Not all managers have readied up. Waiting on: {names}",
-                ephemeral=True,
-            )
-            return
-
         await interaction.response.defer()
 
+        pool = await get_pool()
         summary = await batch_sim_runner.sim_until_rival(
             league.id,
             interaction.guild,

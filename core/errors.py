@@ -39,7 +39,14 @@ async def handle_app_command_error(
     else:
         log.error(f"App command error: {error}", exc_info=error)
 
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.HTTPException:
+        # Fallback: interaction may have been acknowledged by a concurrent path
+        try:
+            await interaction.followup.send(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
