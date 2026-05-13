@@ -44,6 +44,13 @@ class DBABot(commands.Bot):
     async def on_ready(self) -> None:
         log.info(f"DBA online as {self.user} ({self.user.id})")
         await self.change_presence(activity=discord.Game(name="Basketball"))
+        # Guild-specific sync is instant — ensures new commands show up immediately after every deploy
+        for guild in self.guilds:
+            try:
+                await self.tree.sync(guild=guild)
+                log.info(f"Synced commands to guild {guild.id}")
+            except Exception as e:
+                log.warning(f"Failed to sync commands to guild {guild.id}: {e}")
 
     async def close(self) -> None:
         await close_pool()
