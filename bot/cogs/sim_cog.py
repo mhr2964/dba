@@ -330,6 +330,24 @@ async def force_ready_command(interaction: discord.Interaction) -> None:
         f"Force-readied {len(human_teams)} manager(s).", ephemeral=True
     )
 
+    # Same auto-trigger logic as /ready — check what the next game is and fire accordingly
+    current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
+    next_games = await pool.fetch(
+        "SELECT * FROM games WHERE league_id=$1 AND season=$2 AND game_index=$3",
+        league.id, league.current_season, current_index + 1,
+    )
+    next_game = dict(next_games[0]) if next_games else None
+
+    if next_game and next_game.get("is_user_matchup") and next_game.get("status") == "scheduled":
+        asyncio.create_task(_auto_sim_and_advance(league, interaction.guild, pool))
+    else:
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+        if news_channel_id:
+            channel = interaction.guild.get_channel(news_channel_id)
+            if channel:
+                await channel.send("✅ All managers force-readied. Processing...")
+        asyncio.create_task(_batch_advance(league, interaction.guild))
+
 
 @app_commands.command(name="standings", description="Show current standings")
 async def standings_command(interaction: discord.Interaction) -> None:
