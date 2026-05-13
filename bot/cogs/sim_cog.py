@@ -292,6 +292,33 @@ async def ready_command(interaction: discord.Interaction) -> None:
                 await channel.send("All managers are ready. The commissioner can now advance the sim.")
 
 
+@app_commands.command(name="forceready", description="Commissioner: mark all managers as ready (testing)")
+async def force_ready_command(interaction: discord.Interaction) -> None:
+    pool = await get_pool()
+    league = await league_repo.get_by_guild(pool, interaction.guild_id)
+    if not league:
+        await interaction.response.send_message("No active league.", ephemeral=True)
+        return
+
+    if interaction.user.id != league.commissioner_user_id:
+        await interaction.response.send_message("Only the commissioner can force-ready.", ephemeral=True)
+        return
+
+    teams = await team_repo.get_all(pool, league.id)
+    human_teams = [t for t in teams if t.manager_user_id is not None]
+
+    if not human_teams:
+        await interaction.response.send_message("No managers to ready up.", ephemeral=True)
+        return
+
+    for team in human_teams:
+        await game_repo.set_ready(pool, league.id, team.id, team.manager_user_id, True)
+
+    await interaction.response.send_message(
+        f"Force-readied {len(human_teams)} manager(s).", ephemeral=True
+    )
+
+
 @app_commands.command(name="standings", description="Show current standings")
 async def standings_command(interaction: discord.Interaction) -> None:
     pool = await get_pool()
@@ -383,6 +410,7 @@ class SimCog(commands.Cog):
         self.bot = bot
         self.bot.tree.add_command(SimGroup(bot))
         self.bot.tree.add_command(ready_command)
+        self.bot.tree.add_command(force_ready_command)
         self.bot.tree.add_command(standings_command)
         self.bot.tree.add_command(schedule_command)
 
