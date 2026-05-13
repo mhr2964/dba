@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
+import os
+import re
 import random
+import unicodedata
 from datetime import date
 from typing import Optional
 
@@ -142,6 +146,54 @@ def _overall_from_stats(player_id: int, stats_lookup: dict[int, dict], exp: int)
     if entry is None or entry["gp"] < 10:
         return _overall_for_exp(exp)
     return entry["overall"]
+
+
+_2K_RATINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "seeds", "nba_2k_ratings.json")
+_2k_ratings_cache: dict | None = None
+
+
+def _load_2k_ratings() -> dict:
+    global _2k_ratings_cache
+    if _2k_ratings_cache is None:
+        path = os.path.normpath(_2K_RATINGS_PATH)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                _2k_ratings_cache = _json.load(f)
+        except Exception:
+            _2k_ratings_cache = {}
+    return _2k_ratings_cache
+
+
+def _normalize_player_name(name: str) -> str:
+    """Lowercase, strip accents, remove common suffixes (jr., sr., ii, iii)."""
+    name = name.strip()
+    name = unicodedata.normalize("NFD", name).encode("ascii", "ignore").decode()
+    name = name.lower()
+    name = re.sub(r"\s+(jr\.|sr\.|ii|iii)$", "", name)
+    return name.strip()
+
+
+def _overall_from_2k(player_name: str, season: int, exp: int) -> int:
+    """
+    Look up NBA 2K overall rating for player_name in the given season.
+    Falls back to exp-band estimate if not found.
+    Tries full normalized name first, then last-name-only as a last resort.
+    """
+    ratings = _load_2k_ratings()
+    season_map = ratings.get(str(season), {})
+
+    norm = _normalize_player_name(player_name)
+    rating = season_map.get(norm)
+    if rating:
+        return int(rating)
+
+    # Last-resort: match on last word of name (catches "Nene" vs "Nene Hilario")
+    last_word = norm.split()[-1] if norm.split() else norm
+    for key, val in season_map.items():
+        if key.split()[-1] == last_word and last_word not in ("jr.", "sr.", "ii", "iii"):
+            return int(val)
+
+    return _overall_for_exp(exp)
 
 
 def _clamp(val: int, lo: int, hi: int) -> int:
@@ -378,15 +430,9 @@ async def import_players_from_api(
     players_imported = 0
     errors: list[str] = []
 
-    # Fetch per-game stats for every player in the target season in one call.
-    # asyncio.to_thread keeps the blocking HTTP request off the event loop.
-    # On failure, fall back to exp-band ratings for all players.
-    stats_lookup: dict[int, dict] = {}
-    try:
-        stats_lookup = await asyncio.to_thread(_fetch_league_stats_sync, season)
-        log.info(f"import_players: loaded stats for {len(stats_lookup)} players (season={season})")
-    except Exception as exc:
-        log.warning(f"import_players: LeagueDashPlayerStats failed, using exp fallback — {exc}")
+    # Pre-load 2K ratings for the season (fast local JSON read — no network call needed).
+    _load_2k_ratings()
+    log.info(f"import_players: 2K ratings loaded for season={season}")
 
     for i, code in enumerate(_NBA_TEAM_CODES):
         nba_team_id = abbrev_to_nba_id.get(code)
@@ -430,8 +476,8 @@ async def import_players_from_api(
                 is_rookie = exp == 0
 
                 position = _normalize_position(str(row.get("POSITION", "")))
-                player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
-                overall = _overall_from_stats(player_id_raw, stats_lookup, exp)
+                full_name = str(row.get("PLAYER", ""))
+                overall = _overall_from_2k(full_name, season, exp)
                 attrs = _generate_attributes(overall, position)
                 hidden = _generate_hidden(overall, exp)
 

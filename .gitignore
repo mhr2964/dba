@@ -9,3 +9,4 @@ dist/
 build/
 .pytest_cache/
 .DS_Store
+data/seeds/nba_2k_ratings_raw.csv
