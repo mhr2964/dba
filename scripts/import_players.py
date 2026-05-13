@@ -74,6 +74,7 @@ def _normalize_position(raw: str) -> str:
 
 
 def _overall_for_exp(exp: int) -> int:
+    """Fallback: estimate overall from years of experience when stats are unavailable."""
     if exp >= 8:
         base = random.randint(82, 95)
     elif exp >= 3:
@@ -86,6 +87,73 @@ def _overall_for_exp(exp: int) -> int:
     return max(50, min(99, base + noise))
 
 
+def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
+    """
+    Fetch per-game stats for all players in `season` from LeagueDashPlayerStats.
+    Returns a dict keyed by PLAYER_ID (int).
+    Raises on network or API failure — caller wraps in try/except.
+    """
+    from nba_api.stats.endpoints import leaguedashplayerstats
+
+    season_str = f"{season}-{str(season + 1)[2:]}"
+    stats = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=season_str,
+        per_mode_simple="PerGame",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    df = stats.get_data_frames()[0]
+
+    max_pts = df["PTS"].max() or 1.0
+    max_reb = df["REB"].max() or 1.0
+    max_ast = df["AST"].max() or 1.0
+    max_stl = df["STL"].max() or 1.0
+    max_blk = df["BLK"].max() or 1.0
+    max_usg = df["USG_PCT"].max() or 1.0
+    max_min = df["MIN"].max() or 1.0
+
+    lookup: dict[int, dict] = {}
+    for _, row in df.iterrows():
+        pid = int(row["PLAYER_ID"])
+        gp = int(row.get("GP", 0) or 0)
+
+        pts_n  = float(row["PTS"])    / max_pts
+        reb_n  = float(row["REB"])    / max_reb
+        ast_n  = float(row["AST"])    / max_ast
+        stl_n  = float(row["STL"])    / max_stl
+        blk_n  = float(row["BLK"])    / max_blk
+        fg_n   = float(row["FG_PCT"] or 0)
+        usg_n  = float(row["USG_PCT"] or 0) / max_usg
+        min_n  = float(row["MIN"])    / max_min
+
+        composite = (
+            pts_n  * 0.35 +
+            reb_n  * 0.15 +
+            ast_n  * 0.15 +
+            stl_n  * 0.07 +
+            blk_n  * 0.05 +
+            fg_n   * 0.10 +
+            usg_n  * 0.08 +
+            min_n  * 0.05
+        )
+        overall = int(round(50 + composite * 49))
+        overall = max(50, min(99, overall))
+
+        lookup[pid] = {"overall": overall, "gp": gp}
+
+    return lookup
+
+
+def _overall_from_stats(player_id: int, stats_lookup: dict[int, dict], exp: int) -> int:
+    """
+    Derive overall from real stats when available and games played >= 10.
+    Falls back to _overall_for_exp when the player is absent or has <10 GP.
+    """
+    entry = stats_lookup.get(player_id)
+    if entry is None or entry["gp"] < 10:
+        return _overall_for_exp(exp)
+    return entry["overall"]
+
+
 def _clamp(val: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, val))
 
@@ -95,7 +163,7 @@ def _generate_attributes(overall: int, position: str) -> dict[str, int]:
     attrs: dict[str, int] = {}
     for attr in _ALL_ATTRS:
         delta = profile.get(attr, 0)
-        noise = random.randint(-15, 15)
+        noise = random.randint(-5, 5)
         attrs[attr] = _clamp(overall + delta + noise, 40, 99)
     return attrs
 
@@ -323,6 +391,15 @@ async def main() -> None:
         nba_teams_list = nba_teams_static.get_teams()
         abbrev_to_id: dict[str, int] = {t["abbreviation"]: t["id"] for t in nba_teams_list}
 
+        # Fetch per-game stats for all players in one call before the team loop.
+        stats_lookup: dict[int, dict] = {}
+        try:
+            print(f"Fetching league-wide stats for {args.season}-{str(args.season + 1)[2:]}...")
+            stats_lookup = _fetch_league_stats_sync(args.season)
+            print(f"  Loaded stats for {len(stats_lookup)} players.")
+        except Exception as exc:
+            print(f"[WARN] LeagueDashPlayerStats failed, using exp fallback: {exc}")
+
         for code in NBA_TEAM_CODES:
             nba_team_id = abbrev_to_id.get(code)
             if nba_team_id is None:
@@ -357,7 +434,8 @@ async def main() -> None:
                     is_rookie = exp == 0
 
                     position = _normalize_position(str(row.get("POSITION", "")))
-                    overall = _overall_for_exp(exp)
+                    player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
+                    overall = _overall_from_stats(player_id_raw, stats_lookup, exp)
                     attrs = _generate_attributes(overall, position)
                     hidden = _generate_hidden(overall, exp)
 
