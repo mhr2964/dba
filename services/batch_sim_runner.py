@@ -601,3 +601,21 @@ async def sim_range(
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
     return {"warning": False, "games_simmed": games_simmed, "user_matchups": [], "season_complete": season_complete}
+
+
+async def sim_single_matchup(
+    league_id: int,
+    guild: discord.Guild,
+    season: int,
+) -> Optional[dict]:
+    """Sim the next pending user matchup. Returns the full game result dict, or None if no matchup is ready."""
+    pool = await get_pool()
+    current_index = await game_repo.get_current_index(pool, league_id, season)
+    games = await game_repo.get_games_in_range(pool, league_id, season, current_index + 1, current_index + 1)
+    if not games:
+        return None
+    game = games[0]
+    if not game.get("is_user_matchup") or game.get("status") == "simmed":
+        return None
+    news_channel = await _get_news_channel(guild, pool, league_id)
+    return await _sim_single_game(pool, game, league_id, season, news_channel)

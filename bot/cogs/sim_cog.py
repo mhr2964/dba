@@ -17,6 +17,16 @@ from services import batch_sim_runner, league_service
 log = get_logger(__name__)
 
 
+def _quarter_splits(total: int, seed: int) -> list[int]:
+    """Split a final score into 4 plausible quarter scores that sum to total."""
+    from random import Random
+    rng = Random(seed)
+    avg = total / 4.0
+    qs = [max(16, int(rng.gauss(avg, 3.5))) for _ in range(4)]
+    qs[-1] = max(10, qs[-1] + (total - sum(qs)))
+    return qs
+
+
 class SimGroup(app_commands.Group, name="sim", description="Advance the league simulation"):
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -247,6 +257,83 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             ),
         )
         await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="matchup", description="Sim the current user vs. user game with live quarter updates")
+    async def matchup(self, interaction: discord.Interaction) -> None:
+        import asyncio
+        await interaction.response.defer()
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+        await require_phase(league, "sim_rivalry")
+        await require_no_pending_trades(league)
+
+        pool = await get_pool()
+        current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
+
+        # Verify the very next game is a pending user matchup
+        next_games = await pool.fetch(
+            "SELECT * FROM games WHERE league_id=$1 AND season=$2 AND game_index=$3",
+            league.id, league.current_season, current_index + 1,
+        )
+        if not next_games or not next_games[0]["is_user_matchup"] or next_games[0]["status"] == "simmed":
+            await interaction.followup.send(
+                "No user matchup is ready to play. Run `/sim rivalry` first to advance to the next matchup.",
+                ephemeral=True,
+            )
+            return
+
+        box_channel_id = await league_repo.get_channel(pool, league.id, "box-scores")
+        box_channel = interaction.guild.get_channel(box_channel_id) if box_channel_id else None
+
+        result = await batch_sim_runner.sim_single_matchup(
+            league.id, interaction.guild, league.current_season
+        )
+        if result is None:
+            await interaction.followup.send("Could not sim the matchup. Try again.", ephemeral=True)
+            return
+
+        home_team = result["home_team"]
+        away_team = result["away_team"]
+        home_score: int = result["result"]["home_score"]
+        away_score: int = result["result"]["away_score"]
+        game_index: int = result["game"]["game_index"]
+        game_id: int = result["game"]["id"]
+
+        hc = home_team.nba_team_code
+        ac = away_team.nba_team_code
+        home_qs = _quarter_splits(home_score, game_id)
+        away_qs = _quarter_splits(away_score, game_id + 1)
+
+        if box_channel:
+            await box_channel.send(f"🏀 **TIPOFF** | `{ac}` @ `{hc}` — Game #{game_index}")
+            await asyncio.sleep(3)
+
+            await box_channel.send(
+                f"**End of Q1** | `{ac}` **{away_qs[0]}** — **{home_qs[0]}** `{hc}`"
+            )
+            await asyncio.sleep(3)
+
+            h2 = home_qs[0] + home_qs[1]
+            a2 = away_qs[0] + away_qs[1]
+            await box_channel.send(f"**HALFTIME** | `{ac}` **{a2}** — **{h2}** `{hc}`")
+            await asyncio.sleep(3)
+
+            h3 = h2 + home_qs[2]
+            a3 = a2 + away_qs[2]
+            await box_channel.send(f"**End of Q3** | `{ac}` **{a3}** — **{h3}** `{hc}`")
+            await asyncio.sleep(3)
+
+            winner = hc if home_score > away_score else ac
+            await box_channel.send(
+                f"🏆 **FINAL** | `{ac}` **{away_score}** — **{home_score}** `{hc}` | **{winner} wins!**"
+            )
+            box_embed = sim_embeds.batch_recap([result], f"Game #{game_index} — Box Score")
+            await box_channel.send(embed=box_embed)
+
+        await game_repo.reset_ready(pool, league.id)
+        await interaction.followup.send(
+            f"✅ `{ac}` **{away_score}** — **{home_score}** `{hc}` — results posted to #box-scores.",
+        )
 
 
 @app_commands.command(name="ready", description="Mark yourself as ready for the next matchup")
