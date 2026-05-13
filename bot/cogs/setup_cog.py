@@ -208,6 +208,70 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             f"Phase advanced from `{league.current_phase}` to `{phase_name}`.",
         )
 
+    @app_commands.command(name="delete", description="Permanently delete the league and all its data")
+    @app_commands.describe(confirm_name="Type the exact league name to confirm")
+    @app_commands.default_permissions(administrator=True)
+    async def delete(self, interaction: discord.Interaction, confirm_name: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        league = await league_service.get_league(interaction.guild_id)
+        if not league:
+            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            return
+
+        if confirm_name != league.name:
+            await interaction.followup.send(
+                f"Confirmation failed — you typed **{confirm_name}** but the league is **{league.name}**.\n"
+                "Pass the exact league name to confirm deletion.",
+                ephemeral=True,
+            )
+            return
+
+        pool = await get_pool()
+
+        # Delete Discord channels and their shared category
+        channel_rows = await pool.fetch(
+            "SELECT discord_channel_id FROM league_channels WHERE league_id = $1",
+            league.id,
+        )
+        category = None
+        for row in channel_rows:
+            ch = interaction.guild.get_channel(row["discord_channel_id"])
+            if ch:
+                if category is None and ch.category:
+                    category = ch.category
+                try:
+                    await ch.delete(reason="DBA league deleted")
+                except discord.HTTPException:
+                    pass
+        if category:
+            try:
+                await category.delete(reason="DBA league deleted")
+            except discord.HTTPException:
+                pass
+
+        # Delete Discord roles (commissioner + 30 team roles)
+        role_rows = await pool.fetch(
+            "SELECT discord_role_id FROM league_roles WHERE league_id = $1",
+            league.id,
+        )
+        for row in role_rows:
+            role = interaction.guild.get_role(row["discord_role_id"])
+            if role:
+                try:
+                    await role.delete(reason="DBA league deleted")
+                except discord.HTTPException:
+                    pass
+
+        # Single DELETE cascades to all child tables
+        await pool.execute("DELETE FROM leagues WHERE id = $1", league.id)
+        log.info(f"League '{league.name}' (id={league.id}) deleted by {interaction.user.id}")
+
+        await interaction.followup.send(
+            f"League **{league.name}** has been permanently deleted. All data wiped.",
+            ephemeral=True,
+        )
+
 
 class TeamGroup(app_commands.Group, name="team", description="Team management commands"):
 
