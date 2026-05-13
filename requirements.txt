@@ -1,0 +1,8 @@
+discord.py>=2.3.0
+asyncpg>=0.29.0
+alembic>=1.13.0
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0
+APScheduler>=3.10.0
+sqlalchemy>=2.0.0
+nba_api>=1.4.0

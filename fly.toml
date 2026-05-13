@@ -1,0 +1,18 @@
+app = "dba-bot"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+
+[deploy]
+  release_command = "python -m alembic upgrade head"

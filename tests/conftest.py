@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import itertools
+import os
+import subprocess
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import asyncpg
+import discord
+import psycopg2
+import pytest
+
+TEST_DB_URL = "postgresql://dba:dba@localhost:5434/dba_test"
+DBA_ROOT = r"C:\Users\Owner\Desktop\AI\Projects\dba"
+
+
+# ---------------------------------------------------------------------------
+# DB bootstrap — sync, session-scoped so migrations run exactly once
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db():
+    conn = psycopg2.connect("postgresql://dba:dba@localhost:5434/postgres")
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = 'dba_test'")
+    if not cur.fetchone():
+        cur.execute("CREATE DATABASE dba_test")
+    cur.close()
+    conn.close()
+
+    env = os.environ.copy()
+    env["DATABASE_URL"] = TEST_DB_URL
+    subprocess.run(
+        [os.path.join(DBA_ROOT, r".venv\Scripts\alembic.exe"), "upgrade", "head"],
+        cwd=DBA_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-test pool — function-scoped so pool and event loop always match
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+async def db_pool():
+    pool = await asyncpg.create_pool(TEST_DB_URL, min_size=1, max_size=3)
+    yield pool
+    await pool.close()
+
+
+@pytest.fixture(autouse=True)
+async def clean_db(db_pool):
+    await db_pool.execute(
+        "TRUNCATE leagues RESTART IDENTITY CASCADE"
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
+async def patch_get_pool(db_pool):
+    pool_mock = AsyncMock(return_value=db_pool)
+    with (
+        patch("data.db.get_pool", pool_mock),
+        patch("services.league_service.get_pool", pool_mock),
+        patch("services.roster_service.get_pool", pool_mock),
+        patch("services.awards_service.get_pool", pool_mock),
+        patch("services.trade_service.get_pool", pool_mock),
+        patch("services.fa_service.get_pool", pool_mock),
+        patch("services.progression_service.get_pool", pool_mock),
+        patch("services.rollover_service.get_pool", pool_mock),
+        patch("services.schedule_service.get_pool", pool_mock),
+        patch("services.notifier_service.get_pool", pool_mock),
+        patch("bot.cogs.setup_cog.get_pool", pool_mock),
+        patch("bot.cogs.roster_cog.get_pool", pool_mock),
+        patch("bot.cogs.draft_cog.get_pool", pool_mock),
+        patch("bot.cogs.strategy_cog.get_pool", pool_mock),
+        patch("bot.ui.stats_views.get_pool", pool_mock),
+        patch("phase.helpers.get_pool", pool_mock),
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
+# Discord mock fixtures
+# ---------------------------------------------------------------------------
+
+_CHANNEL_COUNTER = itertools.count(200)
+_ROLE_COUNTER = itertools.count(300)
+
+
+@pytest.fixture
+def mock_guild():
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 999001
+    guild.name = "Test Server"
+
+    _created_roles: dict[int, MagicMock] = {}
+
+    async def _create_role(**kwargs):
+        role = MagicMock(spec=discord.Role)
+        role.id = next(_ROLE_COUNTER)
+        role.name = kwargs.get("name", "role")
+        _created_roles[role.id] = role
+        return role
+
+    async def _create_category(name, **kwargs):
+        category = MagicMock(spec=discord.CategoryChannel)
+        category.id = 111
+        category.name = name
+
+        async def _create_text_channel(ch_name, **kw):
+            ch = MagicMock(spec=discord.TextChannel)
+            ch.id = next(_CHANNEL_COUNTER)
+            ch.name = ch_name
+            return ch
+
+        category.create_text_channel = _create_text_channel
+        return category
+
+    guild.create_category = _create_category
+    guild.create_role = _create_role
+    guild.get_role = lambda role_id: _created_roles.get(role_id)
+    guild.get_member = MagicMock(return_value=None)
+    guild.get_channel = MagicMock(return_value=None)
+    return guild
+
+
+@pytest.fixture
+def mock_commissioner():
+    member = MagicMock(spec=discord.Member)
+    member.id = 12345
+    member.mention = "<@12345>"
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    return member
+
+
+@pytest.fixture
+def mock_manager():
+    member = MagicMock(spec=discord.Member)
+    member.id = 67890
+    member.mention = "<@67890>"
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    return member
+
+
+@pytest.fixture
+def mock_interaction(mock_guild, mock_commissioner):
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = mock_guild
+    interaction.guild_id = mock_guild.id
+    interaction.user = mock_commissioner
+    interaction.response = AsyncMock()
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    return interaction
