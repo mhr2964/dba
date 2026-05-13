@@ -12,27 +12,17 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, team_repo
 from phase.helpers import get_league_or_error, require_commissioner, require_phase, require_all_ready, require_no_pending_trades
-from services import batch_sim_runner
+from services import batch_sim_runner, league_service
 
 log = get_logger(__name__)
 
 
-async def _require_league(guild_id: int):
-    pool = await get_pool()
-    league = await league_repo.get_by_guild(pool, guild_id)
-    if not league:
-        raise DBAError("No active league found. Use `/league create` first.")
-    return league
-
-
-async def _require_commissioner(interaction: discord.Interaction):
-    league = await _require_league(interaction.guild_id)
-    if league.commissioner_user_id != interaction.user.id:
-        raise PermissionError("Only the commissioner can use this command.")
-    return league
-
-
 class SimGroup(app_commands.Group, name="sim", description="Advance the league simulation"):
+
+    def __init__(self, bot: commands.Bot) -> None:
+        super().__init__()
+        self.bot = bot
+
 
     @app_commands.command(name="rivalry", description="Sim CPU games until the next user matchup")
     async def rivalry(self, interaction: discord.Interaction) -> None:
@@ -199,6 +189,92 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         )
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="deadline", description="Sim to the trade deadline and open the trade window")
+    @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
+    async def deadline(
+        self,
+        interaction: discord.Interaction,
+        force: bool = False,
+    ) -> None:
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+        await require_phase(league, "sim_deadline")
+        await require_no_pending_trades(league)
+
+        pool = await get_pool()
+
+        total = await pool.fetchval(
+            "SELECT COUNT(*) FROM games WHERE league_id = $1 AND season = $2 AND season_type = 'regular'",
+            league.id,
+            league.current_season,
+        )
+        if not total:
+            await interaction.response.send_message(
+                "No schedule found. Run `/season start` first.", ephemeral=True
+            )
+            return
+
+        deadline_index = round(total * 0.67)
+        current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
+
+        if current_index >= deadline_index:
+            await interaction.response.send_message(
+                f"Already at or past the trade deadline (game {deadline_index} of {total}). "
+                "Use `/league advance TRADE_DEADLINE_OPEN` to open the window manually.",
+                ephemeral=True,
+            )
+            return
+
+        if not force:
+            user_matchups = await batch_sim_runner.check_user_matchups_in_range(
+                pool, league.id, league.current_season, current_index + 1, deadline_index
+            )
+            if user_matchups:
+                embed = sim_embeds.user_matchup_warning(user_matchups)
+                embed.set_footer(
+                    text="Use /sim deadline force:True to sim through them, or handle them with /sim rivalry first."
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+        await interaction.response.defer()
+
+        summary = await batch_sim_runner.sim_range(
+            league.id,
+            interaction.guild,
+            league.current_season,
+            deadline_index,
+            bot=self.bot,
+        )
+
+        if summary.get("warning"):
+            embed = sim_embeds.user_matchup_warning(summary["user_matchups"])
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        await league_service.advance_phase(league.id, "TRADE_DEADLINE_OPEN")
+
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+        if news_channel_id:
+            channel = interaction.guild.get_channel(news_channel_id)
+            if channel:
+                await channel.send(
+                    "🚨 **Trade deadline is open!** Managers can now propose and execute trades. "
+                    "The commissioner will use `/league advance REGULAR_SEASON_POSTDEADLINE` to close the window."
+                )
+
+        embed = discord.Embed(
+            title="Trade Deadline Open",
+            color=discord.Color.gold(),
+            description=(
+                f"Simmed **{summary['games_simmed']}** game(s) to the trade deadline "
+                f"(game {deadline_index} of {total}).\n\n"
+                "The trade window is now **open**. When all trades are done, the commissioner "
+                "should run `/league advance REGULAR_SEASON_POSTDEADLINE` to resume simming."
+            ),
+        )
+        await interaction.followup.send(embed=embed)
+
 
 @app_commands.command(name="ready", description="Mark yourself as ready for the next matchup")
 async def ready_command(interaction: discord.Interaction) -> None:
@@ -320,7 +396,7 @@ async def schedule_command(
 class SimCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.bot.tree.add_command(SimGroup())
+        self.bot.tree.add_command(SimGroup(bot))
         self.bot.tree.add_command(ready_command)
         self.bot.tree.add_command(standings_command)
         self.bot.tree.add_command(schedule_command)
