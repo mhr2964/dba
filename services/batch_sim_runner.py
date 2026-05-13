@@ -12,6 +12,13 @@ from phase.states import Phase
 from services import league_service, records_service, sim_engine, storyline_service, strategy_service
 from bot.embeds import sim_embeds
 
+_SEVERITY_LABELS: dict[str, str] = {
+    "day_to_day":    "day-to-day",
+    "week_2_4":      "2-4 weeks",
+    "week_4_8":      "4-8 weeks",
+    "season_ending": "season-ending",
+}
+
 log = get_logger(__name__)
 
 _BOX_SCORE_BATCH_SIZE = 10
@@ -184,11 +191,30 @@ async def _persist_injuries(
         })
 
         if severity in _ANNOUNCE_SEVERITIES and news_channel:
-            label = "Season-ending injury" if severity == "season_ending" else "Significant injury"
-            await news_channel.send(
-                f"**{label}**: Player {inj['player_id']} is expected to miss "
-                f"{games_missed} games ({severity.replace('_', '-')})."
+            player_row = await pool.fetchrow(
+                "SELECT first_name, last_name, team_id FROM players WHERE id = $1",
+                inj["player_id"],
             )
+            if player_row:
+                player_name = f"{player_row['first_name']} {player_row['last_name']}"
+                team_code_row = await pool.fetchrow(
+                    "SELECT nba_team_code FROM teams WHERE id = $1", player_row["team_id"]
+                )
+                team_code = team_code_row["nba_team_code"] if team_code_row else "???"
+            else:
+                player_name = f"Player {inj['player_id']}"
+                team_code = "???"
+
+            human_severity = _SEVERITY_LABELS.get(severity, severity)
+            embed = discord.Embed(
+                title="🏥 Injury Report",
+                color=discord.Color.red(),
+                description=f"**{player_name}** ({team_code}) — {human_severity}",
+            )
+            embed.add_field(name="Games Missed", value=str(games_missed), inline=True)
+            embed.add_field(name="Status", value=human_severity, inline=True)
+            embed.set_footer(text=f"Game #{game.get('game_index', game_id)}")
+            await news_channel.send(embed=embed)
 
     await game_repo.insert_injuries(pool, rows)
 
@@ -248,9 +274,14 @@ async def _persist_game_result(
     notable_streak = standings_update.get("notable_streak")
     if notable_streak and news_channel:
         streak_team_id, streak_len = notable_streak
-        await news_channel.send(
-            f"**Win streak!** Team {streak_team_id} has won {streak_len} games in a row!"
+        streak_team = await team_repo.get_by_id(pool, streak_team_id)
+        streak_name = streak_team.full_name if streak_team else f"Team {streak_team_id}"
+        embed = discord.Embed(
+            title="🔥 Win Streak",
+            color=discord.Color.gold(),
+            description=f"**{streak_name}** has won **{streak_len}** straight!",
         )
+        await news_channel.send(embed=embed)
 
     await _persist_injuries(pool, game, game_id, season, result, news_channel)
 
@@ -464,6 +495,7 @@ async def sim_until_rival(
     guild: discord.Guild,
     season: int,
     bot: Optional[discord.Client] = None,
+    suppress_matchup_alert: bool = False,
 ) -> dict:
     pool = await get_pool()
 
@@ -525,7 +557,7 @@ async def sim_until_rival(
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
 
-    if next_user_game and news_channel and not season_complete:
+    if next_user_game and news_channel and not season_complete and not suppress_matchup_alert:
         home_team = await team_repo.get_by_id(pool, next_user_game["home_team_id"])
         away_team = await team_repo.get_by_id(pool, next_user_game["away_team_id"])
         home_manager = guild.get_member(home_team.manager_user_id) if home_team and home_team.manager_user_id else None

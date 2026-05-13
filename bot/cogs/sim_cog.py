@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 import discord
@@ -258,83 +259,6 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         )
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="matchup", description="Sim the current user vs. user game with live quarter updates")
-    async def matchup(self, interaction: discord.Interaction) -> None:
-        import asyncio
-        await interaction.response.defer()
-        league = await get_league_or_error(interaction.guild_id)
-        await require_commissioner(interaction, league)
-        await require_phase(league, "sim_rivalry")
-        await require_no_pending_trades(league)
-
-        pool = await get_pool()
-        current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
-
-        # Verify the very next game is a pending user matchup
-        next_games = await pool.fetch(
-            "SELECT * FROM games WHERE league_id=$1 AND season=$2 AND game_index=$3",
-            league.id, league.current_season, current_index + 1,
-        )
-        if not next_games or not next_games[0]["is_user_matchup"] or next_games[0]["status"] == "simmed":
-            await interaction.followup.send(
-                "No user matchup is ready to play. Run `/sim rivalry` first to advance to the next matchup.",
-                ephemeral=True,
-            )
-            return
-
-        box_channel_id = await league_repo.get_channel(pool, league.id, "box-scores")
-        box_channel = interaction.guild.get_channel(box_channel_id) if box_channel_id else None
-
-        result = await batch_sim_runner.sim_single_matchup(
-            league.id, interaction.guild, league.current_season
-        )
-        if result is None:
-            await interaction.followup.send("Could not sim the matchup. Try again.", ephemeral=True)
-            return
-
-        home_team = result["home_team"]
-        away_team = result["away_team"]
-        home_score: int = result["result"]["home_score"]
-        away_score: int = result["result"]["away_score"]
-        game_index: int = result["game"]["game_index"]
-        game_id: int = result["game"]["id"]
-
-        hc = home_team.nba_team_code
-        ac = away_team.nba_team_code
-        home_qs = _quarter_splits(home_score, game_id)
-        away_qs = _quarter_splits(away_score, game_id + 1)
-
-        if box_channel:
-            await box_channel.send(f"🏀 **TIPOFF** | `{ac}` @ `{hc}` — Game #{game_index}")
-            await asyncio.sleep(3)
-
-            await box_channel.send(
-                f"**End of Q1** | `{ac}` **{away_qs[0]}** — **{home_qs[0]}** `{hc}`"
-            )
-            await asyncio.sleep(3)
-
-            h2 = home_qs[0] + home_qs[1]
-            a2 = away_qs[0] + away_qs[1]
-            await box_channel.send(f"**HALFTIME** | `{ac}` **{a2}** — **{h2}** `{hc}`")
-            await asyncio.sleep(3)
-
-            h3 = h2 + home_qs[2]
-            a3 = a2 + away_qs[2]
-            await box_channel.send(f"**End of Q3** | `{ac}` **{a3}** — **{h3}** `{hc}`")
-            await asyncio.sleep(3)
-
-            winner = hc if home_score > away_score else ac
-            await box_channel.send(
-                f"🏆 **FINAL** | `{ac}` **{away_score}** — **{home_score}** `{hc}` | **{winner} wins!**"
-            )
-            box_embed = sim_embeds.batch_recap([result], f"Game #{game_index} — Box Score")
-            await box_channel.send(embed=box_embed)
-
-        await game_repo.reset_ready(pool, league.id)
-        await interaction.followup.send(
-            f"✅ `{ac}` **{away_score}** — **{home_score}** `{hc}` — results posted to #box-scores.",
-        )
-
 
 @app_commands.command(name="ready", description="Mark yourself as ready for the next matchup")
 async def ready_command(interaction: discord.Interaction) -> None:
@@ -360,11 +284,24 @@ async def ready_command(interaction: discord.Interaction) -> None:
     human_teams = [t for t in teams if t.manager_user_id is not None]
     ready_ids = set(await game_repo.get_ready_teams(pool, league.id))
     if human_teams and all(t.id in ready_ids for t in human_teams):
-        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-        if news_channel_id:
-            channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
-                await channel.send("All managers are ready. The commissioner can now advance the sim.")
+        current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
+        next_games = await pool.fetch(
+            "SELECT * FROM games WHERE league_id=$1 AND season=$2 AND game_index=$3",
+            league.id, league.current_season, current_index + 1,
+        )
+        next_game = dict(next_games[0]) if next_games else None
+
+        if next_game and next_game.get("is_user_matchup") and next_game.get("status") == "scheduled":
+            # User vs user game — fire auto-sim in background, no commissioner needed
+            asyncio.create_task(_auto_sim_and_advance(league, interaction.guild, pool))
+        else:
+            # CPU vs CPU next — announce and batch-sim to the next rivalry
+            news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+            if news_channel_id:
+                channel = interaction.guild.get_channel(news_channel_id)
+                if channel:
+                    await channel.send("✅ All managers ready. Processing...")
+            asyncio.create_task(_batch_advance(league, interaction.guild))
 
 
 @app_commands.command(name="forceready", description="Commissioner: mark all managers as ready (testing)")
@@ -478,6 +415,173 @@ async def schedule_command(
         )
     embed.description = "\n".join(lines)
     await interaction.response.send_message(embed=embed)
+
+
+async def _auto_sim_and_advance(league, guild: discord.Guild, _pool) -> None:
+    """
+    Background task: sim the current user vs user matchup, post quarter-by-quarter
+    feed to #box-scores, reset ready state, then batch-advance CPU games to the
+    next user matchup and announce it to #league-news.
+
+    The pool arg is ignored — a fresh pool is acquired inside to avoid holding a
+    stale connection from the /ready handler.
+    """
+    pool = await get_pool()
+
+    result = await batch_sim_runner.sim_single_matchup(
+        league.id, guild, league.current_season
+    )
+
+    news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+    news_channel = guild.get_channel(news_channel_id) if news_channel_id else None
+
+    if result is None:
+        if news_channel:
+            await news_channel.send("⚠️ Failed to sim the user matchup. Please contact the commissioner.")
+        return
+
+    home_team = result["home_team"]
+    away_team = result["away_team"]
+    home_score: int = result["result"]["home_score"]
+    away_score: int = result["result"]["away_score"]
+    game_index: int = result["game"]["game_index"]
+    game_id: int = result["game"]["id"]
+
+    hc = home_team.nba_team_code
+    ac = away_team.nba_team_code
+    home_qs = _quarter_splits(home_score, game_id)
+    away_qs = _quarter_splits(away_score, game_id + 1)
+
+    box_channel_id = await league_repo.get_channel(pool, league.id, "box-scores")
+    box_channel = guild.get_channel(box_channel_id) if box_channel_id else None
+
+    if box_channel:
+        tipoff_embed = discord.Embed(
+            title=f"🏀 TIPOFF — Game #{game_index}",
+            color=discord.Color.orange(),
+        )
+        tipoff_embed.add_field(name="Away", value=f"`{ac}`", inline=True)
+        tipoff_embed.add_field(name="@", value="—", inline=True)
+        tipoff_embed.add_field(name="Home", value=f"`{hc}`", inline=True)
+        tipoff_embed.set_footer(text=f"{away_team.full_name} vs {home_team.full_name}")
+        await box_channel.send(embed=tipoff_embed)
+        await asyncio.sleep(3)
+
+        q1_embed = discord.Embed(title="End of Q1", color=discord.Color.light_gray())
+        q1_embed.add_field(name=ac, value=str(away_qs[0]), inline=True)
+        q1_embed.add_field(name="—", value="—", inline=True)
+        q1_embed.add_field(name=hc, value=str(home_qs[0]), inline=True)
+        await box_channel.send(embed=q1_embed)
+        await asyncio.sleep(3)
+
+        h2 = home_qs[0] + home_qs[1]
+        a2 = away_qs[0] + away_qs[1]
+        half_embed = discord.Embed(title="Halftime", color=discord.Color.light_gray())
+        half_embed.add_field(name=ac, value=str(a2), inline=True)
+        half_embed.add_field(name="—", value="—", inline=True)
+        half_embed.add_field(name=hc, value=str(h2), inline=True)
+        await box_channel.send(embed=half_embed)
+        await asyncio.sleep(3)
+
+        h3 = h2 + home_qs[2]
+        a3 = a2 + away_qs[2]
+        q3_embed = discord.Embed(title="End of Q3", color=discord.Color.light_gray())
+        q3_embed.add_field(name=ac, value=str(a3), inline=True)
+        q3_embed.add_field(name="—", value="—", inline=True)
+        q3_embed.add_field(name=hc, value=str(h3), inline=True)
+        await box_channel.send(embed=q3_embed)
+        await asyncio.sleep(3)
+
+        winner_name = home_team.full_name if home_score > away_score else away_team.full_name
+        final_embed = discord.Embed(
+            title=f"🏆 FINAL — {winner_name} wins!",
+            color=discord.Color.green(),
+        )
+        final_embed.add_field(
+            name=f"`{ac}` {away_team.full_name}", value=str(away_score), inline=True
+        )
+        final_embed.add_field(name="—", value="—", inline=True)
+        final_embed.add_field(
+            name=f"`{hc}` {home_team.full_name}", value=str(home_score), inline=True
+        )
+        final_embed.set_footer(text=f"Game #{game_index}")
+        await box_channel.send(embed=final_embed)
+
+        box_recap_embed = sim_embeds.batch_recap([result], f"Game #{game_index} — Box Score")
+        await box_channel.send(embed=box_recap_embed)
+
+    await game_repo.reset_ready(pool, league.id)
+
+    summary = await batch_sim_runner.sim_until_rival(
+        league.id, guild, league.current_season, suppress_matchup_alert=True
+    )
+
+    if news_channel:
+        next_matchup = summary.get("next_matchup")
+        if next_matchup:
+            ht = await team_repo.get_by_id(pool, next_matchup["home_team_id"])
+            at = await team_repo.get_by_id(pool, next_matchup["away_team_id"])
+            home_mgr = guild.get_member(ht.manager_user_id) if ht and ht.manager_user_id else None
+            away_mgr = guild.get_member(at.manager_user_id) if at and at.manager_user_id else None
+            home_code = ht.nba_team_code if ht else "???"
+            away_code = at.nba_team_code if at else "???"
+            home_mention = home_mgr.mention if home_mgr else "(no manager)"
+            away_mention = away_mgr.mention if away_mgr else "(no manager)"
+            next_idx = next_matchup.get("game_index", "?")
+
+            matchup_embed = discord.Embed(
+                title="⚡ Upcoming Matchup",
+                color=discord.Color.blue(),
+            )
+            matchup_embed.add_field(name="Away", value=f"`{away_code}` — {away_mention}", inline=True)
+            matchup_embed.add_field(name="vs", value="—", inline=True)
+            matchup_embed.add_field(name="Home", value=f"`{home_code}` — {home_mention}", inline=True)
+            matchup_embed.set_footer(text=f"Game #{next_idx} · Both managers /ready to play")
+            await news_channel.send(embed=matchup_embed)
+        elif summary.get("season_complete"):
+            await news_channel.send("🏁 Regular season complete!")
+
+
+async def _batch_advance(league, guild: discord.Guild) -> None:
+    """Background task: when all managers ready but next game is CPU vs CPU, auto-sim to the next matchup."""
+    pool = await get_pool()
+    summary = await batch_sim_runner.sim_until_rival(
+        league.id, guild, league.current_season, suppress_matchup_alert=True
+    )
+
+    news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+    news_channel = guild.get_channel(news_channel_id) if news_channel_id else None
+
+    if news_channel:
+        next_matchup = summary.get("next_matchup")
+        if next_matchup:
+            ht = await team_repo.get_by_id(pool, next_matchup["home_team_id"])
+            at = await team_repo.get_by_id(pool, next_matchup["away_team_id"])
+            home_mgr = guild.get_member(ht.manager_user_id) if ht and ht.manager_user_id else None
+            away_mgr = guild.get_member(at.manager_user_id) if at and at.manager_user_id else None
+            home_code = ht.nba_team_code if ht else "???"
+            away_code = at.nba_team_code if at else "???"
+            home_mention = home_mgr.mention if home_mgr else "(no manager)"
+            away_mention = away_mgr.mention if away_mgr else "(no manager)"
+            next_idx = next_matchup.get("game_index", "?")
+
+            matchup_embed = discord.Embed(
+                title="⚡ Upcoming Matchup",
+                color=discord.Color.blue(),
+            )
+            matchup_embed.add_field(
+                name="Away", value=f"`{away_code}` — {away_mention}", inline=True
+            )
+            matchup_embed.add_field(name="vs", value="—", inline=True)
+            matchup_embed.add_field(
+                name="Home", value=f"`{home_code}` — {home_mention}", inline=True
+            )
+            matchup_embed.set_footer(
+                text=f"Game #{next_idx} · Both managers /ready to play"
+            )
+            await news_channel.send(embed=matchup_embed)
+        elif summary.get("season_complete"):
+            await news_channel.send("🏁 Regular season complete!")
 
 
 class SimCog(commands.Cog):
