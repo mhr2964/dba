@@ -13,7 +13,7 @@ from data.repositories import league_repo, team_repo, trade_repo
 
 log = get_logger(__name__)
 
-CHANNEL_ROLES = ["league-news", "box-scores", "standings", "transactions", "trade-block"]
+CHANNEL_ROLES = ["league-news", "analysis", "transactions", "injuries", "box-scores", "standings", "trade-block"]
 
 _SEEDS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "seeds", "nba_teams.json")
 
@@ -234,3 +234,46 @@ async def advance_phase(league_id: int, new_phase: str) -> None:
         Phase(new_phase).value,
         league_id,
     )
+
+
+async def ensure_channels(guild: discord.Guild, pool, league_id: int) -> list[str]:
+    """Create any missing CHANNEL_ROLES channels for an existing league.
+
+    Idempotent — skips roles already registered in league_channels, and skips
+    Discord channel creation when a channel with that name already exists in
+    the league's category.  Returns a list of role names that were created.
+    """
+    # Find the category owned by this league (first registered channel's category).
+    rows = await pool.fetch(
+        "SELECT discord_channel_id FROM league_channels WHERE league_id = $1 LIMIT 1",
+        league_id,
+    )
+    category: Optional[discord.CategoryChannel] = None
+    if rows:
+        existing_ch = guild.get_channel(rows[0]["discord_channel_id"])
+        if existing_ch and existing_ch.category:
+            category = existing_ch.category
+
+    created: list[str] = []
+    for role in CHANNEL_ROLES:
+        registered_id = await league_repo.get_channel(pool, league_id, role)
+        if registered_id and guild.get_channel(registered_id):
+            # Already registered and the Discord channel still exists — nothing to do.
+            continue
+
+        # Find or create the Discord channel.
+        discord_ch: Optional[discord.TextChannel] = None
+        if category:
+            discord_ch = discord.utils.get(category.text_channels, name=role)
+
+        if discord_ch is None:
+            if category:
+                discord_ch = await category.create_text_channel(role)
+            else:
+                discord_ch = await guild.create_text_channel(role)
+
+        await league_repo.add_channel(pool, league_id, role, discord_ch.id)
+        created.append(role)
+        log.info(f"ensure_channels: created '{role}' (id={discord_ch.id}) for league {league_id}")
+
+    return created

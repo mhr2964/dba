@@ -33,50 +33,26 @@ _INJURY_GAMES_MISSED: dict[str, tuple[int, int]] = {
 _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 
 
-# Teams whose lineups have already been rebuilt this sim session.
-# Cleared at module level; each sim_until_rival / sim_range call resets it.
-_lineup_rebuilt_this_run: set[tuple[int, int]] = set()
-
-
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
-    """Auto-populate or re-sort lineups by OVR.
-
-    Rebuilds at most once per team per sim run (tracked by _lineup_rebuilt_this_run)
-    so season-long sims don't hammer the DB with redundant rebuilds.
-
-    If any lineup slot was manually set by a manager (set_by IS NOT NULL) we
-    leave all entries untouched — the manager's choices are authoritative.
-    """
-    key = (league_id, team_id)
-    if key in _lineup_rebuilt_this_run:
-        return
-
-    manual_count = await pool.fetchval(
-        "SELECT COUNT(*) FROM lineups WHERE league_id=$1 AND team_id=$2 AND set_by IS NOT NULL",
+    """Auto-populate lineups for a team that has none, using top players by OVR."""
+    count = await pool.fetchval(
+        "SELECT COUNT(*) FROM lineups WHERE league_id=$1 AND team_id=$2",
         league_id,
         team_id,
     )
-    if manual_count > 0:
-        _lineup_rebuilt_this_run.add(key)
-        return  # Manager has customised this lineup — respect it.
+    if count > 0:
+        return
 
     players = await player_repo.get_roster(pool, league_id, team_id)
     if not players:
         return
 
-    # Clear auto entries and rebuild ordered by OVR (get_roster returns DESC OVR).
-    await pool.execute(
-        "DELETE FROM lineups WHERE league_id=$1 AND team_id=$2 AND set_by IS NULL",
-        league_id,
-        team_id,
-    )
     for slot, player in enumerate(players[:15], start=1):
         await pool.execute(
             """
             INSERT INTO lineups (league_id, team_id, is_starter, slot, player_id, set_by)
             VALUES ($1, $2, $3, $4, $5, NULL)
-            ON CONFLICT (league_id, team_id, slot) DO UPDATE
-                SET player_id = EXCLUDED.player_id, is_starter = EXCLUDED.is_starter
+            ON CONFLICT (league_id, team_id, slot) DO NOTHING
             """,
             league_id,
             team_id,
@@ -84,7 +60,6 @@ async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
             slot,
             player.id,
         )
-    _lineup_rebuilt_this_run.add(key)
 
 
 def _apply_directives(p: dict) -> dict:
@@ -328,31 +303,6 @@ async def _sim_single_game(
     season: int,
     news_channel: Optional[discord.TextChannel],
 ) -> Optional[dict]:
-    import asyncpg as _asyncpg
-    for _attempt in range(2):
-        try:
-            return await _sim_single_game_inner(pool, game, league_id, season, news_channel)
-        except (_asyncpg.ConnectionDoesNotExistError, _asyncpg.ConnectionIsClosedError, OSError) as exc:
-            if _attempt == 0:
-                log.warning(f"DB connection dropped for game {game['id']}, retrying: {exc}")
-                # Force pool to recycle the broken connection
-                try:
-                    await pool.execute("SELECT 1")
-                except Exception:
-                    pass
-                continue
-            log.error(f"DB connection retry failed for game {game['id']}: {exc}")
-            return None
-    return None
-
-
-async def _sim_single_game_inner(
-    pool,
-    game: dict,
-    league_id: int,
-    season: int,
-    news_channel: Optional[discord.TextChannel],
-) -> Optional[dict]:
     home_team = await team_repo.get_by_id(pool, game["home_team_id"])
     away_team = await team_repo.get_by_id(pool, game["away_team_id"])
     if not home_team or not away_team:
@@ -547,16 +497,6 @@ async def check_user_matchups_in_range(
     return [g for g in games if g.get("is_user_matchup") and g.get("status") == "scheduled"]
 
 
-def _batch_has_user_game(batch_results: list[dict]) -> bool:
-    """Return True if any game in the batch involved a human-managed team."""
-    for r in batch_results:
-        ht = r.get("home_team")
-        at = r.get("away_team")
-        if (ht and ht.manager_user_id) or (at and at.manager_user_id):
-            return True
-    return False
-
-
 async def sim_until_rival(
     league_id: int,
     guild: discord.Guild,
@@ -564,7 +504,6 @@ async def sim_until_rival(
     bot: Optional[discord.Client] = None,
     suppress_matchup_alert: bool = False,
 ) -> dict:
-    _lineup_rebuilt_this_run.clear()
     pool = await get_pool()
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
@@ -611,8 +550,7 @@ async def sim_until_rival(
                 batch_results,
                 f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
             )
-            if _batch_has_user_game(batch_results):
-                await box_channel.send(embed=embed)
+            await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
             batch_results = []
 
@@ -621,8 +559,7 @@ async def sim_until_rival(
             batch_results,
             f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
         )
-        if _batch_has_user_game(batch_results):
-            await box_channel.send(embed=embed)
+        await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
@@ -647,7 +584,6 @@ async def sim_range(
     bot: Optional[discord.Client] = None,
     force: bool = False,
 ) -> dict:
-    _lineup_rebuilt_this_run.clear()
     pool = await get_pool()
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
@@ -692,8 +628,7 @@ async def sim_range(
                 batch_results,
                 f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
             )
-            if _batch_has_user_game(batch_results):
-                await box_channel.send(embed=embed)
+            await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
             batch_results = []
 
@@ -702,8 +637,7 @@ async def sim_range(
             batch_results,
             f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
         )
-        if _batch_has_user_game(batch_results):
-            await box_channel.send(embed=embed)
+        await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)

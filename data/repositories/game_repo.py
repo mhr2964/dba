@@ -552,3 +552,45 @@ async def all_regular_season_games_complete(pool: asyncpg.Pool, league_id: int, 
         season,
     )
     return remaining == 0
+
+
+async def get_total_regular_season_games(pool: asyncpg.Pool, league_id: int, season: int) -> int:
+    """Return the total number of regular season games scheduled for this league/season."""
+    result = await pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM games
+        WHERE league_id = $1 AND season = $2 AND season_type = 'regular'
+        """,
+        league_id,
+        season,
+    )
+    return int(result or 0)
+
+
+async def get_deadline_game_index(pool: asyncpg.Pool, league_id: int, season: int) -> Optional[int]:
+    """
+    Return the game_index that marks the trade deadline (~67% through the season).
+    Uses the median of game_indices above the halfway point to approximate
+    the two-thirds mark without requiring a percentile aggregate extension.
+    """
+    result = await pool.fetchval(
+        """
+        SELECT MIN(game_index)
+        FROM (
+            SELECT game_index
+            FROM games
+            WHERE league_id = $1 AND season = $2 AND season_type = 'regular'
+            ORDER BY game_index
+            OFFSET (
+                SELECT (COUNT(*) * 2 / 3)::int
+                FROM games
+                WHERE league_id = $1 AND season = $2 AND season_type = 'regular'
+            )
+            LIMIT 1
+        ) sub
+        """,
+        league_id,
+        season,
+    )
+    return int(result) if result is not None else None
