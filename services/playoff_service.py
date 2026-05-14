@@ -420,59 +420,66 @@ async def sim_play_in(
         if s_7v8 is None or s_9v10 is None:
             raise ValueError(f"Play-in series rows missing for {playin_round}")
 
-        # Game 1: 7 vs 8
+        # Game 1: 7 vs 8 (skip if already resolved)
         t7 = await team_repo.get_by_id(pool, s_7v8.high_seed_team_id)
         t8 = await team_repo.get_by_id(pool, s_7v8.low_seed_team_id)
-        _, r1 = await _run_one_game(pool, league_id, season, t7, t8, s_7v8.id, "play_in")
-        s_7v8 = await series_repo.record_game_result(pool, s_7v8.id, r1["winner_team_id"])
-
-        if box_channel:
-            embed = sim_embeds.game_recap(
-                {"game_index": "Play-In G1", "scheduled_date": datetime.date.today(), "id": 0},
-                t7, t8, r1["home_score"], r1["away_score"],
-            )
-            await box_channel.send(embed=embed)
+        if s_7v8.status != "complete":
+            _, r1 = await _run_one_game(pool, league_id, season, t7, t8, s_7v8.id, "play_in")
+            s_7v8 = await series_repo.record_game_result(pool, s_7v8.id, r1["winner_team_id"])
+            if box_channel:
+                embed = sim_embeds.game_recap(
+                    {"game_index": "Play-In G1", "scheduled_date": datetime.date.today(), "id": 0},
+                    t7, t8, r1["home_score"], r1["away_score"],
+                )
+                await box_channel.send(embed=embed)
 
         seven_seed_team_id = s_7v8.winner_team_id
         loser_7v8_id = t8.id if s_7v8.winner_team_id == t7.id else t7.id
 
-        # Game 2: 9 vs 10
+        # Game 2: 9 vs 10 (skip if already resolved)
         t9 = await team_repo.get_by_id(pool, s_9v10.high_seed_team_id)
         t10 = await team_repo.get_by_id(pool, s_9v10.low_seed_team_id)
-        _, r2 = await _run_one_game(pool, league_id, season, t9, t10, s_9v10.id, "play_in")
-        s_9v10 = await series_repo.record_game_result(pool, s_9v10.id, r2["winner_team_id"])
-
-        if box_channel:
-            embed = sim_embeds.game_recap(
-                {"game_index": "Play-In G2", "scheduled_date": datetime.date.today(), "id": 0},
-                t9, t10, r2["home_score"], r2["away_score"],
-            )
-            await box_channel.send(embed=embed)
+        if s_9v10.status != "complete":
+            _, r2 = await _run_one_game(pool, league_id, season, t9, t10, s_9v10.id, "play_in")
+            s_9v10 = await series_repo.record_game_result(pool, s_9v10.id, r2["winner_team_id"])
+            if box_channel:
+                embed = sim_embeds.game_recap(
+                    {"game_index": "Play-In G2", "scheduled_date": datetime.date.today(), "id": 0},
+                    t9, t10, r2["home_score"], r2["away_score"],
+                )
+                await box_channel.send(embed=embed)
 
         winner_9v10_id = s_9v10.winner_team_id
 
-        # Game 3: loser of 7v8 vs winner of 9v10
+        # Game 3: loser of 7v8 vs winner of 9v10 (skip if already resolved)
         loser_team = await team_repo.get_by_id(pool, loser_7v8_id)
         winner_team = await team_repo.get_by_id(pool, winner_9v10_id)
 
-        # Higher original seed (loser of 7v8) gets home court
-        s_g3 = await series_repo.create_series(
-            pool, league_id, season, playin_round,
-            high_seed_id=loser_7v8_id,
-            low_seed_id=winner_9v10_id,
-            games_needed=2,
+        # Game 3: use existing series if present, otherwise create
+        existing_g3 = next(
+            (s for s in playin_series
+             if s.high_seed_team_id == loser_7v8_id and s.low_seed_team_id == winner_9v10_id),
+            None,
         )
-        _, r3 = await _run_one_game(
-            pool, league_id, season, loser_team, winner_team, s_g3.id, "play_in"
-        )
-        s_g3 = await series_repo.record_game_result(pool, s_g3.id, r3["winner_team_id"])
-
-        if box_channel:
-            embed = sim_embeds.game_recap(
-                {"game_index": "Play-In G3", "scheduled_date": datetime.date.today(), "id": 0},
-                loser_team, winner_team, r3["home_score"], r3["away_score"],
+        if existing_g3 and existing_g3.status == "complete":
+            s_g3 = existing_g3
+        else:
+            s_g3 = existing_g3 or await series_repo.create_series(
+                pool, league_id, season, playin_round,
+                high_seed_id=loser_7v8_id,
+                low_seed_id=winner_9v10_id,
+                games_needed=2,
             )
-            await box_channel.send(embed=embed)
+            _, r3 = await _run_one_game(
+                pool, league_id, season, loser_team, winner_team, s_g3.id, "play_in"
+            )
+            s_g3 = await series_repo.record_game_result(pool, s_g3.id, r3["winner_team_id"])
+            if box_channel:
+                embed = sim_embeds.game_recap(
+                    {"game_index": "Play-In G3", "scheduled_date": datetime.date.today(), "id": 0},
+                    loser_team, winner_team, r3["home_score"], r3["away_score"],
+                )
+                await box_channel.send(embed=embed)
 
         eight_seed_team_id = s_g3.winner_team_id
 
