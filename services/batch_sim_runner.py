@@ -582,16 +582,18 @@ async def sim_range(
     season: int,
     to_game_index: int,
     bot: Optional[discord.Client] = None,
+    force: bool = False,
 ) -> dict:
     pool = await get_pool()
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
 
-    user_matchups = await check_user_matchups_in_range(
-        pool, league_id, season, current_index + 1, to_game_index
-    )
-    if user_matchups:
-        return {"warning": True, "user_matchups": user_matchups, "games_simmed": 0}
+    if not force:
+        user_matchups = await check_user_matchups_in_range(
+            pool, league_id, season, current_index + 1, to_game_index
+        )
+        if user_matchups:
+            return {"warning": True, "user_matchups": user_matchups, "games_simmed": 0}
 
     games = await game_repo.get_games_in_range(pool, league_id, season, current_index + 1, to_game_index)
 

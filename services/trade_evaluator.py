@@ -315,6 +315,12 @@ async def get_ai_reasoning(trade_summary: dict, api_key: str | None) -> dict[str
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
+        # Strip markdown code fences if the model wraps its JSON output.
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and "teamA" in parsed and "teamB" in parsed:
             return {"team_a": str(parsed["teamA"]), "team_b": str(parsed["teamB"])}

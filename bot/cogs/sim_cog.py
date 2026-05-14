@@ -111,6 +111,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             league.current_season,
             to_index,
             bot=self.bot,
+            force=force,
         )
 
         if summary.get("warning"):
