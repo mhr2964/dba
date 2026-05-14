@@ -66,8 +66,15 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         else:
             embed.add_field(name="Stopped At", value="End of schedule", inline=True)
 
+        if next_game:
+            embed.add_field(
+                name="Next",
+                value="Both managers `/ready`, then `/sim rivalry` again to play your matchup.",
+                inline=False,
+            )
         await interaction.followup.send(embed=embed)
-        await game_repo.reset_ready(pool, league.id)
+        if summary["games_simmed"] > 0:
+            await game_repo.reset_ready(pool, league.id)
 
     @app_commands.command(name="games", description="Sim exactly N games from the current position")
     @app_commands.describe(
@@ -163,6 +170,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             interaction.guild,
             league.current_season,
             10000,
+            force=force,
         )
 
         if summary.get("warning"):

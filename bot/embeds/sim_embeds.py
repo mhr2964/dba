@@ -335,11 +335,19 @@ def user_matchup_warning(matchup_list: List[dict]) -> discord.Embed:
         color=discord.Color.yellow(),
     )
     lines = [
-        f"Game #{m.get('game_index', '?')} — {m.get('scheduled_date', '')} "
-        f"(home: {m.get('home_team_id')} vs away: {m.get('away_team_id')})"
+        f"Game #{m.get('game_index', '?')} — {m.get('scheduled_date', '')}"
         for m in matchup_list
     ]
-    embed.add_field(name="Affected Games", value="\n".join(lines) or "None", inline=False)
+    total = len(lines)
+    # Discord field value limit is 1024 chars — show first N lines that fit.
+    value = ""
+    for line in lines:
+        candidate = (value + line + "\n")
+        if len(candidate) > 980:
+            value += f"… and {total - value.count(chr(10))} more"
+            break
+        value += line + "\n"
+    embed.add_field(name=f"Affected Games ({total})", value=value.strip() or "None", inline=False)
     return embed
 
 
