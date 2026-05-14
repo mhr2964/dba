@@ -529,14 +529,14 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
 
     @app_commands.command(name="add", description="Add a player to your trade block")
     @app_commands.describe(
-        player_id="Player ID to list",
+        player="Player name to list (e.g. Luka Doncic)",
         asking_price="Optional asking salary (annual, in dollars)",
         note="Optional note for interested teams (max 100 chars)",
     )
     async def add(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         asking_price: Optional[int] = None,
         note: Optional[str] = None,
     ) -> None:
@@ -557,23 +557,25 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
             return
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player:
-            await interaction.followup.send(f"Player #{player_id} not found.", ephemeral=True)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        matches = [p for p in matches if p.team_id == user_team.id]
+        if not matches:
+            await interaction.followup.send(f"No player matching '{player}' found on your roster.", ephemeral=True)
             return
-        if player.team_id != user_team.id:
-            await interaction.followup.send(
-                f"Player #{player_id} is not on your roster.", ephemeral=True
-            )
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
+        found_player = matches[0]
+        player_id = found_player.id
 
         await trade_block_repo.add_to_block(
             pool, league.id, user_team.id, player_id, asking_price, note
         )
 
-        player_dict = {"full_name": player.full_name, "overall": player.overall}
+        player_dict = {"full_name": found_player.full_name, "overall": found_player.overall}
         embed = trade_embeds.trade_block_added_embed(player_dict, user_team, asking_price, note)
-        await interaction.followup.send(f"Added **{player.full_name}** to your trade block.", embed=embed)
+        await interaction.followup.send(f"Added **{found_player.full_name}** to your trade block.", embed=embed)
 
         block_channel_id = await league_repo.get_channel(pool, league.id, "trade-block")
         if block_channel_id:
@@ -582,8 +584,8 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
                 await ch.send(embed=embed)
 
     @app_commands.command(name="remove", description="Remove a player from your trade block")
-    @app_commands.describe(player_id="Player ID to remove from the block")
-    async def remove(self, interaction: discord.Interaction, player_id: int) -> None:
+    @app_commands.describe(player="Player name to remove from your trade block")
+    async def remove(self, interaction: discord.Interaction, player: str) -> None:
         await interaction.response.defer()
 
         pool = await get_pool()
@@ -597,13 +599,24 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
             return
 
-        on_block = await trade_block_repo.is_on_block(pool, league.id, player_id)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        matches = [p for p in matches if p.team_id == user_team.id]
+        if not matches:
+            await interaction.followup.send(f"No player matching '{player}' found on your roster.", ephemeral=True)
+            return
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            return
+        found_player = matches[0]
+
+        on_block = await trade_block_repo.is_on_block(pool, league.id, found_player.id)
         if not on_block:
-            await interaction.followup.send(f"Player #{player_id} is not on your trade block.", ephemeral=True)
+            await interaction.followup.send(f"**{found_player.full_name}** is not on your trade block.", ephemeral=True)
             return
 
-        await trade_block_repo.remove_from_block(pool, league.id, player_id)
-        await interaction.followup.send(f"Removed player #{player_id} from your trade block.")
+        await trade_block_repo.remove_from_block(pool, league.id, found_player.id)
+        await interaction.followup.send(f"Removed **{found_player.full_name}** from your trade block.")
 
     @app_commands.command(name="view", description="View a team's trade block")
     @app_commands.describe(team="Team code (defaults to your team)")

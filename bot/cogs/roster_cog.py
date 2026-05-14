@@ -196,14 +196,14 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
 
     @app_commands.command(name="offer", description="Offer a contract extension to a player on your roster")
     @app_commands.describe(
-        player_id="Player ID",
+        player="Player name (e.g. Luka Doncic)",
         years="New contract length in years",
         salary="Annual salary in dollars",
     )
     async def offer(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         years: int,
         salary: int,
     ) -> None:
@@ -238,15 +238,22 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             await interaction.followup.send("You are not a team manager in this league.", ephemeral=True)
             return
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player or player.team_id != team_row["id"]:
-            await interaction.followup.send("That player is not on your team.", ephemeral=True)
+        matches = await player_repo.search_by_name(pool, league_id, player)
+        matches = [p for p in matches if p.team_id == team_row["id"]]
+        if not matches:
+            await interaction.followup.send(f"No player matching '{player}' found on your roster.", ephemeral=True)
             return
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            return
+        found_player = matches[0]
+        player_id = found_player.id
 
         existing = await extension_repo.get_extension(pool, league_id, player_id)
         if existing:
             await interaction.followup.send(
-                f"**{player.full_name}** already has a pending extension. Cancel it first.",
+                f"**{found_player.full_name}** already has a pending extension. Cancel it first.",
                 ephemeral=True,
             )
             return
@@ -301,7 +308,7 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             "signed_in_season": current_season,
             "activates_after_season": activates_after,
         }
-        player_dict = {"full_name": player.full_name, "overall": player.overall}
+        player_dict = {"full_name": found_player.full_name, "overall": found_player.overall}
         embed = strategy_embeds.extension_embed(player_dict, ext_dict, team_row)
         await interaction.followup.send(embed=embed)
 
@@ -354,8 +361,8 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="cancel", description="Cancel a pending contract extension")
-    @app_commands.describe(player_id="Player ID whose extension to cancel")
-    async def cancel(self, interaction: discord.Interaction, player_id: int) -> None:
+    @app_commands.describe(player="Player name whose extension to cancel")
+    async def cancel(self, interaction: discord.Interaction, player: str) -> None:
         await interaction.response.defer()
         pool = await get_pool()
 
@@ -368,9 +375,20 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             return
         league_id: int = league_row["id"]
 
+        matches = await player_repo.search_by_name(pool, league_id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            return
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            return
+        found_player = matches[0]
+        player_id = found_player.id
+
         ext = await extension_repo.get_extension(pool, league_id, player_id)
         if not ext:
-            await interaction.followup.send("No pending extension found for that player.", ephemeral=True)
+            await interaction.followup.send(f"No pending extension found for **{found_player.full_name}**.", ephemeral=True)
             return
 
         is_commissioner = interaction.user.id == league_row["commissioner_user_id"]
@@ -387,12 +405,9 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             )
             return
 
-        player = await player_repo.get_by_id(pool, player_id)
-        player_name = player.full_name if player else f"Player {player_id}"
-
         await extension_repo.cancel_extension(pool, league_id, player_id)
         log.info(f"Extension cancelled: player={player_id} league={league_id} by user={interaction.user.id}")
-        await interaction.followup.send(f"Extension for **{player_name}** has been cancelled.")
+        await interaction.followup.send(f"Extension for **{found_player.full_name}** has been cancelled.")
 
 
 async def setup(bot: commands.Bot) -> None:
