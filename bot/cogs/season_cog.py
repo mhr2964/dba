@@ -61,15 +61,14 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         updated_league = await league_repo.get_by_guild(pool, interaction.guild_id)
         target_league = updated_league if updated_league else league
 
+        embed = season_embeds.season_started_embed(target_league, game_count, first_games)
+
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
             if channel:
-                await channel.send(
-                    f"Season {season} has begun! {game_count} games scheduled."
-                )
+                await channel.send(embed=embed)
 
-        embed = season_embeds.season_started_embed(target_league, game_count, first_games)
         await interaction.followup.send(embed=embed)
         log.info(f"Season {season} started for league {league.id} by {interaction.user.id}")
 

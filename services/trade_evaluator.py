@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import json
+import logging
+
+log = logging.getLogger(__name__)
+
 
 def _age_multiplier(age: int) -> float:
+    # Wider spread: a 22yo is ~3x more valuable than a 39yo all else equal.
+    # Prime window (24-28) gets 1.0 as the reference; younger = upside premium, older = steep decay.
+    if age <= 21:
+        return 1.5   # raw upside
     if age <= 23:
+        return 1.4
+    if age <= 26:
         return 1.2
-    if age <= 28:
-        return 1.1
+    if age <= 30:
+        return 1.0   # prime
     if age <= 33:
-        return 1.0
-    return max(0.1, 0.75 - (age - 34) * 0.05)
+        return 0.8
+    if age <= 36:
+        return 0.55
+    return max(0.1, 0.4 - (age - 37) * 0.08)  # sharp cliff past 36
 
 
 def _contract_modifier(salary: int, years_remaining: int, salary_cap: int) -> float:
@@ -254,3 +267,58 @@ def cpu_should_accept(
     if evaluation["is_fair"]:
         return True, "CPU accepts — trade is balanced and fits team development."
     return False, "CPU declined — trade doesn't offer sufficient value."
+
+
+async def get_ai_reasoning(trade_summary: dict, api_key: str | None) -> dict[str, str]:
+    """
+    Generate one-paragraph AI reasoning per trade side using Claude Haiku.
+
+    trade_summary keys:
+        team_a_name, team_b_name  — full team names
+        team_a_record             — e.g. "32-18"
+        team_b_record             — e.g. "20-30"
+        team_a_players            — list of {full_name, position, overall, age}
+        team_b_players            — list of {full_name, position, overall, age}
+        grade_a, grade_b          — letter grades already assigned
+
+    Returns {"team_a": "...", "team_b": "..."} or {} on failure.
+    Silent fallback — never raises.
+    """
+    if not api_key:
+        return {}
+
+    def _player_line(p: dict) -> str:
+        return f"{p.get('full_name', '?')} ({p.get('position', '?')}, OVR {p.get('overall', '?')}, age {p.get('age', '?')})"
+
+    players_a = ", ".join(_player_line(p) for p in trade_summary.get("team_a_players", [])) or "picks only"
+    players_b = ", ".join(_player_line(p) for p in trade_summary.get("team_b_players", [])) or "picks only"
+
+    prompt = (
+        "Grade this NBA trade. Be direct, 1-2 sentences per side. No filler.\n\n"
+        f"TRADE: {trade_summary['team_a_name']} gives {players_a} | "
+        f"{trade_summary['team_b_name']} gives {players_b}\n"
+        f"{trade_summary['team_a_name']} record: {trade_summary.get('team_a_record', '?')} | "
+        f"{trade_summary['team_b_name']} record: {trade_summary.get('team_b_record', '?')}\n"
+        f"Grades already assigned: {trade_summary['team_a_name']} = {trade_summary['grade_a']} | "
+        f"{trade_summary['team_b_name']} = {trade_summary['grade_b']}\n\n"
+        "For each team write: 1 sentence explaining why that grade fits, "
+        "1 sentence about where this team is headed.\n"
+        'Return JSON: {"teamA": "...", "teamB": "..."}'
+    )
+
+    try:
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        message = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and "teamA" in parsed and "teamB" in parsed:
+            return {"team_a": str(parsed["teamA"]), "team_b": str(parsed["teamB"])}
+    except Exception as exc:
+        log.warning(f"AI trade reasoning failed, skipping: {exc}")
+
+    return {}

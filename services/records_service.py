@@ -53,9 +53,11 @@ async def check_and_update_records(
             team_id=best_scorer["team_id"],
             game_id=game_id,
         )
+        _pid = best_scorer["player_id"]
+        _row = await pool.fetchrow("SELECT first_name, last_name FROM players WHERE id = $1", _pid)
+        _player_name = f"{_row['first_name']} {_row['last_name']}" if _row else f"Player #{_pid}"
         announcements.append(
-            f"New season record: Player {best_scorer['player_id']} "
-            f"scored {best_scorer['points']} points in a game!"
+            f"New season record: {_player_name} scored {best_scorer['points']} points in a game!"
         )
 
     current_team_score = await records_repo.get_record(pool, league_id, season, "highest_team_score")
@@ -115,9 +117,11 @@ async def check_and_update_records(
                 team_id=line["team_id"],
                 game_id=game_id,
             )
+            _pid = line["player_id"]
+            _row = await pool.fetchrow("SELECT first_name, last_name FROM players WHERE id = $1", _pid)
+            _player_name = f"{_row['first_name']} {_row['last_name']}" if _row else f"Player #{_pid}"
             announcements.append(
-                f"Triple-double alert! Player {line['player_id']} "
-                f"recorded {pts}/{reb}/{ast} (pts/reb/ast)!"
+                f"Triple-double alert! {_player_name} recorded {pts}/{reb}/{ast} (pts/reb/ast)!"
             )
 
     return announcements

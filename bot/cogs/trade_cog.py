@@ -13,7 +13,10 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
 from phase.helpers import require_commissioner, require_phase
+import os
+
 from services import league_service, trade_service
+from services.trade_evaluator import get_ai_reasoning
 
 log = get_logger(__name__)
 
@@ -377,6 +380,36 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                 proposer_team = await team_repo.get_by_id(pool, trade.proposer_team_id)
                 counterparty_team = await team_repo.get_by_id(pool, trade.counterparty_team_id)
                 if proposer_team and counterparty_team:
+                    # Query win-loss records for both teams to give AI context.
+                    rec_a = await pool.fetchrow(
+                        "SELECT wins, losses FROM standings_cache "
+                        "WHERE league_id = $1 AND team_id = $2 "
+                        "ORDER BY season DESC LIMIT 1",
+                        league.id, proposer_team.id,
+                    )
+                    rec_b = await pool.fetchrow(
+                        "SELECT wins, losses FROM standings_cache "
+                        "WHERE league_id = $1 AND team_id = $2 "
+                        "ORDER BY season DESC LIMIT 1",
+                        league.id, counterparty_team.id,
+                    )
+                    record_a = f"{rec_a['wins']}-{rec_a['losses']}" if rec_a else "?"
+                    record_b = f"{rec_b['wins']}-{rec_b['losses']}" if rec_b else "?"
+
+                    trade_summary = {
+                        "team_a_name": proposer_team.full_name,
+                        "team_b_name": counterparty_team.full_name,
+                        "team_a_record": record_a,
+                        "team_b_record": record_b,
+                        "team_a_players": grade_info.get("players_a", []),
+                        "team_b_players": grade_info.get("players_b", []),
+                        "grade_a": grade_info["grade_a"],
+                        "grade_b": grade_info["grade_b"],
+                    }
+                    ai_reasoning = await get_ai_reasoning(
+                        trade_summary, os.environ.get("ANTHROPIC_API_KEY")
+                    )
+
                     grade_embed = trade_embeds.trade_grade_embed(
                         trade=trade,
                         grade_a=grade_info["grade_a"],
@@ -384,6 +417,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                         team_a=proposer_team,
                         team_b=counterparty_team,
                         rationale=grade_info["rationale"],
+                        ai_reasoning=ai_reasoning or None,
                     )
                     await tx_channel.send(embed=grade_embed)
 

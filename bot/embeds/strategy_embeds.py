@@ -147,7 +147,7 @@ def extension_list_embed(extensions: list[dict], players_by_id: dict[int, dict])
     lines: list[str] = []
     for ext in extensions:
         player = players_by_id.get(ext["player_id"], {})
-        name = player.get("full_name") or f"Player {ext['player_id']}"
+        name = player.get("full_name") or f"Player #{ext['player_id']}"
         lines.append(
             f"**{name}** — ${ext['new_salary']:,}/yr × {ext['new_years']}yr "
             f"(activates after season {ext['activates_after_season']})"

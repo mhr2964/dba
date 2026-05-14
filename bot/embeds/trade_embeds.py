@@ -203,6 +203,7 @@ def trade_grade_embed(
     team_a: Team,
     team_b: Team,
     rationale: str,
+    ai_reasoning: dict[str, str] | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"Trade #{trade.id} — Grades",
@@ -211,6 +212,13 @@ def trade_grade_embed(
     embed.add_field(name=team_a.full_name, value=f"**{grade_a}**", inline=True)
     embed.add_field(name=team_b.full_name, value=f"**{grade_b}**", inline=True)
     embed.add_field(name="Analysis", value=rationale, inline=False)
+    if ai_reasoning:
+        reasoning_a = ai_reasoning.get("team_a", "")
+        reasoning_b = ai_reasoning.get("team_b", "")
+        if reasoning_a:
+            embed.add_field(name=f"{team_a.nba_team_code} Analysis", value=reasoning_a, inline=False)
+        if reasoning_b:
+            embed.add_field(name=f"{team_b.nba_team_code} Analysis", value=reasoning_b, inline=False)
     return embed
 
 

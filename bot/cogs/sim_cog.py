@@ -8,6 +8,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import sim_embeds
+from bot.embeds.sim_embeds import box_score_summary_embed, box_score_team_embed
+from bot.ui.box_score_views import BoxScoreView
 from core.errors import DBAError, PermissionError
 from core.logging import get_logger
 from data.db import get_pool
@@ -242,10 +244,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
             if channel:
-                await channel.send(
-                    "🚨 **Trade deadline is open!** Managers can now propose and execute trades. "
-                    "The commissioner will use `/league advance REGULAR_SEASON_POSTDEADLINE` to close the window."
-                )
+                await channel.send(embed=sim_embeds.trade_deadline_open_embed())
 
         embed = discord.Embed(
             title="Trade Deadline Open",
@@ -295,12 +294,7 @@ async def ready_command(interaction: discord.Interaction) -> None:
             # User vs user game — fire auto-sim in background, no commissioner needed
             asyncio.create_task(_auto_sim_and_advance(league, interaction.guild, pool))
         else:
-            # CPU vs CPU next — announce and batch-sim to the next rivalry
-            news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-            if news_channel_id:
-                channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
-                    await channel.send("✅ All managers ready. Processing...")
+            # CPU vs CPU next — batch-sim to the next rivalry
             asyncio.create_task(_batch_advance(league, interaction.guild))
 
 
@@ -327,26 +321,8 @@ async def force_ready_command(interaction: discord.Interaction) -> None:
         await game_repo.set_ready(pool, league.id, team.id, team.manager_user_id, True)
 
     await interaction.response.send_message(
-        f"Force-readied {len(human_teams)} manager(s).", ephemeral=True
+        f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.", ephemeral=True
     )
-
-    # Same auto-trigger logic as /ready — check what the next game is and fire accordingly
-    current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
-    next_games = await pool.fetch(
-        "SELECT * FROM games WHERE league_id=$1 AND season=$2 AND game_index=$3",
-        league.id, league.current_season, current_index + 1,
-    )
-    next_game = dict(next_games[0]) if next_games else None
-
-    if next_game and next_game.get("is_user_matchup") and next_game.get("status") == "scheduled":
-        asyncio.create_task(_auto_sim_and_advance(league, interaction.guild, pool))
-    else:
-        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-        if news_channel_id:
-            channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
-                await channel.send("✅ All managers force-readied. Processing...")
-        asyncio.create_task(_batch_advance(league, interaction.guild))
 
 
 @app_commands.command(name="standings", description="Show current standings")
@@ -435,6 +411,58 @@ async def schedule_command(
     await interaction.response.send_message(embed=embed)
 
 
+@app_commands.command(name="box-score", description="Show full box score for a simmed game")
+@app_commands.describe(game="Game number from /schedule or recap footers")
+async def box_score_command(
+    interaction: discord.Interaction,
+    game: int,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    pool = await get_pool()
+    league = await get_league_or_error(interaction.guild_id)
+
+    game_row = await game_repo.get_game_by_index(pool, league.id, league.current_season, game)
+    if not game_row or game_row.get("status") != "simmed":
+        await interaction.followup.send(
+            f"Game #{game} hasn't been simmed yet.", ephemeral=True
+        )
+        return
+
+    box_rows = await game_repo.get_box_scores_for_game(pool, game_row["id"])
+    if not box_rows:
+        await interaction.followup.send(
+            f"No box score data found for game #{game}.", ephemeral=True
+        )
+        return
+
+    away_team_id = game_row["away_team_id"]
+    home_team_id = game_row["home_team_id"]
+    away_code    = game_row["away_code"]
+    home_code    = game_row["home_code"]
+
+    # Attach team_code to each row for top-performers labeling
+    for row in box_rows:
+        row["team_code"] = away_code if row["team_id"] == away_team_id else home_code
+
+    away_box = [r for r in box_rows if r["team_id"] == away_team_id]
+    home_box = [r for r in box_rows if r["team_id"] == home_team_id]
+
+    summary_embed = box_score_summary_embed(game_row, away_box, home_box)
+    away_embed    = box_score_team_embed(away_code, game_row["away_full_name"], away_box, game_row)
+    home_embed    = box_score_team_embed(home_code, game_row["home_full_name"], home_box, game_row)
+
+    view = BoxScoreView(
+        summary_embed=summary_embed,
+        away_embed=away_embed,
+        home_embed=home_embed,
+        away_code=away_code,
+        home_code=home_code,
+    )
+
+    await interaction.followup.send(embed=summary_embed, view=view)
+
+
 async def _auto_sim_and_advance(league, guild: discord.Guild, _pool) -> None:
     """
     Background task: sim the current user vs user matchup, post quarter-by-quarter
@@ -455,7 +483,7 @@ async def _auto_sim_and_advance(league, guild: discord.Guild, _pool) -> None:
 
     if result is None:
         if news_channel:
-            await news_channel.send("⚠️ Failed to sim the user matchup. Please contact the commissioner.")
+            await news_channel.send(embed=sim_embeds.user_matchup_sim_failed_embed())
         return
 
     home_team = result["home_team"]
@@ -556,8 +584,6 @@ async def _auto_sim_and_advance(league, guild: discord.Guild, _pool) -> None:
             matchup_embed.add_field(name="Home", value=f"`{home_code}` — {home_mention}", inline=True)
             matchup_embed.set_footer(text=f"Game #{next_idx} · Both managers /ready to play")
             await news_channel.send(embed=matchup_embed)
-        elif summary.get("season_complete"):
-            await news_channel.send("🏁 Regular season complete!")
 
 
 async def _batch_advance(league, guild: discord.Guild) -> None:
@@ -598,8 +624,6 @@ async def _batch_advance(league, guild: discord.Guild) -> None:
                 text=f"Game #{next_idx} · Both managers /ready to play"
             )
             await news_channel.send(embed=matchup_embed)
-        elif summary.get("season_complete"):
-            await news_channel.send("🏁 Regular season complete!")
 
 
 class SimCog(commands.Cog):
@@ -610,6 +634,7 @@ class SimCog(commands.Cog):
         self.bot.tree.add_command(force_ready_command)
         self.bot.tree.add_command(standings_command)
         self.bot.tree.add_command(schedule_command)
+        self.bot.tree.add_command(box_score_command)
 
 
 async def setup(bot: commands.Bot) -> None:

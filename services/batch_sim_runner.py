@@ -202,7 +202,7 @@ async def _persist_injuries(
                 )
                 team_code = team_code_row["nba_team_code"] if team_code_row else "???"
             else:
-                player_name = f"Player {inj['player_id']}"
+                player_name = f"Player #{inj['player_id']}"
                 team_code = "???"
 
             human_severity = _SEVERITY_LABELS.get(severity, severity)
@@ -291,7 +291,7 @@ async def _persist_game_result(
     )
     for announcement in record_announcements:
         if news_channel:
-            await news_channel.send(f"**Season Record**: {announcement}")
+            await news_channel.send(embed=sim_embeds.season_record_embed(announcement))
 
     return standings_update
 
@@ -342,6 +342,15 @@ async def _sim_single_game(
         home_minutes=home_minutes,
         away_minutes=away_minutes,
     )
+
+    # Enrich box lines with player names from already-loaded lineup dicts.
+    _name_by_id = {
+        p["id"]: f"{p['first_name']} {p['last_name']}"
+        for p in home_players + away_players
+        if "first_name" in p and "last_name" in p
+    }
+    for line in result.get("home_box", []) + result.get("away_box", []):
+        line["player_name"] = _name_by_id.get(line.get("player_id"), "")
 
     await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel)
     return {
@@ -449,10 +458,10 @@ async def _maybe_post_storylines(
             "away_box": r.get("away_box", []),
         })
 
-    storylines = storyline_service.generate_storylines(game_dicts, teams_by_id)
-    if storylines:
-        bullets = "\n".join(f"- {s}" for s in storylines)
-        await news_channel.send(f"**Sim Recap**\n{bullets}")
+    storylines = await storyline_service.generate_storylines_ai(game_dicts, teams_by_id)
+    recap = sim_embeds.sim_recap_embed(storylines)
+    if recap:
+        await news_channel.send(embed=recap)
 
 
 async def _maybe_advance_season_complete(
@@ -473,10 +482,7 @@ async def _maybe_advance_season_complete(
     log.info(f"League {league_id} season {season}: auto-advanced to REGULAR_SEASON_COMPLETE")
 
     if news_channel:
-        await news_channel.send(
-            "Regular season complete! Final standings are set. "
-            "Commissioner: use `/playoffs seed` to begin the postseason."
-        )
+        await news_channel.send(embed=sim_embeds.regular_season_complete_embed())
     return True
 
 

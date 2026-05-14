@@ -101,14 +101,12 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
         if outcome["series_over"]:
             winner = teams_by_id.get(outcome["winner_team_id"])
+            series_em.title = f"Series Over — {winner.full_name if winner else 'Winner'} Advance"
             news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
                 if channel:
-                    await channel.send(
-                        f"**Series over!** {winner.full_name if winner else 'Winner'} advance!",
-                        embed=series_em,
-                    )
+                    await channel.send(embed=series_em)
 
             next_round = await playoff_service.advance_playoff_round(league.id, league.current_season)
 
@@ -123,13 +121,11 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             elif next_round != "pending":
                 all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
                 bracket_em = playoff_embeds.bracket_embed(all_series, teams_by_id)
+                bracket_em.title = f"Round {next_round} — Updated Bracket"
                 if news_channel_id:
                     channel = interaction.guild.get_channel(news_channel_id)
                     if channel:
-                        await channel.send(
-                            f"Round **{next_round}** is set! Here is the updated bracket:",
-                            embed=bracket_em,
-                        )
+                        await channel.send(embed=bracket_em)
                 await interaction.followup.send(embed=bracket_em)
 
     @app_commands.command(name="sim-playin", description="Sim the entire play-in tournament")

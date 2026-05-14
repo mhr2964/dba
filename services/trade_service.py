@@ -273,9 +273,18 @@ async def approve(
                         age -= 1
                 else:
                     age = 28
-                player_d = {"player": {"overall": p_row["overall"], "age": age},
-                            "contract": {"salary": c_row["salary"] if c_row else 0,
-                                         "years_remaining": c_row["years_remaining"] if c_row else 1}}
+                player_d = {
+                    "player": {
+                        "full_name": f"{p_row['first_name']} {p_row['last_name']}",
+                        "position": p_row["position"],
+                        "overall": p_row["overall"],
+                        "age": age,
+                    },
+                    "contract": {
+                        "salary": c_row["salary"] if c_row else 0,
+                        "years_remaining": c_row["years_remaining"] if c_row else 1,
+                    },
+                }
                 if asset.from_team_id == trade.proposer_team_id:
                     proposer_player_dicts.append(player_d)
                 else:
@@ -305,6 +314,10 @@ async def approve(
         "score_a": evaluation["score_a"],
         "score_b": evaluation["score_b"],
         "rationale": evaluation["rationale"],
+        # Enriched player lists for AI reasoning assembly in the cog.
+        # Each entry: {full_name, position, overall, age}
+        "players_a": [d["player"] for d in proposer_player_dicts],
+        "players_b": [d["player"] for d in counterparty_player_dicts],
     }
 
     async with pool.acquire() as conn:

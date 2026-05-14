@@ -469,6 +469,79 @@ async def reset_ready(pool: asyncpg.Pool, league_id: int) -> None:
     )
 
 
+async def get_game_by_index(
+    pool: asyncpg.Pool,
+    league_id: int,
+    season: int,
+    game_index: int,
+) -> Optional[dict]:
+    """Return game row enriched with home/away team codes and full names."""
+    row = await pool.fetchrow(
+        """
+        SELECT
+            g.id,
+            g.game_index,
+            g.scheduled_date,
+            g.status,
+            g.home_score,
+            g.away_score,
+            g.home_team_id,
+            g.away_team_id,
+            ht.nba_team_code  AS home_code,
+            ht.city || ' ' || ht.name AS home_full_name,
+            at.nba_team_code  AS away_code,
+            at.city || ' ' || at.name AS away_full_name
+        FROM games g
+        JOIN teams ht ON ht.id = g.home_team_id
+        JOIN teams at ON at.id = g.away_team_id
+        WHERE g.league_id = $1
+          AND g.season = $2
+          AND g.game_index = $3
+        """,
+        league_id,
+        season,
+        game_index,
+    )
+    return dict(row) if row else None
+
+
+async def get_box_scores_for_game(
+    pool: asyncpg.Pool,
+    game_id: int,
+) -> list[dict]:
+    """
+    Return all player box score rows for a game (minutes > 0).
+    Ordered starters first (by lineup slot), then bench by points DESC.
+    Each row includes first_name, last_name, started, slot (nullable),
+    and all stat columns from game_box_scores.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT
+            b.*,
+            p.first_name,
+            p.last_name,
+            l.slot
+        FROM game_box_scores b
+        JOIN players p ON p.id = b.player_id
+        LEFT JOIN lineups l
+            ON l.player_id = b.player_id
+           AND l.team_id   = b.team_id
+           AND l.league_id = (
+               SELECT league_id FROM games WHERE id = $1
+           )
+        WHERE b.game_id = $1
+          AND b.minutes > 0
+        ORDER BY
+            b.started DESC,
+            COALESCE(l.slot, 999) ASC,
+            b.points DESC
+        """,
+        game_id,
+    )
+    return [dict(r) for r in rows]
+
+
 async def all_regular_season_games_complete(pool: asyncpg.Pool, league_id: int, season: int) -> bool:
     """Returns True if every regular season game is simmed (none remain scheduled)."""
     remaining = await pool.fetchval(

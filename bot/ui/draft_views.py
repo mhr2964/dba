@@ -118,10 +118,8 @@ class _ProspectSelect(discord.ui.Select):
             await interaction.followup.send(exc.message, ephemeral=True)
             return
 
-        # Disable this view so the select can't be reused.
-        for child in self.view.children:
-            child.disabled = True
-        await interaction.message.edit(view=self.view)
+        # Remove all components — Discord requires options even on disabled selects.
+        await interaction.message.edit(view=None)
 
         # Announce the pick and advance to next.
         from bot.embeds.draft_embeds import pick_announcement
