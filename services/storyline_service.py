@@ -224,7 +224,7 @@ async def generate_storylines_ai(
         "You are a terse NBA beat writer. Write one punchy headline per game below. "
         "Each headline must be under 90 characters, read like a real sports brief, and vary in phrasing. "
         "No filler words. No player full names — use last name only. "
-        "Return ONLY a JSON array of strings, no other text.\n\n"
+        "Return ONLY a valid JSON array of strings, no markdown, no code fences.\n\n"
         + "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
     )
 
@@ -237,10 +237,17 @@ async def generate_storylines_ai(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
+        # Strip markdown code fences if the model wraps its JSON output.
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
         lines = json.loads(raw)
         if isinstance(lines, list) and all(isinstance(l, str) for l in lines):
             return [l for l in lines if l][:max_storylines]
     except Exception as exc:
-        log.warning(f"AI storylines failed, falling back to templates: {exc}")
+        raw_preview = locals().get("raw", "<no response>")[:120]
+        log.warning(f"AI storylines failed, falling back to templates: {exc} | response preview: {raw_preview!r}")
 
     return generate_storylines(game_results, teams_by_id, max_storylines)
