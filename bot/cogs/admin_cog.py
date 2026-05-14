@@ -52,14 +52,14 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
     @app_commands.command(name="edit-player", description="Commissioner: edit a player attribute")
     @app_commands.describe(
-        player_id="Player ID to edit",
+        player="Player name to edit (e.g. LeBron James)",
         field="Attribute to change (ovr, speed, shooting_2pt, shooting_3pt, shooting_mid, finishing, playmaking, defense, rebounding, iq, position)",
         value="New value (integer for stats, string for position)",
     )
     async def edit_player(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         field: str,
         value: str,
     ) -> None:
@@ -76,18 +76,19 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             return
 
         pool = await get_pool()
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player:
-            await interaction.followup.send(f"Player #{player_id} not found.", ephemeral=True)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
             return
-        if player.league_id != league.id:
-            await interaction.followup.send(
-                f"Player #{player_id} does not belong to this league.", ephemeral=True
-            )
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
+        found_player = matches[0]
+        player_id = found_player.id
 
         column = _FIELD_TO_COLUMN[field]
-        old_value = getattr(player, column if column != "overall" else "overall", None)
+        old_value = getattr(found_player, column if column != "overall" else "overall", None)
 
         if field in _STRING_FIELDS:
             typed_value: str | int = value
@@ -117,7 +118,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         )
 
         await interaction.followup.send(
-            f"Updated **{player.full_name}** `{field}`: {old_value} → {typed_value}",
+            f"Updated **{found_player.full_name}** `{field}`: {old_value} → {typed_value}",
             ephemeral=True,
         )
 
@@ -314,7 +315,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Commissioner: emergency sign a free agent directly to a team",
     )
     @app_commands.describe(
-        player_id="Player ID to sign",
+        player="Player name to sign (e.g. LeBron James)",
         team_code="Team code (e.g. LAL)",
         salary="Annual salary in dollars",
         years="Contract length in years",
@@ -322,7 +323,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
     async def force_fa_sign(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         team_code: str,
         salary: int,
         years: int,
@@ -334,18 +335,20 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
         pool = await get_pool()
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player:
-            await interaction.followup.send(f"Player #{player_id} not found.", ephemeral=True)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
             return
-        if player.league_id != league.id:
-            await interaction.followup.send(
-                f"Player #{player_id} does not belong to this league.", ephemeral=True
-            )
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
-        if player.roster_status not in ("free_agent", "waived"):
+        found_player = matches[0]
+        player_id = found_player.id
+
+        if found_player.roster_status not in ("free_agent", "waived"):
             await interaction.followup.send(
-                f"**{player.full_name}** is not a free agent or waived (status: {player.roster_status}).",
+                f"**{found_player.full_name}** is not a free agent or waived (status: {found_player.roster_status}).",
                 ephemeral=True,
             )
             return
@@ -396,11 +399,11 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             user_id=interaction.user.id,
             action_type="force_fa_sign",
             target_ref=str(player_id),
-            detail=f"Signed {player.full_name} to {team.full_name} — ${salary:,}/yr x {years}yr.",
+            detail=f"Signed {found_player.full_name} to {team.full_name} — ${salary:,}/yr x {years}yr.",
         )
 
         await interaction.followup.send(
-            f"**{player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
+            f"**{found_player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
             ephemeral=True,
         )
 
