@@ -222,7 +222,21 @@ def game_recap(
 
 
 def batch_recap(games_results: List[dict], title: str) -> discord.Embed:
-    embed = discord.Embed(title=title, color=discord.Color.blurple())
+    # Build date range from actual game data; title (e.g. "Games 1-10") becomes a subtitle field.
+    dates = [r["game"].get("scheduled_date") for r in games_results if r["game"].get("scheduled_date")]
+    if dates:
+        lo, hi = min(dates), max(dates)
+        if lo == hi:
+            date_str = f"{lo.strftime('%b')} {lo.day}"
+        else:
+            date_str = f"{lo.strftime('%b')} {lo.day} – {hi.strftime('%b')} {hi.day}"
+        embed_title = date_str
+    else:
+        embed_title = title  # fallback when no date data
+
+    embed = discord.Embed(title=embed_title, color=discord.Color.blurple())
+    embed.add_field(name="Games", value=title, inline=True)
+
     lines = []
     for r in games_results:
         game = r["game"]

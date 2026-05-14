@@ -390,7 +390,7 @@ def sim_game(
     away_def = away_team.get("defense_rating") or 75
 
     def _ppp(off: float, opp_def: float) -> float:
-        base = 0.95 + (off - 60) / (95 - 60) * 0.20
+        base = 1.05 + (off - 60) / (95 - 60) * 0.20
         base *= 1 - (opp_def - 60) / (95 - 60) * 0.10
         base *= rng.gauss(1.0, 0.05)
         return base

@@ -547,6 +547,16 @@ async def check_user_matchups_in_range(
     return [g for g in games if g.get("is_user_matchup") and g.get("status") == "scheduled"]
 
 
+def _batch_has_user_game(batch_results: list[dict]) -> bool:
+    """Return True if any game in the batch involved a human-managed team."""
+    for r in batch_results:
+        ht = r.get("home_team")
+        at = r.get("away_team")
+        if (ht and ht.manager_user_id) or (at and at.manager_user_id):
+            return True
+    return False
+
+
 async def sim_until_rival(
     league_id: int,
     guild: discord.Guild,
@@ -601,7 +611,8 @@ async def sim_until_rival(
                 batch_results,
                 f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
             )
-            await box_channel.send(embed=embed)
+            if _batch_has_user_game(batch_results):
+                await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
             batch_results = []
 
@@ -610,7 +621,8 @@ async def sim_until_rival(
             batch_results,
             f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
         )
-        await box_channel.send(embed=embed)
+        if _batch_has_user_game(batch_results):
+            await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
@@ -680,7 +692,8 @@ async def sim_range(
                 batch_results,
                 f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
             )
-            await box_channel.send(embed=embed)
+            if _batch_has_user_game(batch_results):
+                await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
             batch_results = []
 
@@ -689,7 +702,8 @@ async def sim_range(
             batch_results,
             f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
         )
-        await box_channel.send(embed=embed)
+        if _batch_has_user_game(batch_results):
+            await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)

@@ -143,7 +143,7 @@ async def get_team_minutes_plan(
     if auto_players:
         # Use (OVR - 60) weighting so stars get ~35+ min and deep bench gets ~5.
         # Linear OVR produced too-flat distributions. Floor at 0.5 so no one gets zero.
-        weights = [max(0.5, float(ovr_by_id.get(pid, 50)) - 60.0) for pid in auto_players]
+        weights = [max(0.5, ((float(ovr_by_id.get(pid, 50)) - 50.0) / 10.0) ** 2) for pid in auto_players]
         total_w = sum(weights) or 1.0
         for pid, w in zip(auto_players, weights):
             plan[pid] = remaining * w / total_w
