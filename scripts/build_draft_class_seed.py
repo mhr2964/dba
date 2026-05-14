@@ -154,6 +154,7 @@ def _ovr_from_pick_tier(overall_pick: int) -> int:
 
 
 def _potential_from_pick(ovr: int, overall_pick: int) -> int:
+    """Pick-tier heuristic — used only for projected seeds and as a fallback."""
     if overall_pick <= 5:
         return _clamp(ovr + random.randint(10, 15), 55, 99)
     if overall_pick <= 14:
@@ -161,6 +162,33 @@ def _potential_from_pick(ovr: int, overall_pick: int) -> int:
     if overall_pick <= 30:
         return _clamp(ovr + random.randint(3, 8), 55, 99)
     return _clamp(ovr + random.randint(0, 5), 55, 99)
+
+
+def _potential_from_career_peak(
+    person_id: int,
+    draft_year: int,
+    fallback_ovr: int,
+    fallback_pick: int,
+) -> int:
+    """Compute potential from career peak OVR across stats_ratings files.
+
+    Scans stats_ratings/{year}.json for year in [draft_year, 2024].
+    Uses a fixed RNG seed per player so re-runs produce the same jitter.
+    Falls back to pick-tier heuristic when no data is found.
+    """
+    key = str(person_id)
+    found: list[int] = []
+    for year in range(draft_year, 2025):
+        ratings = _load_stats_ratings(year)
+        if key in ratings:
+            found.append(ratings[key])
+
+    if not found:
+        return _potential_from_pick(fallback_ovr, fallback_pick)
+
+    peak = max(found)
+    rng = random.Random(person_id)
+    return min(99, peak + rng.randint(2, 5))
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +367,16 @@ def build_historical(year: int, dry_run: bool) -> list[dict]:
             ovr = _ovr_from_pick_tier(overall_pick)
             ovr_source = "pick_tier"
 
-        potential = _potential_from_pick(ovr, overall_pick)
+        # Potential: derive from career peak OVR across stats_ratings files;
+        # falls back to pick-tier heuristic if no post-draft data exists.
+        potential = _potential_from_career_peak(person_id, year, ovr, overall_pick)
         attrs = _generate_attributes(ovr, position)
         hidden = _hidden_fields(ovr)
 
         # Fetch birth date — rate-limited, cached.
         # ASCII-encode name for console safety on Windows (non-ASCII chars become ?).
         display_name = player_name.encode("ascii", "replace").decode("ascii")
-        print(f"  [{overall_pick:2d}] {display_name} (id={person_id}) OVR={ovr} [{ovr_source}] -- fetching birth date ...", end=" ", flush=True)
+        print(f"  [{overall_pick:2d}] {display_name} (id={person_id}) OVR={ovr} [{ovr_source}] POT={potential} -- fetching birth date ...", end=" ", flush=True)
         birth_date = _fetch_birth_date(person_id)
         print(birth_date or "N/A")
         time.sleep(_API_DELAY)
