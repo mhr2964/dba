@@ -34,25 +34,39 @@ _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 
 
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
-    """Auto-populate lineups for a team that has none, using top players by OVR."""
-    count = await pool.fetchval(
-        "SELECT COUNT(*) FROM lineups WHERE league_id=$1 AND team_id=$2",
+    """Auto-populate or re-sort lineups by OVR.
+
+    If any lineup slot was manually set by a manager (set_by IS NOT NULL) we
+    leave all entries untouched — the manager's choices are authoritative.
+    Otherwise we always rebuild from the current OVR ordering so that OVR
+    changes (roster import, trade, reseed) are reflected automatically without
+    requiring a manual lineup reset.
+    """
+    manual_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM lineups WHERE league_id=$1 AND team_id=$2 AND set_by IS NOT NULL",
         league_id,
         team_id,
     )
-    if count > 0:
-        return
+    if manual_count > 0:
+        return  # Manager has customised this lineup — respect it.
 
     players = await player_repo.get_roster(pool, league_id, team_id)
     if not players:
         return
 
+    # Clear auto entries and rebuild ordered by OVR (get_roster already returns DESC OVR).
+    await pool.execute(
+        "DELETE FROM lineups WHERE league_id=$1 AND team_id=$2 AND set_by IS NULL",
+        league_id,
+        team_id,
+    )
     for slot, player in enumerate(players[:15], start=1):
         await pool.execute(
             """
             INSERT INTO lineups (league_id, team_id, is_starter, slot, player_id, set_by)
             VALUES ($1, $2, $3, $4, $5, NULL)
-            ON CONFLICT (league_id, team_id, slot) DO NOTHING
+            ON CONFLICT (league_id, team_id, slot) DO UPDATE
+                SET player_id = EXCLUDED.player_id, is_starter = EXCLUDED.is_starter
             """,
             league_id,
             team_id,
