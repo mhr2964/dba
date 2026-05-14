@@ -532,6 +532,29 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             )
 
     @app_commands.command(
+        name="ensure-channels",
+        description="Commissioner: create any missing DBA channels for this league",
+    )
+    async def ensure_channels(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        pool = await get_pool()
+        created = await league_service.ensure_channels(interaction.guild, pool, league.id)
+
+        if created:
+            await interaction.followup.send(
+                f"Created {len(created)} missing channel(s): {', '.join(f'#{c}' for c in created)}",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "All expected channels already exist — nothing to do.", ephemeral=True
+            )
+
+    @app_commands.command(
         name="purge-server",
         description="Remove all DBA categories, channels, and roles left over after a DB reset",
     )
