@@ -24,8 +24,7 @@ ALLOWED: dict[str, set[Phase]] = {
     "awards_vote":         {Phase.OFFSEASON_AWARDS_OPEN},
     "awards_close":        {Phase.OFFSEASON_AWARDS_OPEN},
     "waiver_claim":        {Phase.WAIVERS_OPEN, Phase.FA_CLOSED},
-    "league_start":        {Phase.SETUP, Phase.PRESEASON_READY},
-    "season_generate":     {Phase.PRESEASON_READY},
+    "season_start":        {Phase.SETUP, Phase.PRESEASON_READY},
     "progression_run":     {Phase.PROGRESSION_PENDING},
 }
 

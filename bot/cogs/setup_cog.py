@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -15,13 +17,35 @@ from phase.helpers import get_league_or_error, require_commissioner
 from phase.transitions import ALLOWED
 from services import league_service
 
+_DATA_ROOT = Path(__file__).parent.parent.parent / "data"
+
+
+def _supported_seasons() -> list[int]:
+    """Return seasons that have either a pre-built ratings file or full BDL cache."""
+    seasons = []
+    for year in range(2024, 2011, -1):
+        ratings_file = _DATA_ROOT / "stats_ratings" / f"{year}.json"
+        if ratings_file.exists():
+            seasons.append(year)
+            continue
+        # Accept if BDL cache covers the 3-season peak window.
+        cache_ok = all(
+            (_DATA_ROOT / "bdl_cache" / f"season_{s}_{t}.json").exists()
+            for s in [year, year - 1, year - 2]
+            for t in ("base", "usage")
+        )
+        if cache_ok:
+            seasons.append(year)
+    return seasons
+
+
 log = get_logger(__name__)
 
 
 class LeagueGroup(app_commands.Group, name="league", description="League management commands"):
 
     @app_commands.command(name="create", description="Create a new DBA league for this server")
-    @app_commands.describe(name="League name", season="Starting season year (e.g. 2025)")
+    @app_commands.describe(name="League name", season="Starting season year")
     @app_commands.default_permissions(administrator=True)
     async def create(
         self,
@@ -30,6 +54,15 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
         season: int,
     ) -> None:
         await interaction.response.defer()
+
+        supported = _supported_seasons()
+        if season not in supported:
+            valid_range = f"{min(supported)}-{max(supported)}" if supported else "none available"
+            raise DBAError(
+                f"Season {season} is not supported. "
+                f"Available seasons: {valid_range}. "
+                "Run `fetch_bdl_cache.py` and `build_stats_ratings.py` to add more seasons."
+            )
 
         league = await league_service.create(
             guild=interaction.guild,
@@ -50,6 +83,18 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
                     f"🏀 **{league.name}** is live! Season {league.start_season_year} begins. "
                     f"Use `/team assign` to claim your franchise."
                 )
+
+    @create.autocomplete("season")
+    async def create_season_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[int]]:
+        return [
+            app_commands.Choice(name=f"{y}-{str(y + 1)[2:]} Season", value=y)
+            for y in _supported_seasons()
+            if not current or str(y).startswith(current)
+        ][:25]
 
     @app_commands.command(name="info", description="Show current league info")
     async def info(self, interaction: discord.Interaction) -> None:
@@ -89,17 +134,24 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             if any(p.value == league.current_phase for p in phases)
         ]
 
+        from phase.states import Phase as _Phase
+        READY_PHASES = {
+            _Phase.REGULAR_SEASON_ACTIVE, _Phase.REGULAR_SEASON_POSTDEADLINE,
+            _Phase.PLAYIN_ACTIVE, _Phase.PLAYOFFS_R1, _Phase.PLAYOFFS_R2,
+            _Phase.CONFERENCE_FINALS, _Phase.NBA_FINALS,
+        }
         blockers: list[str] = []
-        all_ready, unready_ids = await all_humans_ready(pool, league.id)
-        if not all_ready:
-            rows = await pool.fetch(
-                "SELECT manager_user_id FROM teams WHERE id = ANY($1::int[])",
-                unready_ids,
-            )
-            mentions = ", ".join(
-                f"<@{r['manager_user_id']}>" for r in rows if r["manager_user_id"]
-            )
-            blockers.append(f"{len(unready_ids)} manager(s) not ready: {mentions}")
+        if _Phase(league.current_phase) in READY_PHASES:
+            all_ready, unready_ids = await all_humans_ready(pool, league.id)
+            if not all_ready:
+                rows = await pool.fetch(
+                    "SELECT manager_user_id FROM teams WHERE id = ANY($1::int[])",
+                    unready_ids,
+                )
+                mentions = ", ".join(
+                    f"<@{r['manager_user_id']}>" for r in rows if r["manager_user_id"]
+                )
+                blockers.append(f"{len(unready_ids)} manager(s) not ready: {mentions}")
 
         clean, pending_count = await no_pending_trades(pool, league.id)
         if not clean:
@@ -250,18 +302,21 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             except discord.HTTPException:
                 pass
 
-        # Delete Discord roles (commissioner + 30 team roles)
+        # Delete Discord roles (commissioner + 30 team roles).
+        # Fetch live from Discord to avoid stale cache misses.
         role_rows = await pool.fetch(
             "SELECT discord_role_id FROM league_roles WHERE league_id = $1",
             league.id,
         )
-        for row in role_rows:
-            role = interaction.guild.get_role(row["discord_role_id"])
-            if role:
-                try:
-                    await role.delete(reason="DBA league deleted")
-                except discord.HTTPException:
-                    pass
+        if role_rows:
+            live_roles = {r.id: r for r in await interaction.guild.fetch_roles()}
+            for row in role_rows:
+                role = live_roles.get(row["discord_role_id"])
+                if role:
+                    try:
+                        await role.delete(reason="DBA league deleted")
+                    except discord.HTTPException:
+                        pass
 
         # Single DELETE cascades to all child tables
         await pool.execute("DELETE FROM leagues WHERE id = $1", league.id)

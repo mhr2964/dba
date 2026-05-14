@@ -101,8 +101,9 @@ def minutes_embed(team: object, players: list[dict], minutes_plan: dict[int, flo
         planned = minutes_plan.get(pid, 0.0)
         target_label = str(target) if target > 0 else "Auto"
         target_total += target
+        name = p.get("full_name") or f"{p.get('first_name', '?')} {p.get('last_name', '')}".strip()
         rows.append(
-            f"`{p.get('position', '??'):2}` **{p.get('full_name', p.get('first_name', '?'))} {p.get('last_name', '')}** "
+            f"`{p.get('position', '??'):2}` **{name}** "
             f"OVR {p.get('overall', '?')} — Target: {target_label} | Planned: {planned:.1f}"
         )
 

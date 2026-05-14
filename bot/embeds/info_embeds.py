@@ -140,7 +140,8 @@ def injury_report_embed(
         player_name = player["full_name"] if player else f"Player #{row['player_id']}"
         team_code = team["code"] if team else "UNK"
         games_missed = row.get("games_missed", 0)
-        line = f"**{player_name}** ({team_code}) — {games_missed} gms missed"
+        gms_label = "Season" if games_missed >= 82 else f"{games_missed} gms"
+        line = f"**{player_name}** ({team_code}) — {gms_label} missed"
         severity = row.get("severity", "Unknown")
         by_severity.setdefault(severity, []).append(line)
 

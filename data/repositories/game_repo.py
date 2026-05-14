@@ -421,9 +421,11 @@ async def update_standings(pool: asyncpg.Pool, league_id: int, season: int, game
 async def get_standings(pool: asyncpg.Pool, league_id: int, season: int) -> List[dict]:
     rows = await pool.fetch(
         """
-        SELECT * FROM standings_cache
-        WHERE league_id = $1 AND season = $2
-        ORDER BY conference ASC, wins DESC, losses ASC
+        SELECT sc.*, t.nba_team_code, t.city, t.name AS team_name
+        FROM standings_cache sc
+        JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id = $1 AND sc.season = $2
+        ORDER BY sc.conference ASC, sc.wins DESC, sc.losses ASC
         """,
         league_id,
         season,

@@ -91,14 +91,14 @@ class DirectiveGroup(app_commands.Group, name="directive", description="Player c
 
     @app_commands.command(name="set", description="Set a coaching directive for a player")
     @app_commands.describe(
-        player_id="Player ID (from /roster)",
+        player="Player name (e.g. LeBron James)",
         category="Category to set: shot_diet / usage / defense / role / clutch",
         value="New value for that category",
     )
     async def set_directive(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         category: str,
         value: str,
     ) -> None:
@@ -122,14 +122,18 @@ class DirectiveGroup(app_commands.Group, name="directive", description="Player c
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player or player.league_id != league_id:
-            raise DBAError(f"Player {player_id} not found in this league.")
+        matches = await player_repo.search_by_name(pool, league_id, player)
+        if not matches:
+            raise DBAError(f"No player found matching '{player}'.")
+        if len(matches) > 1:
+            names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
+            raise DBAError(f"Multiple players match '{player}': {names}. Be more specific.")
 
-        if player.team_id is None:
+        found_player = matches[0]
+        if found_player.team_id is None:
             raise DBAError("That player is not on a team.")
 
-        await _require_manager_or_commissioner(pool, league_id, interaction.user.id, player.team_id)
+        await _require_manager_or_commissioner(pool, league_id, interaction.user.id, found_player.team_id)
 
         column = _CATEGORY_COLUMN[category]
         await pool.execute(
@@ -141,11 +145,11 @@ class DirectiveGroup(app_commands.Group, name="directive", description="Player c
                     set_by = EXCLUDED.set_by,
                     updated_at = EXCLUDED.updated_at
             """,
-            league_id, player_id, value, interaction.user.id,
+            league_id, found_player.id, value, interaction.user.id,
         )
 
         log.info(
-            f"directive set: league={league_id} player={player_id} "
+            f"directive set: league={league_id} player={found_player.id} "
             f"{column}={value} by user={interaction.user.id}"
         )
 
@@ -153,7 +157,7 @@ class DirectiveGroup(app_commands.Group, name="directive", description="Player c
             title="Directive Updated",
             color=discord.Color.green(),
         )
-        embed.add_field(name="Player", value=player.full_name, inline=True)
+        embed.add_field(name="Player", value=found_player.full_name, inline=True)
         embed.add_field(name="Category", value=_CATEGORY_LABELS.get(column, category), inline=True)
         embed.add_field(name="Value", value=f"`{value}`", inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -229,38 +233,42 @@ class DirectiveGroup(app_commands.Group, name="directive", description="Player c
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="reset", description="Reset all directives for a player to auto")
-    @app_commands.describe(player_id="Player ID")
+    @app_commands.describe(player="Player name (e.g. LeBron James)")
     async def reset_directive(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player or player.league_id != league_id:
-            raise DBAError(f"Player {player_id} not found in this league.")
+        matches = await player_repo.search_by_name(pool, league_id, player)
+        if not matches:
+            raise DBAError(f"No player found matching '{player}'.")
+        if len(matches) > 1:
+            names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
+            raise DBAError(f"Multiple players match '{player}': {names}. Be more specific.")
 
-        if player.team_id is None:
+        found_player = matches[0]
+        if found_player.team_id is None:
             raise DBAError("That player is not on a team.")
 
-        await _require_manager_or_commissioner(pool, league_id, interaction.user.id, player.team_id)
+        await _require_manager_or_commissioner(pool, league_id, interaction.user.id, found_player.team_id)
 
         await pool.execute(
             "DELETE FROM player_directives WHERE league_id = $1 AND player_id = $2",
-            league_id, player_id,
+            league_id, found_player.id,
         )
 
         log.info(
-            f"directive reset: league={league_id} player={player_id} by user={interaction.user.id}"
+            f"directive reset: league={league_id} player={found_player.id} by user={interaction.user.id}"
         )
 
         embed = discord.Embed(
             title="Directives Reset",
-            description=f"All directives for **{player.full_name}** have been cleared. "
+            description=f"All directives for **{found_player.full_name}** have been cleared. "
                         "The sim engine will use their natural tendencies.",
             color=discord.Color.orange(),
         )

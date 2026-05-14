@@ -28,7 +28,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
-        await require_phase(league, "league_start")
+        await require_phase(league, "season_start")
 
         season = season_year if season_year is not None else league.current_season
         game_count = await schedule_service.generate_season(league.id, season)

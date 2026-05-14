@@ -67,6 +67,7 @@ async def create(
     )
 
     nba_teams = _load_nba_teams()
+    team_roles: list[discord.Role] = []
     for team_data in nba_teams:
         team = await team_repo.create(pool, league.id, team_data)
         discord_role = await guild.create_role(
@@ -74,6 +75,22 @@ async def create(
             reason=f"DBA team role for {team.full_name}",
         )
         await league_repo.add_role(pool, league.id, "team", team.id, discord_role.id)
+        team_roles.append(discord_role)
+
+    # Place all DBA roles just below the bot's managed role so the bot can
+    # always manage (and later delete) them regardless of future reordering.
+    bot_top_role = guild.me.top_role if guild.me else None
+    if bot_top_role and bot_top_role.position > 1:
+        base_pos = bot_top_role.position - 1
+        all_dba_roles = [commissioner_role] + team_roles
+        position_map = {
+            role: max(1, base_pos - i)
+            for i, role in enumerate(all_dba_roles)
+        }
+        try:
+            await guild.edit_role_positions(positions=position_map)
+        except discord.HTTPException as exc:
+            log.warning(f"Could not reorder DBA roles: {exc}")
 
     await trade_repo.seed_picks_for_league(pool, league.id, season_year)
     await _post_onboarding_guide(guild, pool, league.id, name)

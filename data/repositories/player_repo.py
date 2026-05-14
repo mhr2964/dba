@@ -211,7 +211,7 @@ async def search_by_name(
         """
         SELECT * FROM players
         WHERE league_id = $1
-          AND (first_name || ' ' || last_name) ILIKE $2
+          AND unaccent(first_name || ' ' || last_name) ILIKE unaccent($2)
         ORDER BY overall DESC
         LIMIT 25
         """,

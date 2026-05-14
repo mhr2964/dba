@@ -211,7 +211,8 @@ async def _persist_injuries(
                 color=discord.Color.red(),
                 description=f"**{player_name}** ({team_code}) — {human_severity}",
             )
-            embed.add_field(name="Games Missed", value=str(games_missed), inline=True)
+            gms_label = "Season" if games_missed >= 82 else str(games_missed)
+            embed.add_field(name="Games Missed", value=gms_label, inline=True)
             embed.add_field(name="Status", value=human_severity, inline=True)
             embed.set_footer(text=f"Game #{game.get('game_index', game_id)}")
             await news_channel.send(embed=embed)

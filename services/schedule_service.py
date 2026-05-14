@@ -153,7 +153,7 @@ async def generate_season(league_id: int, season: int) -> int:
         team_game_index[home_id] = team_game_index.get(home_id, 0) + 1
         team_game_index[away_id] = team_game_index.get(away_id, 0) + 1
 
-        is_user = home_id in human_team_ids and away_id in human_team_ids
+        is_user = bool(human_team_ids & {home_id, away_id})
 
         game_rows.append({
             "league_id": league_id,

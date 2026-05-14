@@ -145,7 +145,7 @@ class RosterCog(commands.Cog):
 
         league_id: int = league_row["id"]
         current_season: int = league_row["current_season"]
-        today_str = datetime.date.today().isoformat()
+        today = datetime.date.today()
 
         rows = await pool.fetch(
             """
@@ -154,12 +154,12 @@ class RosterCog(commands.Cog):
             JOIN players p ON p.id = i.player_id
             WHERE i.league_id = $1
               AND i.season = $2
-              AND (i.return_date IS NULL OR i.return_date > $3::date)
+              AND (i.return_date IS NULL OR i.return_date > $3)
             ORDER BY i.severity, p.last_name
             """,
             league_id,
             current_season,
-            today_str,
+            today,
         )
 
         injuries = [dict(r) for r in rows]

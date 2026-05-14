@@ -190,10 +190,10 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
 
     @app_commands.command(name="set", description="Set target minutes for a player (0 = auto)")
     @app_commands.describe(
-        player_id="Player ID",
+        player="Player name (e.g. LeBron James)",
         minutes="Target minutes per game (0-48, 0 = auto)",
     )
-    async def set_minutes(self, interaction: discord.Interaction, player_id: int, minutes: int) -> None:
+    async def set_minutes(self, interaction: discord.Interaction, player: str, minutes: int) -> None:
         await interaction.response.defer()
         if not (0 <= minutes <= 48):
             await interaction.followup.send("Minutes must be between 0 and 48.", ephemeral=True)
@@ -203,18 +203,29 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player or player.team_id != team["id"]:
+        matches = await player_repo.search_by_name(pool, league_id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            return
+        if len(matches) > 1:
+            names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
+            await interaction.followup.send(
+                f"Multiple players match '{player}': {names}. Be more specific.", ephemeral=True
+            )
+            return
+
+        found_player = matches[0]
+        if found_player.team_id != team["id"]:
             await interaction.followup.send("That player is not on your team.", ephemeral=True)
             return
 
-        await strategy_repo.set_player_minutes(pool, league_id, team["id"], player_id, minutes)
+        await strategy_repo.set_player_minutes(pool, league_id, team["id"], found_player.id, minutes)
 
         # Warn if total exceeds 240 but still allow it (will normalize at sim time).
         all_targets = await strategy_repo.get_player_minutes(pool, league_id, team["id"])
         total = sum(all_targets.values())
         label = str(minutes) if minutes > 0 else "Auto"
-        msg = f"Set target minutes for **{player.full_name}** to **{label}**."
+        msg = f"Set target minutes for **{found_player.full_name}** to **{label}**."
         if total > 240:
             msg += f"\n**Warning:** Team total target minutes ({total}) exceed 240 and will be normalized at sim time."
         await interaction.followup.send(msg)
