@@ -33,7 +33,7 @@ def roster_embed(
         else:
             sal = "N/A"
             yrs = "—"
-        return f"`{p.position}` {p.full_name} | OVR {p.overall} | {sal} / {yrs}"
+        return f"`{p.position}` {p.full_name} | OVR {p.overall} | {sal} / {yrs} · ID: {p.id}"
 
     if starters:
         embed.add_field(

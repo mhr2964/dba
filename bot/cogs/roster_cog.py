@@ -410,7 +410,69 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
         await interaction.followup.send(f"Extension for **{found_player.full_name}** has been cancelled.")
 
 
+class PlayerGroup(app_commands.Group, name="player", description="Player lookup tools"):
+
+    @app_commands.command(name="search", description="Search for players by name and get their IDs")
+    @app_commands.describe(name="Part of a player's name to search for (e.g. 'curry')")
+    async def search(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        pool = await get_pool()
+
+        league_row = await pool.fetchrow(
+            "SELECT id FROM leagues WHERE discord_guild_id = $1 AND archived_at IS NULL",
+            interaction.guild_id,
+        )
+        if not league_row:
+            await interaction.followup.send("No active league.", ephemeral=True)
+            return
+
+        league_id: int = league_row["id"]
+        from data.repositories import player_repo as _player_repo
+        matches = await _player_repo.search_by_name(pool, league_id, name)
+        matches = matches[:10]
+
+        if not matches:
+            await interaction.followup.send(
+                f"No players found matching '{name}'.", ephemeral=True
+            )
+            return
+
+        # Collect team codes for all matched players in one query.
+        team_ids = {p.team_id for p in matches if p.team_id}
+        team_code_by_id: dict[int, str] = {}
+        if team_ids:
+            rows = await pool.fetch(
+                "SELECT id, nba_team_code FROM teams WHERE id = ANY($1::int[])",
+                list(team_ids),
+            )
+            for row in rows:
+                team_code_by_id[row["id"]] = row["nba_team_code"]
+
+        lines = []
+        for p in matches:
+            team_label = team_code_by_id.get(p.team_id, "FA") if p.team_id else "FA"
+            lines.append(
+                f"{p.full_name} · {team_label} · {p.position} · OVR {p.overall} · ID: {p.id}"
+            )
+
+        separator = "─" * 22
+        description = f"{separator}\n" + "\n".join(lines)
+
+        embed = discord.Embed(
+            title=f'Player Search: "{name}"',
+            description=description,
+            color=discord.Color.blurple(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(RosterCog(bot))
     extension_group = ExtensionGroup()
     bot.tree.add_command(extension_group)
+    player_group = PlayerGroup()
+    bot.tree.add_command(player_group)

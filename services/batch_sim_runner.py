@@ -33,28 +33,38 @@ _INJURY_GAMES_MISSED: dict[str, tuple[int, int]] = {
 _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 
 
+# Teams whose lineups have already been rebuilt this sim session.
+# Cleared at module level; each sim_until_rival / sim_range call resets it.
+_lineup_rebuilt_this_run: set[tuple[int, int]] = set()
+
+
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
     """Auto-populate or re-sort lineups by OVR.
 
+    Rebuilds at most once per team per sim run (tracked by _lineup_rebuilt_this_run)
+    so season-long sims don't hammer the DB with redundant rebuilds.
+
     If any lineup slot was manually set by a manager (set_by IS NOT NULL) we
     leave all entries untouched — the manager's choices are authoritative.
-    Otherwise we always rebuild from the current OVR ordering so that OVR
-    changes (roster import, trade, reseed) are reflected automatically without
-    requiring a manual lineup reset.
     """
+    key = (league_id, team_id)
+    if key in _lineup_rebuilt_this_run:
+        return
+
     manual_count = await pool.fetchval(
         "SELECT COUNT(*) FROM lineups WHERE league_id=$1 AND team_id=$2 AND set_by IS NOT NULL",
         league_id,
         team_id,
     )
     if manual_count > 0:
+        _lineup_rebuilt_this_run.add(key)
         return  # Manager has customised this lineup — respect it.
 
     players = await player_repo.get_roster(pool, league_id, team_id)
     if not players:
         return
 
-    # Clear auto entries and rebuild ordered by OVR (get_roster already returns DESC OVR).
+    # Clear auto entries and rebuild ordered by OVR (get_roster returns DESC OVR).
     await pool.execute(
         "DELETE FROM lineups WHERE league_id=$1 AND team_id=$2 AND set_by IS NULL",
         league_id,
@@ -74,6 +84,7 @@ async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
             slot,
             player.id,
         )
+    _lineup_rebuilt_this_run.add(key)
 
 
 def _apply_directives(p: dict) -> dict:
@@ -518,6 +529,7 @@ async def sim_until_rival(
     bot: Optional[discord.Client] = None,
     suppress_matchup_alert: bool = False,
 ) -> dict:
+    _lineup_rebuilt_this_run.clear()
     pool = await get_pool()
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
@@ -598,6 +610,7 @@ async def sim_range(
     bot: Optional[discord.Client] = None,
     force: bool = False,
 ) -> dict:
+    _lineup_rebuilt_this_run.clear()
     pool = await get_pool()
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
