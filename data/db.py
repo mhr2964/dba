@@ -14,9 +14,8 @@ async def get_pool() -> asyncpg.Pool:
             config.database_url,
             min_size=1,
             max_size=10,
-            max_inactive_connection_lifetime=300,  # recycle idle connections every 5 min
+            max_inactive_connection_lifetime=60,  # recycle idle connections every 60s
             command_timeout=60,
-            server_settings={"tcp_keepalives_idle": "60"},
         )
         log.info("Database pool established")
     return _pool
