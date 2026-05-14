@@ -1,0 +1,5342 @@
+[
+  {
+    "external_id": 1631210,
+    "first_name": "Jacob",
+    "last_name": "Toppin",
+    "full_name": "Jacob Toppin",
+    "nba_team_code": "ATL",
+    "position": "F",
+    "birth_date": "2000-05-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630552,
+    "first_name": "Jalen",
+    "last_name": "Johnson",
+    "full_name": "Jalen Johnson",
+    "nba_team_code": "ATL",
+    "position": "F",
+    "birth_date": "2001-12-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630811,
+    "first_name": "Keaton",
+    "last_name": "Wallace",
+    "full_name": "Keaton Wallace",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "1999-02-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1627747,
+    "first_name": "Caris",
+    "last_name": "LeVert",
+    "full_name": "Caris LeVert",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "1994-08-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1641723,
+    "first_name": "Kobe",
+    "last_name": "Bufkin",
+    "full_name": "Kobe Bufkin",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "2003-09-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1630700,
+    "first_name": "Dyson",
+    "last_name": "Daniels",
+    "full_name": "Dyson Daniels",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "2003-03-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1642258,
+    "first_name": "Zaccharie",
+    "last_name": "Risacher",
+    "full_name": "Zaccharie Risacher",
+    "nba_team_code": "ATL",
+    "position": "F",
+    "birth_date": "2005-04-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1629027,
+    "first_name": "Trae",
+    "last_name": "Young",
+    "full_name": "Trae Young",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "1998-09-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1629611,
+    "first_name": "Terance",
+    "last_name": "Mann",
+    "full_name": "Terance Mann",
+    "nba_team_code": "ATL",
+    "position": "G-F",
+    "birth_date": "1996-10-18",
+    "season": 2024
+  },
+  {
+    "external_id": 203991,
+    "first_name": "Clint",
+    "last_name": "Capela",
+    "full_name": "Clint Capela",
+    "nba_team_code": "ATL",
+    "position": "C",
+    "birth_date": "1994-05-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630168,
+    "first_name": "Onyeka",
+    "last_name": "Okongwu",
+    "full_name": "Onyeka Okongwu",
+    "nba_team_code": "ATL",
+    "position": "F-C",
+    "birth_date": "2000-12-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1631243,
+    "first_name": "Mouhamed",
+    "last_name": "Gueye",
+    "full_name": "Mouhamed Gueye",
+    "nba_team_code": "ATL",
+    "position": "F",
+    "birth_date": "2002-11-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1627777,
+    "first_name": "Georges",
+    "last_name": "Niang",
+    "full_name": "Georges Niang",
+    "nba_team_code": "ATL",
+    "position": "F",
+    "birth_date": "1993-06-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1626204,
+    "first_name": "Larry",
+    "last_name": "Nance Jr.",
+    "full_name": "Larry Nance Jr.",
+    "nba_team_code": "ATL",
+    "position": "F-C",
+    "birth_date": "1993-01-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1629726,
+    "first_name": "Garrison",
+    "last_name": "Mathews",
+    "full_name": "Garrison Mathews",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "1996-10-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1631230,
+    "first_name": "Dominick",
+    "last_name": "Barlow",
+    "full_name": "Dominick Barlow",
+    "nba_team_code": "ATL",
+    "position": "F",
+    "birth_date": "2003-05-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630249,
+    "first_name": "V\u00edt",
+    "last_name": "Krej\u010d\u00ed",
+    "full_name": "V\u00edt Krej\u010d\u00ed",
+    "nba_team_code": "ATL",
+    "position": "G",
+    "birth_date": "2000-06-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1631342,
+    "first_name": "Daeqwon",
+    "last_name": "Plowden",
+    "full_name": "Daeqwon Plowden",
+    "nba_team_code": "ATL",
+    "position": "G-F",
+    "birth_date": "1998-08-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1628369,
+    "first_name": "Jayson",
+    "last_name": "Tatum",
+    "full_name": "Jayson Tatum",
+    "nba_team_code": "BOS",
+    "position": "F-G",
+    "birth_date": "1998-03-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1641936,
+    "first_name": "Miles",
+    "last_name": "Norris",
+    "full_name": "Miles Norris",
+    "nba_team_code": "BOS",
+    "position": "F",
+    "birth_date": "2000-04-15",
+    "season": 2024
+  },
+  {
+    "external_id": 201950,
+    "first_name": "Jrue",
+    "last_name": "Holiday",
+    "full_name": "Jrue Holiday",
+    "nba_team_code": "BOS",
+    "position": "G",
+    "birth_date": "1990-06-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1627759,
+    "first_name": "Jaylen",
+    "last_name": "Brown",
+    "full_name": "Jaylen Brown",
+    "nba_team_code": "BOS",
+    "position": "G-F",
+    "birth_date": "1996-10-24",
+    "season": 2024
+  },
+  {
+    "external_id": 204001,
+    "first_name": "Kristaps",
+    "last_name": "Porzi\u0146\u0123is",
+    "full_name": "Kristaps Porzi\u0146\u0123is",
+    "nba_team_code": "BOS",
+    "position": "F-C",
+    "birth_date": "1995-08-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1628401,
+    "first_name": "Derrick",
+    "last_name": "White",
+    "full_name": "Derrick White",
+    "nba_team_code": "BOS",
+    "position": "G",
+    "birth_date": "1994-07-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1630202,
+    "first_name": "Payton",
+    "last_name": "Pritchard",
+    "full_name": "Payton Pritchard",
+    "nba_team_code": "BOS",
+    "position": "G",
+    "birth_date": "1998-01-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1628470,
+    "first_name": "Torrey",
+    "last_name": "Craig",
+    "full_name": "Torrey Craig",
+    "nba_team_code": "BOS",
+    "position": "F",
+    "birth_date": "1990-12-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1641809,
+    "first_name": "Drew",
+    "last_name": "Peterson",
+    "full_name": "Drew Peterson",
+    "nba_team_code": "BOS",
+    "position": "F",
+    "birth_date": "1999-11-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1631120,
+    "first_name": "JD",
+    "last_name": "Davison",
+    "full_name": "JD Davison",
+    "nba_team_code": "BOS",
+    "position": "G",
+    "birth_date": "2002-10-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1630214,
+    "first_name": "Xavier",
+    "last_name": "Tillman",
+    "full_name": "Xavier Tillman",
+    "nba_team_code": "BOS",
+    "position": "F",
+    "birth_date": "1999-01-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1641775,
+    "first_name": "Jordan",
+    "last_name": "Walsh",
+    "full_name": "Jordan Walsh",
+    "nba_team_code": "BOS",
+    "position": "G",
+    "birth_date": "2004-03-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1630573,
+    "first_name": "Sam",
+    "last_name": "Hauser",
+    "full_name": "Sam Hauser",
+    "nba_team_code": "BOS",
+    "position": "F",
+    "birth_date": "1997-12-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1628436,
+    "first_name": "Luke",
+    "last_name": "Kornet",
+    "full_name": "Luke Kornet",
+    "nba_team_code": "BOS",
+    "position": "C-F",
+    "birth_date": "1995-07-15",
+    "season": 2024
+  },
+  {
+    "external_id": 201143,
+    "first_name": "Al",
+    "last_name": "Horford",
+    "full_name": "Al Horford",
+    "nba_team_code": "BOS",
+    "position": "C-F",
+    "birth_date": "1986-06-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1631248,
+    "first_name": "Baylor",
+    "last_name": "Scheierman",
+    "full_name": "Baylor Scheierman",
+    "nba_team_code": "BOS",
+    "position": "G",
+    "birth_date": "2000-09-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1629674,
+    "first_name": "Neemias",
+    "last_name": "Queta",
+    "full_name": "Neemias Queta",
+    "nba_team_code": "BOS",
+    "position": "C",
+    "birth_date": "1999-07-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1641727,
+    "first_name": "Dariq",
+    "last_name": "Whitehead",
+    "full_name": "Dariq Whitehead",
+    "nba_team_code": "BKN",
+    "position": "G-F",
+    "birth_date": "2004-08-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1626156,
+    "first_name": "D'Angelo",
+    "last_name": "Russell",
+    "full_name": "D'Angelo Russell",
+    "nba_team_code": "BKN",
+    "position": "G",
+    "birth_date": "1996-02-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1629661,
+    "first_name": "Cameron",
+    "last_name": "Johnson",
+    "full_name": "Cameron Johnson",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "1996-03-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1641736,
+    "first_name": "Reece",
+    "last_name": "Beekman",
+    "full_name": "Reece Beekman",
+    "nba_team_code": "BKN",
+    "position": "G",
+    "birth_date": "2001-10-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630533,
+    "first_name": "Ziaire",
+    "last_name": "Williams",
+    "full_name": "Ziaire Williams",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "2001-09-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1630570,
+    "first_name": "Trendon",
+    "last_name": "Watford",
+    "full_name": "Trendon Watford",
+    "nba_team_code": "BKN",
+    "position": "G-F",
+    "birth_date": "2000-11-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1630623,
+    "first_name": "Tyson",
+    "last_name": "Etienne",
+    "full_name": "Tyson Etienne",
+    "nba_team_code": "BKN",
+    "position": "G",
+    "birth_date": "1999-09-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1641787,
+    "first_name": "Tosan",
+    "last_name": "Evbuomwan",
+    "full_name": "Tosan Evbuomwan",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "2001-02-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1631213,
+    "first_name": "Tyrese",
+    "last_name": "Martin",
+    "full_name": "Tyrese Martin",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "1999-03-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1629001,
+    "first_name": "De'Anthony",
+    "last_name": "Melton",
+    "full_name": "De'Anthony Melton",
+    "nba_team_code": "BKN",
+    "position": "G",
+    "birth_date": "1998-05-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1630549,
+    "first_name": "Day'Ron",
+    "last_name": "Sharpe",
+    "full_name": "Day'Ron Sharpe",
+    "nba_team_code": "BKN",
+    "position": "C",
+    "birth_date": "2001-11-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1641730,
+    "first_name": "Noah",
+    "last_name": "Clowney",
+    "full_name": "Noah Clowney",
+    "nba_team_code": "BKN",
+    "position": "F-C",
+    "birth_date": "2004-07-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630592,
+    "first_name": "Jalen",
+    "last_name": "Wilson",
+    "full_name": "Jalen Wilson",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "2000-11-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1630560,
+    "first_name": "Cam",
+    "last_name": "Thomas",
+    "full_name": "Cam Thomas",
+    "nba_team_code": "BKN",
+    "position": "G",
+    "birth_date": "2001-10-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1631166,
+    "first_name": "Drew",
+    "last_name": "Timme",
+    "full_name": "Drew Timme",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "2000-09-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1641721,
+    "first_name": "Maxwell",
+    "last_name": "Lewis",
+    "full_name": "Maxwell Lewis",
+    "nba_team_code": "BKN",
+    "position": "F",
+    "birth_date": "2002-07-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1629651,
+    "first_name": "Nic",
+    "last_name": "Claxton",
+    "full_name": "Nic Claxton",
+    "nba_team_code": "BKN",
+    "position": "C",
+    "birth_date": "1999-04-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1630553,
+    "first_name": "Keon",
+    "last_name": "Johnson",
+    "full_name": "Keon Johnson",
+    "nba_team_code": "BKN",
+    "position": "G",
+    "birth_date": "2002-03-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1628970,
+    "first_name": "Miles",
+    "last_name": "Bridges",
+    "full_name": "Miles Bridges",
+    "nba_team_code": "CHA",
+    "position": "F",
+    "birth_date": "1998-03-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1630163,
+    "first_name": "LaMelo",
+    "last_name": "Ball",
+    "full_name": "LaMelo Ball",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2001-08-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1629684,
+    "first_name": "Grant",
+    "last_name": "Williams",
+    "full_name": "Grant Williams",
+    "nba_team_code": "CHA",
+    "position": "F",
+    "birth_date": "1998-11-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1629610,
+    "first_name": "DaQuan",
+    "last_name": "Jeffries",
+    "full_name": "DaQuan Jeffries",
+    "nba_team_code": "CHA",
+    "position": "G-F",
+    "birth_date": "1997-08-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1631109,
+    "first_name": "Mark",
+    "last_name": "Williams",
+    "full_name": "Mark Williams",
+    "nba_team_code": "CHA",
+    "position": "C",
+    "birth_date": "2001-12-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1641878,
+    "first_name": "Damion",
+    "last_name": "Baugh",
+    "full_name": "Damion Baugh",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2000-08-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1641733,
+    "first_name": "Nick",
+    "last_name": "Smith Jr.",
+    "full_name": "Nick Smith Jr.",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2004-04-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1631111,
+    "first_name": "Wendell",
+    "last_name": "Moore Jr.",
+    "full_name": "Wendell Moore Jr.",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2001-09-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630182,
+    "first_name": "Josh",
+    "last_name": "Green",
+    "full_name": "Josh Green",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2000-11-16",
+    "season": 2024
+  },
+  {
+    "external_id": 203994,
+    "first_name": "Jusuf",
+    "last_name": "Nurki\u0107",
+    "full_name": "Jusuf Nurki\u0107",
+    "nba_team_code": "CHA",
+    "position": "C",
+    "birth_date": "1994-08-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1629006,
+    "first_name": "Josh",
+    "last_name": "Okogie",
+    "full_name": "Josh Okogie",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "1998-09-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1631217,
+    "first_name": "Moussa",
+    "last_name": "Diabat\u00e9",
+    "full_name": "Moussa Diabat\u00e9",
+    "nba_team_code": "CHA",
+    "position": "F",
+    "birth_date": "2002-01-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1630544,
+    "first_name": "Tre",
+    "last_name": "Mann",
+    "full_name": "Tre Mann",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2001-02-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1641706,
+    "first_name": "Brandon",
+    "last_name": "Miller",
+    "full_name": "Brandon Miller",
+    "nba_team_code": "CHA",
+    "position": "F",
+    "birth_date": "2002-11-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1642354,
+    "first_name": "KJ",
+    "last_name": "Simpson",
+    "full_name": "KJ Simpson",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "2002-08-08",
+    "season": 2024
+  },
+  {
+    "external_id": 203552,
+    "first_name": "Seth",
+    "last_name": "Curry",
+    "full_name": "Seth Curry",
+    "nba_team_code": "CHA",
+    "position": "G",
+    "birth_date": "1990-08-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1642275,
+    "first_name": "Tidjane",
+    "last_name": "Sala\u00fcn",
+    "full_name": "Tidjane Sala\u00fcn",
+    "nba_team_code": "CHA",
+    "position": "F",
+    "birth_date": "2005-08-10",
+    "season": 2024
+  },
+  {
+    "external_id": 201959,
+    "first_name": "Taj",
+    "last_name": "Gibson",
+    "full_name": "Taj Gibson",
+    "nba_team_code": "CHA",
+    "position": "F",
+    "birth_date": "1985-06-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1629632,
+    "first_name": "Coby",
+    "last_name": "White",
+    "full_name": "Coby White",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "2000-02-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1628366,
+    "first_name": "Lonzo",
+    "last_name": "Ball",
+    "full_name": "Lonzo Ball",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "1997-10-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630581,
+    "first_name": "Josh",
+    "last_name": "Giddey",
+    "full_name": "Josh Giddey",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "2002-10-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1628975,
+    "first_name": "Jevon",
+    "last_name": "Carter",
+    "full_name": "Jevon Carter",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "1995-09-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630188,
+    "first_name": "Jalen",
+    "last_name": "Smith",
+    "full_name": "Jalen Smith",
+    "nba_team_code": "CHI",
+    "position": "F-C",
+    "birth_date": "2000-03-16",
+    "season": 2024
+  },
+  {
+    "external_id": 202696,
+    "first_name": "Nikola",
+    "last_name": "Vu\u010devi\u0107",
+    "full_name": "Nikola Vu\u010devi\u0107",
+    "nba_team_code": "CHI",
+    "position": "C",
+    "birth_date": "1990-10-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1630245,
+    "first_name": "Ayo",
+    "last_name": "Dosunmu",
+    "full_name": "Ayo Dosunmu",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "2000-01-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1642443,
+    "first_name": "Jahmir",
+    "last_name": "Young",
+    "full_name": "Jahmir Young",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "2000-10-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1628380,
+    "first_name": "Zach",
+    "last_name": "Collins",
+    "full_name": "Zach Collins",
+    "nba_team_code": "CHI",
+    "position": "F-C",
+    "birth_date": "1997-11-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1628989,
+    "first_name": "Kevin",
+    "last_name": "Huerter",
+    "full_name": "Kevin Huerter",
+    "nba_team_code": "CHI",
+    "position": "G-F",
+    "birth_date": "1998-08-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1641824,
+    "first_name": "Matas",
+    "last_name": "Buzelis",
+    "full_name": "Matas Buzelis",
+    "nba_team_code": "CHI",
+    "position": "F",
+    "birth_date": "2004-10-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1641763,
+    "first_name": "Julian",
+    "last_name": "Phillips",
+    "full_name": "Julian Phillips",
+    "nba_team_code": "CHI",
+    "position": "F",
+    "birth_date": "2003-11-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1641801,
+    "first_name": "Emanuel",
+    "last_name": "Miller",
+    "full_name": "Emanuel Miller",
+    "nba_team_code": "CHI",
+    "position": "F",
+    "birth_date": "2000-06-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1629659,
+    "first_name": "Talen",
+    "last_name": "Horton-Tucker",
+    "full_name": "Talen Horton-Tucker",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "2000-11-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1631207,
+    "first_name": "Dalen",
+    "last_name": "Terry",
+    "full_name": "Dalen Terry",
+    "nba_team_code": "CHI",
+    "position": "F",
+    "birth_date": "2002-07-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1630200,
+    "first_name": "Tre",
+    "last_name": "Jones",
+    "full_name": "Tre Jones",
+    "nba_team_code": "CHI",
+    "position": "G",
+    "birth_date": "2000-01-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630604,
+    "first_name": "E.J.",
+    "last_name": "Liddell",
+    "full_name": "E.J. Liddell",
+    "nba_team_code": "CHI",
+    "position": "F",
+    "birth_date": "2000-12-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630172,
+    "first_name": "Patrick",
+    "last_name": "Williams",
+    "full_name": "Patrick Williams",
+    "nba_team_code": "CHI",
+    "position": "F",
+    "birth_date": "2001-08-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1629622,
+    "first_name": "Max",
+    "last_name": "Strus",
+    "full_name": "Max Strus",
+    "nba_team_code": "CLE",
+    "position": "G-F",
+    "birth_date": "1996-03-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1629660,
+    "first_name": "Ty",
+    "last_name": "Jerome",
+    "full_name": "Ty Jerome",
+    "nba_team_code": "CLE",
+    "position": "G-F",
+    "birth_date": "1997-07-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630596,
+    "first_name": "Evan",
+    "last_name": "Mobley",
+    "full_name": "Evan Mobley",
+    "nba_team_code": "CLE",
+    "position": "C",
+    "birth_date": "2001-06-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630241,
+    "first_name": "Sam",
+    "last_name": "Merrill",
+    "full_name": "Sam Merrill",
+    "nba_team_code": "CLE",
+    "position": "G",
+    "birth_date": "1996-05-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1629750,
+    "first_name": "Javonte",
+    "last_name": "Green",
+    "full_name": "Javonte Green",
+    "nba_team_code": "CLE",
+    "position": "G",
+    "birth_date": "1993-07-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1641854,
+    "first_name": "Craig",
+    "last_name": "Porter Jr.",
+    "full_name": "Craig Porter Jr.",
+    "nba_team_code": "CLE",
+    "position": "G",
+    "birth_date": "2000-02-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1629636,
+    "first_name": "Darius",
+    "last_name": "Garland",
+    "full_name": "Darius Garland",
+    "nba_team_code": "CLE",
+    "position": "G",
+    "birth_date": "2000-01-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1629631,
+    "first_name": "De'Andre",
+    "last_name": "Hunter",
+    "full_name": "De'Andre Hunter",
+    "nba_team_code": "CLE",
+    "position": "F-G",
+    "birth_date": "1997-12-02",
+    "season": 2024
+  },
+  {
+    "external_id": 202684,
+    "first_name": "Tristan",
+    "last_name": "Thompson",
+    "full_name": "Tristan Thompson",
+    "nba_team_code": "CLE",
+    "position": "C-F",
+    "birth_date": "1991-03-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1629643,
+    "first_name": "Chuma",
+    "last_name": "Okeke",
+    "full_name": "Chuma Okeke",
+    "nba_team_code": "CLE",
+    "position": "F",
+    "birth_date": "1998-08-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1641734,
+    "first_name": "Emoni",
+    "last_name": "Bates",
+    "full_name": "Emoni Bates",
+    "nba_team_code": "CLE",
+    "position": "F",
+    "birth_date": "2004-01-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1642281,
+    "first_name": "Jaylon",
+    "last_name": "Tyson",
+    "full_name": "Jaylon Tyson",
+    "nba_team_code": "CLE",
+    "position": "G-F",
+    "birth_date": "2002-12-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1641772,
+    "first_name": "Nae'Qwan",
+    "last_name": "Tomlin",
+    "full_name": "Nae'Qwan Tomlin",
+    "nba_team_code": "CLE",
+    "position": "F",
+    "birth_date": "2000-12-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1628386,
+    "first_name": "Jarrett",
+    "last_name": "Allen",
+    "full_name": "Jarrett Allen",
+    "nba_team_code": "CLE",
+    "position": "C",
+    "birth_date": "1998-04-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1629731,
+    "first_name": "Dean",
+    "last_name": "Wade",
+    "full_name": "Dean Wade",
+    "nba_team_code": "CLE",
+    "position": "F-C",
+    "birth_date": "1996-11-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1631247,
+    "first_name": "Luke",
+    "last_name": "Travers",
+    "full_name": "Luke Travers",
+    "nba_team_code": "CLE",
+    "position": "F",
+    "birth_date": "2001-09-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1630171,
+    "first_name": "Isaac",
+    "last_name": "Okoro",
+    "full_name": "Isaac Okoro",
+    "nba_team_code": "CLE",
+    "position": "F-G",
+    "birth_date": "2001-01-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1628378,
+    "first_name": "Donovan",
+    "last_name": "Mitchell",
+    "full_name": "Donovan Mitchell",
+    "nba_team_code": "CLE",
+    "position": "G",
+    "birth_date": "1996-09-07",
+    "season": 2024
+  },
+  {
+    "external_id": 203957,
+    "first_name": "Dant\u00e9",
+    "last_name": "Exum",
+    "full_name": "Dant\u00e9 Exum",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "1995-07-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1631108,
+    "first_name": "Max",
+    "last_name": "Christie",
+    "full_name": "Max Christie",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "2003-02-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1630702,
+    "first_name": "Jaden",
+    "last_name": "Hardy",
+    "full_name": "Jaden Hardy",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "2002-07-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1641726,
+    "first_name": "Dereck",
+    "last_name": "Lively II",
+    "full_name": "Dereck Lively II",
+    "nba_team_code": "DAL",
+    "position": "C",
+    "birth_date": "2004-02-12",
+    "season": 2024
+  },
+  {
+    "external_id": 203076,
+    "first_name": "Anthony",
+    "last_name": "Davis",
+    "full_name": "Anthony Davis",
+    "nba_team_code": "DAL",
+    "position": "F-C",
+    "birth_date": "1993-03-11",
+    "season": 2024
+  },
+  {
+    "external_id": 203939,
+    "first_name": "Dwight",
+    "last_name": "Powell",
+    "full_name": "Dwight Powell",
+    "nba_team_code": "DAL",
+    "position": "F-C",
+    "birth_date": "1991-07-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1641765,
+    "first_name": "Olivier-Maxence",
+    "last_name": "Prosper",
+    "full_name": "Olivier-Maxence Prosper",
+    "nba_team_code": "DAL",
+    "position": "F",
+    "birth_date": "2002-07-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1630314,
+    "first_name": "Brandon",
+    "last_name": "Williams",
+    "full_name": "Brandon Williams",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "1999-11-22",
+    "season": 2024
+  },
+  {
+    "external_id": 202681,
+    "first_name": "Kyrie",
+    "last_name": "Irving",
+    "full_name": "Kyrie Irving",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "1992-03-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1630230,
+    "first_name": "Naji",
+    "last_name": "Marshall",
+    "full_name": "Naji Marshall",
+    "nba_team_code": "DAL",
+    "position": "F",
+    "birth_date": "1998-01-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1628997,
+    "first_name": "Caleb",
+    "last_name": "Martin",
+    "full_name": "Caleb Martin",
+    "nba_team_code": "DAL",
+    "position": "F",
+    "birth_date": "1995-09-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1630556,
+    "first_name": "Kessler",
+    "last_name": "Edwards",
+    "full_name": "Kessler Edwards",
+    "nba_team_code": "DAL",
+    "position": "F",
+    "birth_date": "2000-08-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1629655,
+    "first_name": "Daniel",
+    "last_name": "Gafford",
+    "full_name": "Daniel Gafford",
+    "nba_team_code": "DAL",
+    "position": "F-C",
+    "birth_date": "1998-10-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1630539,
+    "first_name": "Kai",
+    "last_name": "Jones",
+    "full_name": "Kai Jones",
+    "nba_team_code": "DAL",
+    "position": "C-F",
+    "birth_date": "2001-01-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1629023,
+    "first_name": "P.J.",
+    "last_name": "Washington",
+    "full_name": "P.J. Washington",
+    "nba_team_code": "DAL",
+    "position": "F",
+    "birth_date": "1998-08-23",
+    "season": 2024
+  },
+  {
+    "external_id": 203915,
+    "first_name": "Spencer",
+    "last_name": "Dinwiddie",
+    "full_name": "Spencer Dinwiddie",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "1993-04-06",
+    "season": 2024
+  },
+  {
+    "external_id": 202691,
+    "first_name": "Klay",
+    "last_name": "Thompson",
+    "full_name": "Klay Thompson",
+    "nba_team_code": "DAL",
+    "position": "G",
+    "birth_date": "1990-02-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1631128,
+    "first_name": "Christian",
+    "last_name": "Braun",
+    "full_name": "Christian Braun",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "2001-04-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1629008,
+    "first_name": "Michael",
+    "last_name": "Porter Jr.",
+    "full_name": "Michael Porter Jr.",
+    "nba_team_code": "DEN",
+    "position": "F",
+    "birth_date": "1998-06-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1631124,
+    "first_name": "Julian",
+    "last_name": "Strawther",
+    "full_name": "Julian Strawther",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "2002-04-18",
+    "season": 2024
+  },
+  {
+    "external_id": 201566,
+    "first_name": "Russell",
+    "last_name": "Westbrook",
+    "full_name": "Russell Westbrook",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "1988-11-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1641816,
+    "first_name": "Hunter",
+    "last_name": "Tyson",
+    "full_name": "Hunter Tyson",
+    "nba_team_code": "DEN",
+    "position": "F",
+    "birth_date": "2000-06-13",
+    "season": 2024
+  },
+  {
+    "external_id": 201599,
+    "first_name": "DeAndre",
+    "last_name": "Jordan",
+    "full_name": "DeAndre Jordan",
+    "nba_team_code": "DEN",
+    "position": "C",
+    "birth_date": "1988-07-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1631212,
+    "first_name": "Peyton",
+    "last_name": "Watson",
+    "full_name": "Peyton Watson",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "2002-09-11",
+    "season": 2024
+  },
+  {
+    "external_id": 203967,
+    "first_name": "Dario",
+    "last_name": "Saric",
+    "full_name": "Dario Saric",
+    "nba_team_code": "DEN",
+    "position": "F-C",
+    "birth_date": "1994-04-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1641790,
+    "first_name": "PJ",
+    "last_name": "Hall",
+    "full_name": "PJ Hall",
+    "nba_team_code": "DEN",
+    "position": "C",
+    "birth_date": "2002-02-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1641747,
+    "first_name": "DaRon",
+    "last_name": "Holmes II",
+    "full_name": "DaRon Holmes II",
+    "nba_team_code": "DEN",
+    "position": "F",
+    "birth_date": "2002-08-15",
+    "season": 2024
+  },
+  {
+    "external_id": 203999,
+    "first_name": "Nikola",
+    "last_name": "Joki\u0107",
+    "full_name": "Nikola Joki\u0107",
+    "nba_team_code": "DEN",
+    "position": "C",
+    "birth_date": "1995-02-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1642461,
+    "first_name": "Spencer",
+    "last_name": "Jones",
+    "full_name": "Spencer Jones",
+    "nba_team_code": "DEN",
+    "position": "F",
+    "birth_date": "2001-06-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630192,
+    "first_name": "Zeke",
+    "last_name": "Nnaji",
+    "full_name": "Zeke Nnaji",
+    "nba_team_code": "DEN",
+    "position": "F-C",
+    "birth_date": "2001-01-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1641725,
+    "first_name": "Trey",
+    "last_name": "Alexander",
+    "full_name": "Trey Alexander",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "2003-05-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1629618,
+    "first_name": "Jalen",
+    "last_name": "Pickett",
+    "full_name": "Jalen Pickett",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "1999-10-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1627750,
+    "first_name": "Jamal",
+    "last_name": "Murray",
+    "full_name": "Jamal Murray",
+    "nba_team_code": "DEN",
+    "position": "G",
+    "birth_date": "1997-02-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1628427,
+    "first_name": "Vlatko",
+    "last_name": "\u010can\u010dar",
+    "full_name": "Vlatko \u010can\u010dar",
+    "nba_team_code": "DEN",
+    "position": "F",
+    "birth_date": "1997-04-10",
+    "season": 2024
+  },
+  {
+    "external_id": 203932,
+    "first_name": "Aaron",
+    "last_name": "Gordon",
+    "full_name": "Aaron Gordon",
+    "nba_team_code": "DEN",
+    "position": "F",
+    "birth_date": "1995-09-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1631105,
+    "first_name": "Jalen",
+    "last_name": "Duren",
+    "full_name": "Jalen Duren",
+    "nba_team_code": "DET",
+    "position": "C",
+    "birth_date": "2003-11-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1641842,
+    "first_name": "Ronald",
+    "last_name": "Holland II",
+    "full_name": "Ronald Holland II",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "2005-07-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1630595,
+    "first_name": "Cade",
+    "last_name": "Cunningham",
+    "full_name": "Cade Cunningham",
+    "nba_team_code": "DET",
+    "position": "G",
+    "birth_date": "2001-09-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1627736,
+    "first_name": "Malik",
+    "last_name": "Beasley",
+    "full_name": "Malik Beasley",
+    "nba_team_code": "DET",
+    "position": "G",
+    "birth_date": "1996-11-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630194,
+    "first_name": "Paul",
+    "last_name": "Reed",
+    "full_name": "Paul Reed",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "1999-06-14",
+    "season": 2024
+  },
+  {
+    "external_id": 203501,
+    "first_name": "Tim",
+    "last_name": "Hardaway Jr.",
+    "full_name": "Tim Hardaway Jr.",
+    "nba_team_code": "DET",
+    "position": "G-F",
+    "birth_date": "1992-03-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1641709,
+    "first_name": "Ausar",
+    "last_name": "Thompson",
+    "full_name": "Ausar Thompson",
+    "nba_team_code": "DET",
+    "position": "G-F",
+    "birth_date": "2003-01-30",
+    "season": 2024
+  },
+  {
+    "external_id": 202699,
+    "first_name": "Tobias",
+    "last_name": "Harris",
+    "full_name": "Tobias Harris",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "1992-07-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1631199,
+    "first_name": "Ron",
+    "last_name": "Harper Jr.",
+    "full_name": "Ron Harper Jr.",
+    "nba_team_code": "DET",
+    "position": "G-F",
+    "birth_date": "2000-04-12",
+    "season": 2024
+  },
+  {
+    "external_id": 203471,
+    "first_name": "Dennis",
+    "last_name": "Schr\u00f6der",
+    "full_name": "Dennis Schr\u00f6der",
+    "nba_team_code": "DET",
+    "position": "G",
+    "birth_date": "1993-09-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1631323,
+    "first_name": "Simone",
+    "last_name": "Fontecchio",
+    "full_name": "Simone Fontecchio",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "1995-12-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1631093,
+    "first_name": "Jaden",
+    "last_name": "Ivey",
+    "full_name": "Jaden Ivey",
+    "nba_team_code": "DET",
+    "position": "G",
+    "birth_date": "2002-02-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1642450,
+    "first_name": "Daniss",
+    "last_name": "Jenkins",
+    "full_name": "Daniss Jenkins",
+    "nba_team_code": "DET",
+    "position": "G",
+    "birth_date": "2001-08-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1631204,
+    "first_name": "Marcus",
+    "last_name": "Sasser",
+    "full_name": "Marcus Sasser",
+    "nba_team_code": "DET",
+    "position": "G",
+    "birth_date": "2000-09-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1630191,
+    "first_name": "Isaiah",
+    "last_name": "Stewart",
+    "full_name": "Isaiah Stewart",
+    "nba_team_code": "DET",
+    "position": "F-C",
+    "birth_date": "2001-05-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1641752,
+    "first_name": "Bobi",
+    "last_name": "Klintman",
+    "full_name": "Bobi Klintman",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "2003-03-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1642449,
+    "first_name": "Tolu",
+    "last_name": "Smith",
+    "full_name": "Tolu Smith",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "2000-07-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630322,
+    "first_name": "Lindy",
+    "last_name": "Waters III",
+    "full_name": "Lindy Waters III",
+    "nba_team_code": "DET",
+    "position": "F",
+    "birth_date": "1997-07-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1627780,
+    "first_name": "Gary",
+    "last_name": "Payton II",
+    "full_name": "Gary Payton II",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "1992-12-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1630228,
+    "first_name": "Jonathan",
+    "last_name": "Kuminga",
+    "full_name": "Jonathan Kuminga",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "2002-10-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1642379,
+    "first_name": "Taran",
+    "last_name": "Armstrong",
+    "full_name": "Taran Armstrong",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "2002-01-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1641764,
+    "first_name": "Brandin",
+    "last_name": "Podziemski",
+    "full_name": "Brandin Podziemski",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "2003-02-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1630541,
+    "first_name": "Moses",
+    "last_name": "Moody",
+    "full_name": "Moses Moody",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "2002-05-31",
+    "season": 2024
+  },
+  {
+    "external_id": 1626172,
+    "first_name": "Kevon",
+    "last_name": "Looney",
+    "full_name": "Kevon Looney",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "1996-02-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1627741,
+    "first_name": "Buddy",
+    "last_name": "Hield",
+    "full_name": "Buddy Hield",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "1992-12-17",
+    "season": 2024
+  },
+  {
+    "external_id": 202710,
+    "first_name": "Jimmy",
+    "last_name": "Butler III",
+    "full_name": "Jimmy Butler III",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "1989-09-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630296,
+    "first_name": "Braxton",
+    "last_name": "Key",
+    "full_name": "Braxton Key",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "1997-02-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630611,
+    "first_name": "Gui",
+    "last_name": "Santos",
+    "full_name": "Gui Santos",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "2002-06-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1642366,
+    "first_name": "Quinten",
+    "last_name": "Post",
+    "full_name": "Quinten Post",
+    "nba_team_code": "GSW",
+    "position": "C",
+    "birth_date": "2000-03-21",
+    "season": 2024
+  },
+  {
+    "external_id": 203110,
+    "first_name": "Draymond",
+    "last_name": "Green",
+    "full_name": "Draymond Green",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "1990-03-04",
+    "season": 2024
+  },
+  {
+    "external_id": 201939,
+    "first_name": "Stephen",
+    "last_name": "Curry",
+    "full_name": "Stephen Curry",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "1988-03-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1628995,
+    "first_name": "Kevin",
+    "last_name": "Knox II",
+    "full_name": "Kevin Knox II",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "1999-08-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1631218,
+    "first_name": "Trayce",
+    "last_name": "Jackson-Davis",
+    "full_name": "Trayce Jackson-Davis",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "2000-02-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1642050,
+    "first_name": "Jackson",
+    "last_name": "Rowe",
+    "full_name": "Jackson Rowe",
+    "nba_team_code": "GSW",
+    "position": "F",
+    "birth_date": "1997-01-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1630311,
+    "first_name": "Pat",
+    "last_name": "Spencer",
+    "full_name": "Pat Spencer",
+    "nba_team_code": "GSW",
+    "position": "G",
+    "birth_date": "1996-07-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1628988,
+    "first_name": "Aaron",
+    "last_name": "Holiday",
+    "full_name": "Aaron Holiday",
+    "nba_team_code": "HOU",
+    "position": "G",
+    "birth_date": "1996-09-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1641708,
+    "first_name": "Amen",
+    "last_name": "Thompson",
+    "full_name": "Amen Thompson",
+    "nba_team_code": "HOU",
+    "position": "G-F",
+    "birth_date": "2003-01-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1629111,
+    "first_name": "Jock",
+    "last_name": "Landale",
+    "full_name": "Jock Landale",
+    "nba_team_code": "HOU",
+    "position": "C",
+    "birth_date": "1995-10-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1642368,
+    "first_name": "N'Faly",
+    "last_name": "Dante",
+    "full_name": "N'Faly Dante",
+    "nba_team_code": "HOU",
+    "position": "C",
+    "birth_date": "2001-10-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1630224,
+    "first_name": "Jalen",
+    "last_name": "Green",
+    "full_name": "Jalen Green",
+    "nba_team_code": "HOU",
+    "position": "G",
+    "birth_date": "2002-02-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1627832,
+    "first_name": "Fred",
+    "last_name": "VanVleet",
+    "full_name": "Fred VanVleet",
+    "nba_team_code": "HOU",
+    "position": "G",
+    "birth_date": "1994-02-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1641715,
+    "first_name": "Cam",
+    "last_name": "Whitmore",
+    "full_name": "Cam Whitmore",
+    "nba_team_code": "HOU",
+    "position": "F",
+    "birth_date": "2004-07-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630256,
+    "first_name": "Jae'Sean",
+    "last_name": "Tate",
+    "full_name": "Jae'Sean Tate",
+    "nba_team_code": "HOU",
+    "position": "F",
+    "birth_date": "1995-10-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1628415,
+    "first_name": "Dillon",
+    "last_name": "Brooks",
+    "full_name": "Dillon Brooks",
+    "nba_team_code": "HOU",
+    "position": "G-F",
+    "birth_date": "1996-01-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1631095,
+    "first_name": "Jabari",
+    "last_name": "Smith Jr.",
+    "full_name": "Jabari Smith Jr.",
+    "nba_team_code": "HOU",
+    "position": "F",
+    "birth_date": "2003-05-13",
+    "season": 2024
+  },
+  {
+    "external_id": 203500,
+    "first_name": "Steven",
+    "last_name": "Adams",
+    "full_name": "Steven Adams",
+    "nba_team_code": "HOU",
+    "position": "C",
+    "birth_date": "1993-07-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1642263,
+    "first_name": "Reed",
+    "last_name": "Sheppard",
+    "full_name": "Reed Sheppard",
+    "nba_team_code": "HOU",
+    "position": "G",
+    "birth_date": "2004-06-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1631106,
+    "first_name": "Tari",
+    "last_name": "Eason",
+    "full_name": "Tari Eason",
+    "nba_team_code": "HOU",
+    "position": "F",
+    "birth_date": "2001-05-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1631466,
+    "first_name": "Nate",
+    "last_name": "Williams",
+    "full_name": "Nate Williams",
+    "nba_team_code": "HOU",
+    "position": "G",
+    "birth_date": "1999-02-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1630578,
+    "first_name": "Alperen",
+    "last_name": "Sengun",
+    "full_name": "Alperen Sengun",
+    "nba_team_code": "HOU",
+    "position": "C",
+    "birth_date": "2002-07-25",
+    "season": 2024
+  },
+  {
+    "external_id": 201145,
+    "first_name": "Jeff",
+    "last_name": "Green",
+    "full_name": "Jeff Green",
+    "nba_team_code": "HOU",
+    "position": "F",
+    "birth_date": "1986-08-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1631223,
+    "first_name": "David",
+    "last_name": "Roddy",
+    "full_name": "David Roddy",
+    "nba_team_code": "HOU",
+    "position": "F",
+    "birth_date": "2001-03-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1629098,
+    "first_name": "Jack",
+    "last_name": "McVeigh",
+    "full_name": "Jack McVeigh",
+    "nba_team_code": "HOU",
+    "position": "G-F",
+    "birth_date": "1996-06-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630169,
+    "first_name": "Tyrese",
+    "last_name": "Haliburton",
+    "full_name": "Tyrese Haliburton",
+    "nba_team_code": "IND",
+    "position": "G",
+    "birth_date": "2000-02-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1631097,
+    "first_name": "Bennedict",
+    "last_name": "Mathurin",
+    "full_name": "Bennedict Mathurin",
+    "nba_team_code": "IND",
+    "position": "G-F",
+    "birth_date": "2002-06-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1630167,
+    "first_name": "Obi",
+    "last_name": "Toppin",
+    "full_name": "Obi Toppin",
+    "nba_team_code": "IND",
+    "position": "F",
+    "birth_date": "1998-03-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1629614,
+    "first_name": "Andrew",
+    "last_name": "Nembhard",
+    "full_name": "Andrew Nembhard",
+    "nba_team_code": "IND",
+    "position": "G-F",
+    "birth_date": "2000-01-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1628418,
+    "first_name": "Thomas",
+    "last_name": "Bryant",
+    "full_name": "Thomas Bryant",
+    "nba_team_code": "IND",
+    "position": "C-F",
+    "birth_date": "1997-07-31",
+    "season": 2024
+  },
+  {
+    "external_id": 1641716,
+    "first_name": "Jarace",
+    "last_name": "Walker",
+    "full_name": "Jarace Walker",
+    "nba_team_code": "IND",
+    "position": "F",
+    "birth_date": "2003-09-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1642402,
+    "first_name": "Enrique",
+    "last_name": "Freeman",
+    "full_name": "Enrique Freeman",
+    "nba_team_code": "IND",
+    "position": "F",
+    "birth_date": "2000-07-29",
+    "season": 2024
+  },
+  {
+    "external_id": 204456,
+    "first_name": "T.J.",
+    "last_name": "McConnell",
+    "full_name": "T.J. McConnell",
+    "nba_team_code": "IND",
+    "position": "G",
+    "birth_date": "1992-03-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1642484,
+    "first_name": "RayJ",
+    "last_name": "Dennis",
+    "full_name": "RayJ Dennis",
+    "nba_team_code": "IND",
+    "position": "G",
+    "birth_date": "2001-03-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1642277,
+    "first_name": "Johnny",
+    "last_name": "Furphy",
+    "full_name": "Johnny Furphy",
+    "nba_team_code": "IND",
+    "position": "G",
+    "birth_date": "2004-12-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1628396,
+    "first_name": "Tony",
+    "last_name": "Bradley",
+    "full_name": "Tony Bradley",
+    "nba_team_code": "IND",
+    "position": "C-F",
+    "birth_date": "1998-01-08",
+    "season": 2024
+  },
+  {
+    "external_id": 201949,
+    "first_name": "James",
+    "last_name": "Johnson",
+    "full_name": "James Johnson",
+    "nba_team_code": "IND",
+    "position": "F",
+    "birth_date": "1987-02-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1630543,
+    "first_name": "Isaiah",
+    "last_name": "Jackson",
+    "full_name": "Isaiah Jackson",
+    "nba_team_code": "IND",
+    "position": "F",
+    "birth_date": "2002-01-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1630174,
+    "first_name": "Aaron",
+    "last_name": "Nesmith",
+    "full_name": "Aaron Nesmith",
+    "nba_team_code": "IND",
+    "position": "G-F",
+    "birth_date": "1999-10-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1641767,
+    "first_name": "Ben",
+    "last_name": "Sheppard",
+    "full_name": "Ben Sheppard",
+    "nba_team_code": "IND",
+    "position": "G",
+    "birth_date": "2001-07-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1631245,
+    "first_name": "Quenton",
+    "last_name": "Jackson",
+    "full_name": "Quenton Jackson",
+    "nba_team_code": "IND",
+    "position": "G",
+    "birth_date": "1998-09-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1626167,
+    "first_name": "Myles",
+    "last_name": "Turner",
+    "full_name": "Myles Turner",
+    "nba_team_code": "IND",
+    "position": "C-F",
+    "birth_date": "1996-03-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1627783,
+    "first_name": "Pascal",
+    "last_name": "Siakam",
+    "full_name": "Pascal Siakam",
+    "nba_team_code": "IND",
+    "position": "F",
+    "birth_date": "1994-04-02",
+    "season": 2024
+  },
+  {
+    "external_id": 201935,
+    "first_name": "James",
+    "last_name": "Harden",
+    "full_name": "James Harden",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "1989-08-26",
+    "season": 2024
+  },
+  {
+    "external_id": 202695,
+    "first_name": "Kawhi",
+    "last_name": "Leonard",
+    "full_name": "Kawhi Leonard",
+    "nba_team_code": "LAC",
+    "position": "F",
+    "birth_date": "1991-06-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1641754,
+    "first_name": "Seth",
+    "last_name": "Lundy",
+    "full_name": "Seth Lundy",
+    "nba_team_code": "LAC",
+    "position": "G-F",
+    "birth_date": "2000-04-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1629599,
+    "first_name": "Amir",
+    "last_name": "Coffey",
+    "full_name": "Amir Coffey",
+    "nba_team_code": "LAC",
+    "position": "G-F",
+    "birth_date": "1997-06-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1627739,
+    "first_name": "Kris",
+    "last_name": "Dunn",
+    "full_name": "Kris Dunn",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "1994-03-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1642280,
+    "first_name": "Trentyn",
+    "last_name": "Flowers",
+    "full_name": "Trentyn Flowers",
+    "nba_team_code": "LAC",
+    "position": "F",
+    "birth_date": "2005-03-08",
+    "season": 2024
+  },
+  {
+    "external_id": 203992,
+    "first_name": "Bogdan",
+    "last_name": "Bogdanovi\u0107",
+    "full_name": "Bogdan Bogdanovi\u0107",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "1992-08-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1641757,
+    "first_name": "Jordan",
+    "last_name": "Miller",
+    "full_name": "Jordan Miller",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "2000-01-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1642353,
+    "first_name": "Cam",
+    "last_name": "Christie",
+    "full_name": "Cam Christie",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "2005-07-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1629234,
+    "first_name": "Drew",
+    "last_name": "Eubanks",
+    "full_name": "Drew Eubanks",
+    "nba_team_code": "LAC",
+    "position": "F-C",
+    "birth_date": "1997-02-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1641738,
+    "first_name": "Kobe",
+    "last_name": "Brown",
+    "full_name": "Kobe Brown",
+    "nba_team_code": "LAC",
+    "position": "F",
+    "birth_date": "2000-01-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1631116,
+    "first_name": "Patrick",
+    "last_name": "Baldwin Jr.",
+    "full_name": "Patrick Baldwin Jr.",
+    "nba_team_code": "LAC",
+    "position": "F",
+    "birth_date": "2002-11-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1626181,
+    "first_name": "Norman",
+    "last_name": "Powell",
+    "full_name": "Norman Powell",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "1993-05-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1627732,
+    "first_name": "Ben",
+    "last_name": "Simmons",
+    "full_name": "Ben Simmons",
+    "nba_team_code": "LAC",
+    "position": "G-F",
+    "birth_date": "1996-07-20",
+    "season": 2024
+  },
+  {
+    "external_id": 201587,
+    "first_name": "Nicolas",
+    "last_name": "Batum",
+    "full_name": "Nicolas Batum",
+    "nba_team_code": "LAC",
+    "position": "G-F",
+    "birth_date": "1988-12-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1627826,
+    "first_name": "Ivica",
+    "last_name": "Zubac",
+    "full_name": "Ivica Zubac",
+    "nba_team_code": "LAC",
+    "position": "C",
+    "birth_date": "1997-03-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1627884,
+    "first_name": "Derrick",
+    "last_name": "Jones Jr.",
+    "full_name": "Derrick Jones Jr.",
+    "nba_team_code": "LAC",
+    "position": "F",
+    "birth_date": "1997-02-15",
+    "season": 2024
+  },
+  {
+    "external_id": 201988,
+    "first_name": "Patty",
+    "last_name": "Mills",
+    "full_name": "Patty Mills",
+    "nba_team_code": "LAC",
+    "position": "G",
+    "birth_date": "1988-08-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1629020,
+    "first_name": "Jarred",
+    "last_name": "Vanderbilt",
+    "full_name": "Jarred Vanderbilt",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "1999-04-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1642261,
+    "first_name": "Dalton",
+    "last_name": "Knecht",
+    "full_name": "Dalton Knecht",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "2001-04-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1629216,
+    "first_name": "Gabe",
+    "last_name": "Vincent",
+    "full_name": "Gabe Vincent",
+    "nba_team_code": "LAL",
+    "position": "G",
+    "birth_date": "1996-06-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1642355,
+    "first_name": "Bronny",
+    "last_name": "James",
+    "full_name": "Bronny James",
+    "nba_team_code": "LAL",
+    "position": "G",
+    "birth_date": "2004-10-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1631132,
+    "first_name": "Christian",
+    "last_name": "Koloko",
+    "full_name": "Christian Koloko",
+    "nba_team_code": "LAL",
+    "position": "C",
+    "birth_date": "2000-06-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1629637,
+    "first_name": "Jaxson",
+    "last_name": "Hayes",
+    "full_name": "Jaxson Hayes",
+    "nba_team_code": "LAL",
+    "position": "C-F",
+    "birth_date": "2000-05-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1628467,
+    "first_name": "Maxi",
+    "last_name": "Kleber",
+    "full_name": "Maxi Kleber",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "1992-01-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1630559,
+    "first_name": "Austin",
+    "last_name": "Reaves",
+    "full_name": "Austin Reaves",
+    "nba_team_code": "LAL",
+    "position": "G",
+    "birth_date": "1998-05-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1627827,
+    "first_name": "Dorian",
+    "last_name": "Finney-Smith",
+    "full_name": "Dorian Finney-Smith",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "1993-05-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1629003,
+    "first_name": "Shake",
+    "last_name": "Milton",
+    "full_name": "Shake Milton",
+    "nba_team_code": "LAL",
+    "position": "G",
+    "birth_date": "1996-09-26",
+    "season": 2024
+  },
+  {
+    "external_id": 2544,
+    "first_name": "LeBron",
+    "last_name": "James",
+    "full_name": "LeBron James",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "1984-12-30",
+    "season": 2024
+  },
+  {
+    "external_id": 203458,
+    "first_name": "Alex",
+    "last_name": "Len",
+    "full_name": "Alex Len",
+    "nba_team_code": "LAL",
+    "position": "C",
+    "birth_date": "1993-06-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1629060,
+    "first_name": "Rui",
+    "last_name": "Hachimura",
+    "full_name": "Rui Hachimura",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "1998-02-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630692,
+    "first_name": "Jordan",
+    "last_name": "Goodwin",
+    "full_name": "Jordan Goodwin",
+    "nba_team_code": "LAL",
+    "position": "G",
+    "birth_date": "1998-10-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1641998,
+    "first_name": "Trey",
+    "last_name": "Jemison III",
+    "full_name": "Trey Jemison III",
+    "nba_team_code": "LAL",
+    "position": "C",
+    "birth_date": "1999-11-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1629029,
+    "first_name": "Luka",
+    "last_name": "Don\u010di\u0107",
+    "full_name": "Luka Don\u010di\u0107",
+    "nba_team_code": "LAL",
+    "position": "F-G",
+    "birth_date": "1999-02-28",
+    "season": 2024
+  },
+  {
+    "external_id": 202693,
+    "first_name": "Markieff",
+    "last_name": "Morris",
+    "full_name": "Markieff Morris",
+    "nba_team_code": "LAL",
+    "position": "F",
+    "birth_date": "1989-09-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1642389,
+    "first_name": "Zyon",
+    "last_name": "Pullin",
+    "full_name": "Zyon Pullin",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "2001-03-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1642377,
+    "first_name": "Jaylen",
+    "last_name": "Wells",
+    "full_name": "Jaylen Wells",
+    "nba_team_code": "MEM",
+    "position": "F",
+    "birth_date": "2003-08-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630590,
+    "first_name": "Scotty",
+    "last_name": "Pippen Jr.",
+    "full_name": "Scotty Pippen Jr.",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "2000-11-10",
+    "season": 2024
+  },
+  {
+    "external_id": 203484,
+    "first_name": "Kentavious",
+    "last_name": "Caldwell-Pope",
+    "full_name": "Kentavious Caldwell-Pope",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "1993-02-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1631246,
+    "first_name": "Vince",
+    "last_name": "Williams Jr.",
+    "full_name": "Vince Williams Jr.",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "2000-08-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1630583,
+    "first_name": "Santi",
+    "last_name": "Aldama",
+    "full_name": "Santi Aldama",
+    "nba_team_code": "MEM",
+    "position": "F-C",
+    "birth_date": "2001-01-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1630205,
+    "first_name": "Lamar",
+    "last_name": "Stevens",
+    "full_name": "Lamar Stevens",
+    "nba_team_code": "MEM",
+    "position": "F",
+    "birth_date": "1997-07-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1628379,
+    "first_name": "Luke",
+    "last_name": "Kennard",
+    "full_name": "Luke Kennard",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "1996-06-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1629630,
+    "first_name": "Ja",
+    "last_name": "Morant",
+    "full_name": "Ja Morant",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "1999-08-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1628991,
+    "first_name": "Jaren",
+    "last_name": "Jackson Jr.",
+    "full_name": "Jaren Jackson Jr.",
+    "nba_team_code": "MEM",
+    "position": "F-C",
+    "birth_date": "1999-09-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1641744,
+    "first_name": "Zach",
+    "last_name": "Edey",
+    "full_name": "Zach Edey",
+    "nba_team_code": "MEM",
+    "position": "C",
+    "birth_date": "2002-05-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1629634,
+    "first_name": "Brandon",
+    "last_name": "Clarke",
+    "full_name": "Brandon Clarke",
+    "nba_team_code": "MEM",
+    "position": "F",
+    "birth_date": "1996-09-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1642530,
+    "first_name": "Yuki",
+    "last_name": "Kawamura",
+    "full_name": "Yuki Kawamura",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "2001-05-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1642285,
+    "first_name": "Cam",
+    "last_name": "Spencer",
+    "full_name": "Cam Spencer",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "2000-04-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1630643,
+    "first_name": "Jay",
+    "last_name": "Huff",
+    "full_name": "Jay Huff",
+    "nba_team_code": "MEM",
+    "position": "C",
+    "birth_date": "1997-08-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1628963,
+    "first_name": "Marvin",
+    "last_name": "Bagley III",
+    "full_name": "Marvin Bagley III",
+    "nba_team_code": "MEM",
+    "position": "F",
+    "birth_date": "1999-03-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1641713,
+    "first_name": "GG",
+    "last_name": "Jackson",
+    "full_name": "GG Jackson",
+    "nba_team_code": "MEM",
+    "position": "F",
+    "birth_date": "2004-12-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1629723,
+    "first_name": "John",
+    "last_name": "Konchar",
+    "full_name": "John Konchar",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "1996-03-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1630175,
+    "first_name": "Cole",
+    "last_name": "Anthony",
+    "full_name": "Cole Anthony",
+    "nba_team_code": "MEM",
+    "position": "G",
+    "birth_date": "2000-05-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1641815,
+    "first_name": "Isaiah",
+    "last_name": "Stevens",
+    "full_name": "Isaiah Stevens",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "2000-11-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1626179,
+    "first_name": "Terry",
+    "last_name": "Rozier",
+    "full_name": "Terry Rozier",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "1994-03-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1631107,
+    "first_name": "Nikola",
+    "last_name": "Jovi\u0107",
+    "full_name": "Nikola Jovi\u0107",
+    "nba_team_code": "MIA",
+    "position": "F",
+    "birth_date": "2003-06-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1642276,
+    "first_name": "Kel'el",
+    "last_name": "Ware",
+    "full_name": "Kel'el Ware",
+    "nba_team_code": "MIA",
+    "position": "C",
+    "birth_date": "2004-04-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1630528,
+    "first_name": "Josh",
+    "last_name": "Christopher",
+    "full_name": "Josh Christopher",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "2001-12-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1641796,
+    "first_name": "Pelle",
+    "last_name": "Larsson",
+    "full_name": "Pelle Larsson",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "2001-02-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1631170,
+    "first_name": "Jaime",
+    "last_name": "Jaquez Jr.",
+    "full_name": "Jaime Jaquez Jr.",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "2001-02-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630696,
+    "first_name": "Dru",
+    "last_name": "Smith",
+    "full_name": "Dru Smith",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "1997-12-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1628389,
+    "first_name": "Bam",
+    "last_name": "Adebayo",
+    "full_name": "Bam Adebayo",
+    "nba_team_code": "MIA",
+    "position": "C-F",
+    "birth_date": "1997-07-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1629639,
+    "first_name": "Tyler",
+    "last_name": "Herro",
+    "full_name": "Tyler Herro",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "2000-01-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1642352,
+    "first_name": "Keshad",
+    "last_name": "Johnson",
+    "full_name": "Keshad Johnson",
+    "nba_team_code": "MIA",
+    "position": "F",
+    "birth_date": "2001-06-23",
+    "season": 2024
+  },
+  {
+    "external_id": 202692,
+    "first_name": "Alec",
+    "last_name": "Burks",
+    "full_name": "Alec Burks",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "1991-07-20",
+    "season": 2024
+  },
+  {
+    "external_id": 203937,
+    "first_name": "Kyle",
+    "last_name": "Anderson",
+    "full_name": "Kyle Anderson",
+    "nba_team_code": "MIA",
+    "position": "F-G",
+    "birth_date": "1993-09-20",
+    "season": 2024
+  },
+  {
+    "external_id": 203952,
+    "first_name": "Andrew",
+    "last_name": "Wiggins",
+    "full_name": "Andrew Wiggins",
+    "nba_team_code": "MIA",
+    "position": "F",
+    "birth_date": "1995-02-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1629312,
+    "first_name": "Haywood",
+    "last_name": "Highsmith",
+    "full_name": "Haywood Highsmith",
+    "nba_team_code": "MIA",
+    "position": "F",
+    "birth_date": "1996-12-09",
+    "season": 2024
+  },
+  {
+    "external_id": 201567,
+    "first_name": "Kevin",
+    "last_name": "Love",
+    "full_name": "Kevin Love",
+    "nba_team_code": "MIA",
+    "position": "F-C",
+    "birth_date": "1988-09-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1630558,
+    "first_name": "Davion",
+    "last_name": "Mitchell",
+    "full_name": "Davion Mitchell",
+    "nba_team_code": "MIA",
+    "position": "G",
+    "birth_date": "1998-09-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1629130,
+    "first_name": "Duncan",
+    "last_name": "Robinson",
+    "full_name": "Duncan Robinson",
+    "nba_team_code": "MIA",
+    "position": "F",
+    "birth_date": "1994-04-22",
+    "season": 2024
+  },
+  {
+    "external_id": 203081,
+    "first_name": "Damian",
+    "last_name": "Lillard",
+    "full_name": "Damian Lillard",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "1990-07-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1630579,
+    "first_name": "Jericho",
+    "last_name": "Sims",
+    "full_name": "Jericho Sims",
+    "nba_team_code": "MIL",
+    "position": "C",
+    "birth_date": "1998-10-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1629645,
+    "first_name": "Kevin",
+    "last_name": "Porter Jr.",
+    "full_name": "Kevin Porter Jr.",
+    "nba_team_code": "MIL",
+    "position": "G-F",
+    "birth_date": "2000-05-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1629018,
+    "first_name": "Gary",
+    "last_name": "Trent Jr.",
+    "full_name": "Gary Trent Jr.",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "1999-01-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1641753,
+    "first_name": "Chris",
+    "last_name": "Livingston",
+    "full_name": "Chris Livingston",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "2003-10-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1626171,
+    "first_name": "Bobby",
+    "last_name": "Portis",
+    "full_name": "Bobby Portis",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "1995-02-10",
+    "season": 2024
+  },
+  {
+    "external_id": 201572,
+    "first_name": "Brook",
+    "last_name": "Lopez",
+    "full_name": "Brook Lopez",
+    "nba_team_code": "MIL",
+    "position": "C",
+    "birth_date": "1988-04-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1627752,
+    "first_name": "Taurean",
+    "last_name": "Prince",
+    "full_name": "Taurean Prince",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "1994-03-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1631157,
+    "first_name": "Ryan",
+    "last_name": "Rollins",
+    "full_name": "Ryan Rollins",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "2002-07-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1631123,
+    "first_name": "Jamaree",
+    "last_name": "Bouyea",
+    "full_name": "Jamaree Bouyea",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "1999-06-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630649,
+    "first_name": "Stanley",
+    "last_name": "Umude",
+    "full_name": "Stanley Umude",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "1999-04-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1628398,
+    "first_name": "Kyle",
+    "last_name": "Kuzma",
+    "full_name": "Kyle Kuzma",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "1995-07-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1631260,
+    "first_name": "AJ",
+    "last_name": "Green",
+    "full_name": "AJ Green",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "1999-09-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1641890,
+    "first_name": "Tyler",
+    "last_name": "Smith",
+    "full_name": "Tyler Smith",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "2004-11-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1626192,
+    "first_name": "Pat",
+    "last_name": "Connaughton",
+    "full_name": "Pat Connaughton",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "1993-01-06",
+    "season": 2024
+  },
+  {
+    "external_id": 203507,
+    "first_name": "Giannis",
+    "last_name": "Antetokounmpo",
+    "full_name": "Giannis Antetokounmpo",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "1994-12-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1631250,
+    "first_name": "Pete",
+    "last_name": "Nance",
+    "full_name": "Pete Nance",
+    "nba_team_code": "MIL",
+    "position": "F",
+    "birth_date": "2000-02-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1641748,
+    "first_name": "Andre",
+    "last_name": "Jackson Jr.",
+    "full_name": "Andre Jackson Jr.",
+    "nba_team_code": "MIL",
+    "position": "G",
+    "birth_date": "2001-11-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1628978,
+    "first_name": "Donte",
+    "last_name": "DiVincenzo",
+    "full_name": "Donte DiVincenzo",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "1997-01-31",
+    "season": 2024
+  },
+  {
+    "external_id": 1630545,
+    "first_name": "Terrence",
+    "last_name": "Shannon Jr.",
+    "full_name": "Terrence Shannon Jr.",
+    "nba_team_code": "MIN",
+    "position": "G-F",
+    "birth_date": "2000-07-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1630183,
+    "first_name": "Jaden",
+    "last_name": "McDaniels",
+    "full_name": "Jaden McDaniels",
+    "nba_team_code": "MIN",
+    "position": "F",
+    "birth_date": "2000-09-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1642265,
+    "first_name": "Rob",
+    "last_name": "Dillingham",
+    "full_name": "Rob Dillingham",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "2005-01-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1630162,
+    "first_name": "Anthony",
+    "last_name": "Edwards",
+    "full_name": "Anthony Edwards",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "2001-08-05",
+    "season": 2024
+  },
+  {
+    "external_id": 204060,
+    "first_name": "Joe",
+    "last_name": "Ingles",
+    "full_name": "Joe Ingles",
+    "nba_team_code": "MIN",
+    "position": "F-G",
+    "birth_date": "1987-10-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1631169,
+    "first_name": "Josh",
+    "last_name": "Minott",
+    "full_name": "Josh Minott",
+    "nba_team_code": "MIN",
+    "position": "F",
+    "birth_date": "2002-11-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1629638,
+    "first_name": "Nickeil",
+    "last_name": "Alexander-Walker",
+    "full_name": "Nickeil Alexander-Walker",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "1998-09-02",
+    "season": 2024
+  },
+  {
+    "external_id": 201144,
+    "first_name": "Mike",
+    "last_name": "Conley",
+    "full_name": "Mike Conley",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "1987-10-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1629675,
+    "first_name": "Naz",
+    "last_name": "Reid",
+    "full_name": "Naz Reid",
+    "nba_team_code": "MIN",
+    "position": "C-F",
+    "birth_date": "1999-08-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1641803,
+    "first_name": "Tristen",
+    "last_name": "Newton",
+    "full_name": "Tristen Newton",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "2001-04-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1642399,
+    "first_name": "Jesse",
+    "last_name": "Edwards",
+    "full_name": "Jesse Edwards",
+    "nba_team_code": "MIN",
+    "position": "C",
+    "birth_date": "2000-03-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1641740,
+    "first_name": "Jaylen",
+    "last_name": "Clark",
+    "full_name": "Jaylen Clark",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "2001-10-13",
+    "season": 2024
+  },
+  {
+    "external_id": 203497,
+    "first_name": "Rudy",
+    "last_name": "Gobert",
+    "full_name": "Rudy Gobert",
+    "nba_team_code": "MIN",
+    "position": "C",
+    "birth_date": "1992-06-26",
+    "season": 2024
+  },
+  {
+    "external_id": 203944,
+    "first_name": "Julius",
+    "last_name": "Randle",
+    "full_name": "Julius Randle",
+    "nba_team_code": "MIN",
+    "position": "F-C",
+    "birth_date": "1994-11-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1631159,
+    "first_name": "Leonard",
+    "last_name": "Miller",
+    "full_name": "Leonard Miller",
+    "nba_team_code": "MIN",
+    "position": "F",
+    "birth_date": "2003-11-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630568,
+    "first_name": "Luka",
+    "last_name": "Garza",
+    "full_name": "Luka Garza",
+    "nba_team_code": "MIN",
+    "position": "C",
+    "birth_date": "1998-12-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630538,
+    "first_name": "Bones",
+    "last_name": "Hyland",
+    "full_name": "Bones Hyland",
+    "nba_team_code": "MIN",
+    "position": "G",
+    "birth_date": "2000-09-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1631232,
+    "first_name": "Keion",
+    "last_name": "Brooks Jr.",
+    "full_name": "Keion Brooks Jr.",
+    "nba_team_code": "NOP",
+    "position": "F",
+    "birth_date": "2000-08-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1628971,
+    "first_name": "Bruce",
+    "last_name": "Brown",
+    "full_name": "Bruce Brown",
+    "nba_team_code": "NOP",
+    "position": "G-F",
+    "birth_date": "1996-08-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1629627,
+    "first_name": "Zion",
+    "last_name": "Williamson",
+    "full_name": "Zion Williamson",
+    "nba_team_code": "NOP",
+    "position": "F",
+    "birth_date": "2000-07-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1630529,
+    "first_name": "Herbert",
+    "last_name": "Jones",
+    "full_name": "Herbert Jones",
+    "nba_team_code": "NOP",
+    "position": "F",
+    "birth_date": "1998-10-06",
+    "season": 2024
+  },
+  {
+    "external_id": 203468,
+    "first_name": "CJ",
+    "last_name": "McCollum",
+    "full_name": "CJ McCollum",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "1991-09-19",
+    "season": 2024
+  },
+  {
+    "external_id": 203901,
+    "first_name": "Elfrid",
+    "last_name": "Payton",
+    "full_name": "Elfrid Payton",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "1994-02-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1627749,
+    "first_name": "Dejounte",
+    "last_name": "Murray",
+    "full_name": "Dejounte Murray",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "1996-09-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1631288,
+    "first_name": "Jamal",
+    "last_name": "Cain",
+    "full_name": "Jamal Cain",
+    "nba_team_code": "NOP",
+    "position": "F",
+    "birth_date": "1999-03-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1630527,
+    "first_name": "Brandon",
+    "last_name": "Boston",
+    "full_name": "Brandon Boston",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "2001-11-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1641810,
+    "first_name": "Antonio",
+    "last_name": "Reeves",
+    "full_name": "Antonio Reeves",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "2000-11-20",
+    "season": 2024
+  },
+  {
+    "external_id": 203482,
+    "first_name": "Kelly",
+    "last_name": "Olynyk",
+    "full_name": "Kelly Olynyk",
+    "nba_team_code": "NOP",
+    "position": "F-C",
+    "birth_date": "1991-04-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1630631,
+    "first_name": "Jose",
+    "last_name": "Alvarado",
+    "full_name": "Jose Alvarado",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "1998-04-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1631255,
+    "first_name": "Karlo",
+    "last_name": "Matkovi\u0107",
+    "full_name": "Karlo Matkovi\u0107",
+    "nba_team_code": "NOP",
+    "position": "F-C",
+    "birth_date": "2001-03-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1642274,
+    "first_name": "Yves",
+    "last_name": "Missi",
+    "full_name": "Yves Missi",
+    "nba_team_code": "NOP",
+    "position": "C",
+    "birth_date": "2004-05-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1631311,
+    "first_name": "Lester",
+    "last_name": "Quinones",
+    "full_name": "Lester Quinones",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "2000-11-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1641722,
+    "first_name": "Jordan",
+    "last_name": "Hawkins",
+    "full_name": "Jordan Hawkins",
+    "nba_team_code": "NOP",
+    "position": "G",
+    "birth_date": "2002-04-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1630530,
+    "first_name": "Trey",
+    "last_name": "Murphy III",
+    "full_name": "Trey Murphy III",
+    "nba_team_code": "NOP",
+    "position": "F",
+    "birth_date": "2000-06-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1630526,
+    "first_name": "Jeremiah",
+    "last_name": "Robinson-Earl",
+    "full_name": "Jeremiah Robinson-Earl",
+    "nba_team_code": "NOP",
+    "position": "F",
+    "birth_date": "2000-11-03",
+    "season": 2024
+  },
+  {
+    "external_id": 200782,
+    "first_name": "P.J.",
+    "last_name": "Tucker",
+    "full_name": "P.J. Tucker",
+    "nba_team_code": "NYK",
+    "position": "F",
+    "birth_date": "1985-05-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1626153,
+    "first_name": "Delon",
+    "last_name": "Wright",
+    "full_name": "Delon Wright",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "1992-04-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630699,
+    "first_name": "MarJon",
+    "last_name": "Beauchamp",
+    "full_name": "MarJon Beauchamp",
+    "nba_team_code": "NYK",
+    "position": "F",
+    "birth_date": "2000-10-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1626166,
+    "first_name": "Cameron",
+    "last_name": "Payne",
+    "full_name": "Cameron Payne",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "1994-08-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1630540,
+    "first_name": "Miles",
+    "last_name": "McBride",
+    "full_name": "Miles McBride",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "2000-09-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1628404,
+    "first_name": "Josh",
+    "last_name": "Hart",
+    "full_name": "Josh Hart",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "1995-03-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1642359,
+    "first_name": "Pac\u00f4me",
+    "last_name": "Dadiet",
+    "full_name": "Pac\u00f4me Dadiet",
+    "nba_team_code": "NYK",
+    "position": "F",
+    "birth_date": "2005-07-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630173,
+    "first_name": "Precious",
+    "last_name": "Achiuwa",
+    "full_name": "Precious Achiuwa",
+    "nba_team_code": "NYK",
+    "position": "F",
+    "birth_date": "1999-09-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1628384,
+    "first_name": "OG",
+    "last_name": "Anunoby",
+    "full_name": "OG Anunoby",
+    "nba_team_code": "NYK",
+    "position": "F-G",
+    "birth_date": "1997-07-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1641755,
+    "first_name": "Kevin",
+    "last_name": "McCullar Jr.",
+    "full_name": "Kevin McCullar Jr.",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "2001-03-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1628973,
+    "first_name": "Jalen",
+    "last_name": "Brunson",
+    "full_name": "Jalen Brunson",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "1996-08-31",
+    "season": 2024
+  },
+  {
+    "external_id": 1642278,
+    "first_name": "Tyler",
+    "last_name": "Kolek",
+    "full_name": "Tyler Kolek",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "2001-03-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1629011,
+    "first_name": "Mitchell",
+    "last_name": "Robinson",
+    "full_name": "Mitchell Robinson",
+    "nba_team_code": "NYK",
+    "position": "C-F",
+    "birth_date": "1998-04-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1628969,
+    "first_name": "Mikal",
+    "last_name": "Bridges",
+    "full_name": "Mikal Bridges",
+    "nba_team_code": "NYK",
+    "position": "G-F",
+    "birth_date": "1996-08-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1641817,
+    "first_name": "Anton",
+    "last_name": "Watson",
+    "full_name": "Anton Watson",
+    "nba_team_code": "NYK",
+    "position": "F",
+    "birth_date": "2000-10-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1626157,
+    "first_name": "Karl-Anthony",
+    "last_name": "Towns",
+    "full_name": "Karl-Anthony Towns",
+    "nba_team_code": "NYK",
+    "position": "C-F",
+    "birth_date": "1995-11-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1629013,
+    "first_name": "Landry",
+    "last_name": "Shamet",
+    "full_name": "Landry Shamet",
+    "nba_team_code": "NYK",
+    "position": "G",
+    "birth_date": "1997-03-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1630574,
+    "first_name": "Ariel",
+    "last_name": "Hukporti",
+    "full_name": "Ariel Hukporti",
+    "nba_team_code": "NYK",
+    "position": "C",
+    "birth_date": "2002-04-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1628983,
+    "first_name": "Shai",
+    "last_name": "Gilgeous-Alexander",
+    "full_name": "Shai Gilgeous-Alexander",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "1998-07-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1641794,
+    "first_name": "Dillon",
+    "last_name": "Jones",
+    "full_name": "Dillon Jones",
+    "nba_team_code": "OKC",
+    "position": "F",
+    "birth_date": "2001-10-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1629652,
+    "first_name": "Luguentz",
+    "last_name": "Dort",
+    "full_name": "Luguentz Dort",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "1999-04-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1631119,
+    "first_name": "Jaylin",
+    "last_name": "Williams",
+    "full_name": "Jaylin Williams",
+    "nba_team_code": "OKC",
+    "position": "F",
+    "birth_date": "2002-06-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1631096,
+    "first_name": "Chet",
+    "last_name": "Holmgren",
+    "full_name": "Chet Holmgren",
+    "nba_team_code": "OKC",
+    "position": "C-F",
+    "birth_date": "2002-05-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1631114,
+    "first_name": "Jalen",
+    "last_name": "Williams",
+    "full_name": "Jalen Williams",
+    "nba_team_code": "OKC",
+    "position": "G-F",
+    "birth_date": "2001-04-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1627936,
+    "first_name": "Alex",
+    "last_name": "Caruso",
+    "full_name": "Alex Caruso",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "1994-02-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1630198,
+    "first_name": "Isaiah",
+    "last_name": "Joe",
+    "full_name": "Isaiah Joe",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "1999-07-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1631172,
+    "first_name": "Ousmane",
+    "last_name": "Dieng",
+    "full_name": "Ousmane Dieng",
+    "nba_team_code": "OKC",
+    "position": "F",
+    "birth_date": "2003-05-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1641745,
+    "first_name": "Adam",
+    "last_name": "Flagler",
+    "full_name": "Adam Flagler",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "1999-12-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1642382,
+    "first_name": "Branden",
+    "last_name": "Carlson",
+    "full_name": "Branden Carlson",
+    "nba_team_code": "OKC",
+    "position": "C",
+    "birth_date": "1999-06-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630598,
+    "first_name": "Aaron",
+    "last_name": "Wiggins",
+    "full_name": "Aaron Wiggins",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "1999-01-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1641717,
+    "first_name": "Cason",
+    "last_name": "Wallace",
+    "full_name": "Cason Wallace",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "2003-11-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1642349,
+    "first_name": "Ajay",
+    "last_name": "Mitchell",
+    "full_name": "Ajay Mitchell",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "2002-06-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1629026,
+    "first_name": "Kenrich",
+    "last_name": "Williams",
+    "full_name": "Kenrich Williams",
+    "nba_team_code": "OKC",
+    "position": "G-F",
+    "birth_date": "1994-12-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1642260,
+    "first_name": "Nikola",
+    "last_name": "Topi\u0107",
+    "full_name": "Nikola Topi\u0107",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "2005-08-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1628392,
+    "first_name": "Isaiah",
+    "last_name": "Hartenstein",
+    "full_name": "Isaiah Hartenstein",
+    "nba_team_code": "OKC",
+    "position": "C-F",
+    "birth_date": "1998-05-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1642505,
+    "first_name": "Alex",
+    "last_name": "Ducas",
+    "full_name": "Alex Ducas",
+    "nba_team_code": "OKC",
+    "position": "G",
+    "birth_date": "2000-12-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1641710,
+    "first_name": "Anthony",
+    "last_name": "Black",
+    "full_name": "Anthony Black",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "2004-01-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1628371,
+    "first_name": "Jonathan",
+    "last_name": "Isaac",
+    "full_name": "Jonathan Isaac",
+    "nba_team_code": "ORL",
+    "position": "F",
+    "birth_date": "1997-10-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1631216,
+    "first_name": "Caleb",
+    "last_name": "Houstan",
+    "full_name": "Caleb Houstan",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "2003-01-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1630217,
+    "first_name": "Desmond",
+    "last_name": "Bane",
+    "full_name": "Desmond Bane",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "1998-06-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1630591,
+    "first_name": "Jalen",
+    "last_name": "Suggs",
+    "full_name": "Jalen Suggs",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "2001-06-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1631094,
+    "first_name": "Paolo",
+    "last_name": "Banchero",
+    "full_name": "Paolo Banchero",
+    "nba_team_code": "ORL",
+    "position": "F",
+    "birth_date": "2002-11-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1630644,
+    "first_name": "Mac",
+    "last_name": "McClung",
+    "full_name": "Mac McClung",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "1999-01-06",
+    "season": 2024
+  },
+  {
+    "external_id": 202709,
+    "first_name": "Cory",
+    "last_name": "Joseph",
+    "full_name": "Cory Joseph",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "1991-08-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1630243,
+    "first_name": "Trevelin",
+    "last_name": "Queen",
+    "full_name": "Trevelin Queen",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "1997-02-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1641724,
+    "first_name": "Jett",
+    "last_name": "Howard",
+    "full_name": "Jett Howard",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "2003-09-14",
+    "season": 2024
+  },
+  {
+    "external_id": 203914,
+    "first_name": "Gary",
+    "last_name": "Harris",
+    "full_name": "Gary Harris",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "1994-09-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1629021,
+    "first_name": "Moritz",
+    "last_name": "Wagner",
+    "full_name": "Moritz Wagner",
+    "nba_team_code": "ORL",
+    "position": "F-C",
+    "birth_date": "1997-04-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630532,
+    "first_name": "Franz",
+    "last_name": "Wagner",
+    "full_name": "Franz Wagner",
+    "nba_team_code": "ORL",
+    "position": "F",
+    "birth_date": "2001-08-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1641783,
+    "first_name": "Tristan",
+    "last_name": "da Silva",
+    "full_name": "Tristan da Silva",
+    "nba_team_code": "ORL",
+    "position": "F",
+    "birth_date": "2001-05-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1628976,
+    "first_name": "Wendell",
+    "last_name": "Carter Jr.",
+    "full_name": "Wendell Carter Jr.",
+    "nba_team_code": "ORL",
+    "position": "C-F",
+    "birth_date": "1999-04-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1629048,
+    "first_name": "Goga",
+    "last_name": "Bitadze",
+    "full_name": "Goga Bitadze",
+    "nba_team_code": "ORL",
+    "position": "C-F",
+    "birth_date": "1999-07-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1630679,
+    "first_name": "Ethan",
+    "last_name": "Thompson",
+    "full_name": "Ethan Thompson",
+    "nba_team_code": "ORL",
+    "position": "G",
+    "birth_date": "1999-05-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1630178,
+    "first_name": "Tyrese",
+    "last_name": "Maxey",
+    "full_name": "Tyrese Maxey",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "2000-11-04",
+    "season": 2024
+  },
+  {
+    "external_id": 203083,
+    "first_name": "Andre",
+    "last_name": "Drummond",
+    "full_name": "Andre Drummond",
+    "nba_team_code": "PHI",
+    "position": "C",
+    "birth_date": "1993-08-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1629656,
+    "first_name": "Quentin",
+    "last_name": "Grimes",
+    "full_name": "Quentin Grimes",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "2000-05-08",
+    "season": 2024
+  },
+  {
+    "external_id": 200768,
+    "first_name": "Kyle",
+    "last_name": "Lowry",
+    "full_name": "Kyle Lowry",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "1986-03-25",
+    "season": 2024
+  },
+  {
+    "external_id": 202331,
+    "first_name": "Paul",
+    "last_name": "George",
+    "full_name": "Paul George",
+    "nba_team_code": "PHI",
+    "position": "F",
+    "birth_date": "1990-05-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1626162,
+    "first_name": "Kelly",
+    "last_name": "Oubre Jr.",
+    "full_name": "Kelly Oubre Jr.",
+    "nba_team_code": "PHI",
+    "position": "F-G",
+    "birth_date": "1995-12-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1630288,
+    "first_name": "Jeff",
+    "last_name": "Dowtin Jr.",
+    "full_name": "Jeff Dowtin Jr.",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "1997-05-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1630215,
+    "first_name": "Jared",
+    "last_name": "Butler",
+    "full_name": "Jared Butler",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "2000-08-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1641741,
+    "first_name": "Ricky",
+    "last_name": "Council IV",
+    "full_name": "Ricky Council IV",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "2001-08-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1629022,
+    "first_name": "Lonnie",
+    "last_name": "Walker IV",
+    "full_name": "Lonnie Walker IV",
+    "nba_team_code": "PHI",
+    "position": "G-F",
+    "birth_date": "1998-12-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1641720,
+    "first_name": "Jalen",
+    "last_name": "Hood-Schifino",
+    "full_name": "Jalen Hood-Schifino",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "2003-06-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1642348,
+    "first_name": "Justin",
+    "last_name": "Edwards",
+    "full_name": "Justin Edwards",
+    "nba_team_code": "PHI",
+    "position": "F",
+    "birth_date": "2003-12-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1642272,
+    "first_name": "Jared",
+    "last_name": "McCain",
+    "full_name": "Jared McCain",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "2004-02-20",
+    "season": 2024
+  },
+  {
+    "external_id": 203954,
+    "first_name": "Joel",
+    "last_name": "Embiid",
+    "full_name": "Joel Embiid",
+    "nba_team_code": "PHI",
+    "position": "C-F",
+    "birth_date": "1994-03-16",
+    "season": 2024
+  },
+  {
+    "external_id": 201569,
+    "first_name": "Eric",
+    "last_name": "Gordon",
+    "full_name": "Eric Gordon",
+    "nba_team_code": "PHI",
+    "position": "G",
+    "birth_date": "1988-12-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1627824,
+    "first_name": "Guerschon",
+    "last_name": "Yabusele",
+    "full_name": "Guerschon Yabusele",
+    "nba_team_code": "PHI",
+    "position": "F",
+    "birth_date": "1995-12-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1641737,
+    "first_name": "Adem",
+    "last_name": "Bona",
+    "full_name": "Adem Bona",
+    "nba_team_code": "PHI",
+    "position": "F",
+    "birth_date": "2003-03-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1642024,
+    "first_name": "Alex",
+    "last_name": "Reese",
+    "full_name": "Alex Reese",
+    "nba_team_code": "PHI",
+    "position": "F-C",
+    "birth_date": "1999-05-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1626220,
+    "first_name": "Royce",
+    "last_name": "O'Neale",
+    "full_name": "Royce O'Neale",
+    "nba_team_code": "PHX",
+    "position": "F",
+    "birth_date": "1993-06-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1642346,
+    "first_name": "Ryan",
+    "last_name": "Dunn",
+    "full_name": "Ryan Dunn",
+    "nba_team_code": "PHX",
+    "position": "F",
+    "birth_date": "2003-01-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1626164,
+    "first_name": "Devin",
+    "last_name": "Booker",
+    "full_name": "Devin Booker",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1996-10-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1630208,
+    "first_name": "Nick",
+    "last_name": "Richards",
+    "full_name": "Nick Richards",
+    "nba_team_code": "PHX",
+    "position": "C",
+    "birth_date": "1997-11-29",
+    "season": 2024
+  },
+  {
+    "external_id": 203078,
+    "first_name": "Bradley",
+    "last_name": "Beal",
+    "full_name": "Bradley Beal",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1993-06-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1642345,
+    "first_name": "Oso",
+    "last_name": "Ighodaro",
+    "full_name": "Oso Ighodaro",
+    "nba_team_code": "PHX",
+    "position": "F",
+    "birth_date": "2002-07-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1628960,
+    "first_name": "Grayson",
+    "last_name": "Allen",
+    "full_name": "Grayson Allen",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1995-10-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1627814,
+    "first_name": "Damion",
+    "last_name": "Lee",
+    "full_name": "Damion Lee",
+    "nba_team_code": "PHX",
+    "position": "G-F",
+    "birth_date": "1992-10-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1629626,
+    "first_name": "Bol",
+    "last_name": "Bol",
+    "full_name": "Bol Bol",
+    "nba_team_code": "PHX",
+    "position": "C-F",
+    "birth_date": "1999-11-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1631221,
+    "first_name": "Collin",
+    "last_name": "Gillespie",
+    "full_name": "Collin Gillespie",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1999-06-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1631102,
+    "first_name": "TyTy",
+    "last_name": "Washington Jr.",
+    "full_name": "TyTy Washington Jr.",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "2001-11-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1641779,
+    "first_name": "Jalen",
+    "last_name": "Bridges",
+    "full_name": "Jalen Bridges",
+    "nba_team_code": "PHX",
+    "position": "F",
+    "birth_date": "2001-05-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1628998,
+    "first_name": "Cody",
+    "last_name": "Martin",
+    "full_name": "Cody Martin",
+    "nba_team_code": "PHX",
+    "position": "F",
+    "birth_date": "1995-09-28",
+    "season": 2024
+  },
+  {
+    "external_id": 203995,
+    "first_name": "Vasilije",
+    "last_name": "Micic",
+    "full_name": "Vasilije Micic",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1994-01-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1626145,
+    "first_name": "Tyus",
+    "last_name": "Jones",
+    "full_name": "Tyus Jones",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1996-05-10",
+    "season": 2024
+  },
+  {
+    "external_id": 203486,
+    "first_name": "Mason",
+    "last_name": "Plumlee",
+    "full_name": "Mason Plumlee",
+    "nba_team_code": "PHX",
+    "position": "F-C",
+    "birth_date": "1990-03-05",
+    "season": 2024
+  },
+  {
+    "external_id": 1628420,
+    "first_name": "Mont\u00e9",
+    "last_name": "Morris",
+    "full_name": "Mont\u00e9 Morris",
+    "nba_team_code": "PHX",
+    "position": "G",
+    "birth_date": "1995-06-27",
+    "season": 2024
+  },
+  {
+    "external_id": 201142,
+    "first_name": "Kevin",
+    "last_name": "Durant",
+    "full_name": "Kevin Durant",
+    "nba_team_code": "PHX",
+    "position": "F",
+    "birth_date": "1988-09-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1630703,
+    "first_name": "Scoot",
+    "last_name": "Henderson",
+    "full_name": "Scoot Henderson",
+    "nba_team_code": "POR",
+    "position": "G",
+    "birth_date": "2004-02-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1629014,
+    "first_name": "Anfernee",
+    "last_name": "Simons",
+    "full_name": "Anfernee Simons",
+    "nba_team_code": "POR",
+    "position": "G",
+    "birth_date": "1999-06-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1629028,
+    "first_name": "Deandre",
+    "last_name": "Ayton",
+    "full_name": "Deandre Ayton",
+    "nba_team_code": "POR",
+    "position": "C",
+    "birth_date": "1998-07-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1629680,
+    "first_name": "Matisse",
+    "last_name": "Thybulle",
+    "full_name": "Matisse Thybulle",
+    "nba_team_code": "POR",
+    "position": "G-F",
+    "birth_date": "1997-03-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1630625,
+    "first_name": "Dalano",
+    "last_name": "Banton",
+    "full_name": "Dalano Banton",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "1999-11-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1630166,
+    "first_name": "Deni",
+    "last_name": "Avdija",
+    "full_name": "Deni Avdija",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "2001-01-03",
+    "season": 2024
+  },
+  {
+    "external_id": 203924,
+    "first_name": "Jerami",
+    "last_name": "Grant",
+    "full_name": "Jerami Grant",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "1994-03-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1631303,
+    "first_name": "Justin",
+    "last_name": "Minaya",
+    "full_name": "Justin Minaya",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "1999-03-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1631121,
+    "first_name": "Bryce",
+    "last_name": "McGowens",
+    "full_name": "Bryce McGowens",
+    "nba_team_code": "POR",
+    "position": "G",
+    "birth_date": "2002-11-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1631101,
+    "first_name": "Shaedon",
+    "last_name": "Sharpe",
+    "full_name": "Shaedon Sharpe",
+    "nba_team_code": "POR",
+    "position": "G",
+    "birth_date": "2003-05-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1641712,
+    "first_name": "Rayan",
+    "last_name": "Rupert",
+    "full_name": "Rayan Rupert",
+    "nba_team_code": "POR",
+    "position": "G-F",
+    "birth_date": "2004-05-31",
+    "season": 2024
+  },
+  {
+    "external_id": 1642270,
+    "first_name": "Donovan",
+    "last_name": "Clingan",
+    "full_name": "Donovan Clingan",
+    "nba_team_code": "POR",
+    "position": "C",
+    "birth_date": "2004-02-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1631200,
+    "first_name": "Kris",
+    "last_name": "Murray",
+    "full_name": "Kris Murray",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "2000-08-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1631321,
+    "first_name": "Sidy",
+    "last_name": "Cissoko",
+    "full_name": "Sidy Cissoko",
+    "nba_team_code": "POR",
+    "position": "G",
+    "birth_date": "2004-04-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1641871,
+    "first_name": "Duop",
+    "last_name": "Reath",
+    "full_name": "Duop Reath",
+    "nba_team_code": "POR",
+    "position": "C",
+    "birth_date": "1996-06-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1641739,
+    "first_name": "Toumani",
+    "last_name": "Camara",
+    "full_name": "Toumani Camara",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "2000-05-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1631133,
+    "first_name": "Jabari",
+    "last_name": "Walker",
+    "full_name": "Jabari Walker",
+    "nba_team_code": "POR",
+    "position": "F",
+    "birth_date": "2002-07-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1629057,
+    "first_name": "Robert",
+    "last_name": "Williams III",
+    "full_name": "Robert Williams III",
+    "nba_team_code": "POR",
+    "position": "C-F",
+    "birth_date": "1997-10-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1628370,
+    "first_name": "Malik",
+    "last_name": "Monk",
+    "full_name": "Malik Monk",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "1998-02-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1629056,
+    "first_name": "Terence",
+    "last_name": "Davis",
+    "full_name": "Terence Davis",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "1997-05-16",
+    "season": 2024
+  },
+  {
+    "external_id": 1642403,
+    "first_name": "Isaac",
+    "last_name": "Jones",
+    "full_name": "Isaac Jones",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "2000-07-11",
+    "season": 2024
+  },
+  {
+    "external_id": 203926,
+    "first_name": "Doug",
+    "last_name": "McDermott",
+    "full_name": "Doug McDermott",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "1992-01-03",
+    "season": 2024
+  },
+  {
+    "external_id": 203897,
+    "first_name": "Zach",
+    "last_name": "LaVine",
+    "full_name": "Zach LaVine",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "1995-03-10",
+    "season": 2024
+  },
+  {
+    "external_id": 201942,
+    "first_name": "DeMar",
+    "last_name": "DeRozan",
+    "full_name": "DeMar DeRozan",
+    "nba_team_code": "SAC",
+    "position": "G-F",
+    "birth_date": "1989-08-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1627734,
+    "first_name": "Domantas",
+    "last_name": "Sabonis",
+    "full_name": "Domantas Sabonis",
+    "nba_team_code": "SAC",
+    "position": "F-C",
+    "birth_date": "1996-05-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1631099,
+    "first_name": "Keegan",
+    "last_name": "Murray",
+    "full_name": "Keegan Murray",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "2000-08-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1630222,
+    "first_name": "Mason",
+    "last_name": "Jones",
+    "full_name": "Mason Jones",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "1998-07-21",
+    "season": 2024
+  },
+  {
+    "external_id": 202685,
+    "first_name": "Jonas",
+    "last_name": "Valan\u010di\u016bnas",
+    "full_name": "Jonas Valan\u010di\u016bnas",
+    "nba_team_code": "SAC",
+    "position": "C",
+    "birth_date": "1992-05-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1628365,
+    "first_name": "Markelle",
+    "last_name": "Fultz",
+    "full_name": "Markelle Fultz",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "1998-05-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1642269,
+    "first_name": "Devin",
+    "last_name": "Carter",
+    "full_name": "Devin Carter",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "2002-03-18",
+    "season": 2024
+  },
+  {
+    "external_id": 1631165,
+    "first_name": "Keon",
+    "last_name": "Ellis",
+    "full_name": "Keon Ellis",
+    "nba_team_code": "SAC",
+    "position": "G",
+    "birth_date": "2000-01-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1642384,
+    "first_name": "Isaiah",
+    "last_name": "Crawford",
+    "full_name": "Isaiah Crawford",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "2001-11-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1631222,
+    "first_name": "Jake",
+    "last_name": "LaRavia",
+    "full_name": "Jake LaRavia",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "2001-11-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1626168,
+    "first_name": "Trey",
+    "last_name": "Lyles",
+    "full_name": "Trey Lyles",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "1995-11-05",
+    "season": 2024
+  },
+  {
+    "external_id": 203109,
+    "first_name": "Jae",
+    "last_name": "Crowder",
+    "full_name": "Jae Crowder",
+    "nba_team_code": "SAC",
+    "position": "F",
+    "birth_date": "1990-07-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1629640,
+    "first_name": "Keldon",
+    "last_name": "Johnson",
+    "full_name": "Keldon Johnson",
+    "nba_team_code": "SAS",
+    "position": "F-G",
+    "birth_date": "1999-10-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1641705,
+    "first_name": "Victor",
+    "last_name": "Wembanyama",
+    "full_name": "Victor Wembanyama",
+    "nba_team_code": "SAS",
+    "position": "F-C",
+    "birth_date": "2004-01-04",
+    "season": 2024
+  },
+  {
+    "external_id": 101108,
+    "first_name": "Chris",
+    "last_name": "Paul",
+    "full_name": "Chris Paul",
+    "nba_team_code": "SAS",
+    "position": "G",
+    "birth_date": "1985-05-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1628368,
+    "first_name": "De'Aaron",
+    "last_name": "Fox",
+    "full_name": "De'Aaron Fox",
+    "nba_team_code": "SAS",
+    "position": "G",
+    "birth_date": "1997-12-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1642264,
+    "first_name": "Stephon",
+    "last_name": "Castle",
+    "full_name": "Stephon Castle",
+    "nba_team_code": "SAS",
+    "position": "G",
+    "birth_date": "2004-11-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1630561,
+    "first_name": "David",
+    "last_name": "Duke Jr.",
+    "full_name": "David Duke Jr.",
+    "nba_team_code": "SAS",
+    "position": "G",
+    "birth_date": "1999-10-13",
+    "season": 2024
+  },
+  {
+    "external_id": 1631110,
+    "first_name": "Jeremy",
+    "last_name": "Sochan",
+    "full_name": "Jeremy Sochan",
+    "nba_team_code": "SAS",
+    "position": "F",
+    "birth_date": "2003-05-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1629162,
+    "first_name": "Jordan",
+    "last_name": "McLaughlin",
+    "full_name": "Jordan McLaughlin",
+    "nba_team_code": "SAS",
+    "position": "G",
+    "birth_date": "1996-04-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1631104,
+    "first_name": "Blake",
+    "last_name": "Wesley",
+    "full_name": "Blake Wesley",
+    "nba_team_code": "SAS",
+    "position": "G",
+    "birth_date": "2003-03-16",
+    "season": 2024
+  },
+  {
+    "external_id": 202687,
+    "first_name": "Bismack",
+    "last_name": "Biyombo",
+    "full_name": "Bismack Biyombo",
+    "nba_team_code": "SAS",
+    "position": "C",
+    "birth_date": "1992-08-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1631103,
+    "first_name": "Malaki",
+    "last_name": "Branham",
+    "full_name": "Malaki Branham",
+    "nba_team_code": "SAS",
+    "position": "F",
+    "birth_date": "2003-05-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1630170,
+    "first_name": "Devin",
+    "last_name": "Vassell",
+    "full_name": "Devin Vassell",
+    "nba_team_code": "SAS",
+    "position": "G-F",
+    "birth_date": "2000-08-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1642434,
+    "first_name": "Riley",
+    "last_name": "Minix",
+    "full_name": "Riley Minix",
+    "nba_team_code": "SAS",
+    "position": "F",
+    "birth_date": "2000-09-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1629646,
+    "first_name": "Charles",
+    "last_name": "Bassey",
+    "full_name": "Charles Bassey",
+    "nba_team_code": "SAS",
+    "position": "C-F",
+    "birth_date": "2000-10-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1630577,
+    "first_name": "Julian",
+    "last_name": "Champagnie",
+    "full_name": "Julian Champagnie",
+    "nba_team_code": "SAS",
+    "position": "F",
+    "birth_date": "2001-06-29",
+    "season": 2024
+  },
+  {
+    "external_id": 203084,
+    "first_name": "Harrison",
+    "last_name": "Barnes",
+    "full_name": "Harrison Barnes",
+    "nba_team_code": "SAS",
+    "position": "F",
+    "birth_date": "1992-05-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1630572,
+    "first_name": "Sandro",
+    "last_name": "Mamukelashvili",
+    "full_name": "Sandro Mamukelashvili",
+    "nba_team_code": "SAS",
+    "position": "F-C",
+    "birth_date": "1999-05-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1631127,
+    "first_name": "Harrison",
+    "last_name": "Ingram",
+    "full_name": "Harrison Ingram",
+    "nba_team_code": "SAS",
+    "position": "F",
+    "birth_date": "2002-11-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630639,
+    "first_name": "A.J.",
+    "last_name": "Lawson",
+    "full_name": "A.J. Lawson",
+    "nba_team_code": "TOR",
+    "position": "G",
+    "birth_date": "2000-07-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1641711,
+    "first_name": "Gradey",
+    "last_name": "Dick",
+    "full_name": "Gradey Dick",
+    "nba_team_code": "TOR",
+    "position": "G-F",
+    "birth_date": "2003-11-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1642367,
+    "first_name": "Jonathan",
+    "last_name": "Mogbo",
+    "full_name": "Jonathan Mogbo",
+    "nba_team_code": "TOR",
+    "position": "F",
+    "birth_date": "2001-10-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1627742,
+    "first_name": "Brandon",
+    "last_name": "Ingram",
+    "full_name": "Brandon Ingram",
+    "nba_team_code": "TOR",
+    "position": "F",
+    "birth_date": "1997-09-02",
+    "season": 2024
+  },
+  {
+    "external_id": 1630567,
+    "first_name": "Scottie",
+    "last_name": "Barnes",
+    "full_name": "Scottie Barnes",
+    "nba_team_code": "TOR",
+    "position": "F-G",
+    "birth_date": "2001-08-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1630193,
+    "first_name": "Immanuel",
+    "last_name": "Quickley",
+    "full_name": "Immanuel Quickley",
+    "nba_team_code": "TOR",
+    "position": "G",
+    "birth_date": "1999-06-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1631197,
+    "first_name": "Jared",
+    "last_name": "Rhoden",
+    "full_name": "Jared Rhoden",
+    "nba_team_code": "TOR",
+    "position": "G",
+    "birth_date": "1999-08-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1629628,
+    "first_name": "RJ",
+    "last_name": "Barrett",
+    "full_name": "RJ Barrett",
+    "nba_team_code": "TOR",
+    "position": "F-G",
+    "birth_date": "2000-06-14",
+    "season": 2024
+  },
+  {
+    "external_id": 1630658,
+    "first_name": "Colin",
+    "last_name": "Castleton",
+    "full_name": "Colin Castleton",
+    "nba_team_code": "TOR",
+    "position": "C",
+    "birth_date": "2000-05-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1642266,
+    "first_name": "Ja'Kobe",
+    "last_name": "Walter",
+    "full_name": "Ja'Kobe Walter",
+    "nba_team_code": "TOR",
+    "position": "G",
+    "birth_date": "2004-09-04",
+    "season": 2024
+  },
+  {
+    "external_id": 202066,
+    "first_name": "Garrett",
+    "last_name": "Temple",
+    "full_name": "Garrett Temple",
+    "nba_team_code": "TOR",
+    "position": "G-F",
+    "birth_date": "1986-05-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1627751,
+    "first_name": "Jakob",
+    "last_name": "Poeltl",
+    "full_name": "Jakob Poeltl",
+    "nba_team_code": "TOR",
+    "position": "C",
+    "birth_date": "1995-10-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1642279,
+    "first_name": "Ulrich",
+    "last_name": "Chomche",
+    "full_name": "Ulrich Chomche",
+    "nba_team_code": "TOR",
+    "position": "C",
+    "birth_date": "2005-12-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1642347,
+    "first_name": "Jamal",
+    "last_name": "Shead",
+    "full_name": "Jamal Shead",
+    "nba_team_code": "TOR",
+    "position": "G",
+    "birth_date": "2002-07-24",
+    "season": 2024
+  },
+  {
+    "external_id": 1628449,
+    "first_name": "Chris",
+    "last_name": "Boucher",
+    "full_name": "Chris Boucher",
+    "nba_team_code": "TOR",
+    "position": "F",
+    "birth_date": "1993-01-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1630534,
+    "first_name": "Ochai",
+    "last_name": "Agbaji",
+    "full_name": "Ochai Agbaji",
+    "nba_team_code": "TOR",
+    "position": "G",
+    "birth_date": "2000-04-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1642419,
+    "first_name": "Jamison",
+    "last_name": "Battle",
+    "full_name": "Jamison Battle",
+    "nba_team_code": "TOR",
+    "position": "F",
+    "birth_date": "2001-05-10",
+    "season": 2024
+  },
+  {
+    "external_id": 203903,
+    "first_name": "Jordan",
+    "last_name": "Clarkson",
+    "full_name": "Jordan Clarkson",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "1992-06-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1641707,
+    "first_name": "Taylor",
+    "last_name": "Hendricks",
+    "full_name": "Taylor Hendricks",
+    "nba_team_code": "UTA",
+    "position": "F",
+    "birth_date": "2003-11-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1629012,
+    "first_name": "Collin",
+    "last_name": "Sexton",
+    "full_name": "Collin Sexton",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "1999-01-04",
+    "season": 2024
+  },
+  {
+    "external_id": 1641718,
+    "first_name": "Keyonte",
+    "last_name": "George",
+    "full_name": "Keyonte George",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "2003-11-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1642262,
+    "first_name": "Cody",
+    "last_name": "Williams",
+    "full_name": "Cody Williams",
+    "nba_team_code": "UTA",
+    "position": "F",
+    "birth_date": "2004-11-20",
+    "season": 2024
+  },
+  {
+    "external_id": 1630531,
+    "first_name": "Jaden",
+    "last_name": "Springer",
+    "full_name": "Jaden Springer",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "2002-09-25",
+    "season": 2024
+  },
+  {
+    "external_id": 1642268,
+    "first_name": "Isaiah",
+    "last_name": "Collier",
+    "full_name": "Isaiah Collier",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "2004-10-08",
+    "season": 2024
+  },
+  {
+    "external_id": 1641989,
+    "first_name": "Elijah",
+    "last_name": "Harkless",
+    "full_name": "Elijah Harkless",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "2000-02-03",
+    "season": 2024
+  },
+  {
+    "external_id": 1629004,
+    "first_name": "Svi",
+    "last_name": "Mykhailiuk",
+    "full_name": "Svi Mykhailiuk",
+    "nba_team_code": "UTA",
+    "position": "G-F",
+    "birth_date": "1997-06-10",
+    "season": 2024
+  },
+  {
+    "external_id": 1628381,
+    "first_name": "John",
+    "last_name": "Collins",
+    "full_name": "John Collins",
+    "nba_team_code": "UTA",
+    "position": "F-C",
+    "birth_date": "1997-09-23",
+    "season": 2024
+  },
+  {
+    "external_id": 1642271,
+    "first_name": "Kyle",
+    "last_name": "Filipowski",
+    "full_name": "Kyle Filipowski",
+    "nba_team_code": "UTA",
+    "position": "C",
+    "birth_date": "2003-11-07",
+    "season": 2024
+  },
+  {
+    "external_id": 1628374,
+    "first_name": "Lauri",
+    "last_name": "Markkanen",
+    "full_name": "Lauri Markkanen",
+    "nba_team_code": "UTA",
+    "position": "F-C",
+    "birth_date": "1997-05-22",
+    "season": 2024
+  },
+  {
+    "external_id": 1631117,
+    "first_name": "Walker",
+    "last_name": "Kessler",
+    "full_name": "Walker Kessler",
+    "nba_team_code": "UTA",
+    "position": "C",
+    "birth_date": "2001-07-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630695,
+    "first_name": "Micah",
+    "last_name": "Potter",
+    "full_name": "Micah Potter",
+    "nba_team_code": "UTA",
+    "position": "C",
+    "birth_date": "1998-04-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1641729,
+    "first_name": "Brice",
+    "last_name": "Sensabaugh",
+    "full_name": "Brice Sensabaugh",
+    "nba_team_code": "UTA",
+    "position": "F",
+    "birth_date": "2003-10-30",
+    "season": 2024
+  },
+  {
+    "external_id": 1630548,
+    "first_name": "Johnny",
+    "last_name": "Juzang",
+    "full_name": "Johnny Juzang",
+    "nba_team_code": "UTA",
+    "position": "G",
+    "birth_date": "2001-03-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1631131,
+    "first_name": "Oscar",
+    "last_name": "Tshiebwe",
+    "full_name": "Oscar Tshiebwe",
+    "nba_team_code": "UTA",
+    "position": "F-C",
+    "birth_date": "1999-11-27",
+    "season": 2024
+  },
+  {
+    "external_id": 1630231,
+    "first_name": "KJ",
+    "last_name": "Martin",
+    "full_name": "KJ Martin",
+    "nba_team_code": "UTA",
+    "position": "F",
+    "birth_date": "2001-01-06",
+    "season": 2024
+  },
+  {
+    "external_id": 1641731,
+    "first_name": "Bilal",
+    "last_name": "Coulibaly",
+    "full_name": "Bilal Coulibaly",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "2004-07-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1641774,
+    "first_name": "Tristan",
+    "last_name": "Vukcevic",
+    "full_name": "Tristan Vukcevic",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "2003-03-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1641732,
+    "first_name": "Colby",
+    "last_name": "Jones",
+    "full_name": "Colby Jones",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "2002-05-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1641798,
+    "first_name": "Jaylen",
+    "last_name": "Martin",
+    "full_name": "Jaylen Martin",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "2004-01-28",
+    "season": 2024
+  },
+  {
+    "external_id": 1642358,
+    "first_name": "AJ",
+    "last_name": "Johnson",
+    "full_name": "AJ Johnson",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "2004-12-01",
+    "season": 2024
+  },
+  {
+    "external_id": 1642267,
+    "first_name": "Bub",
+    "last_name": "Carrington",
+    "full_name": "Bub Carrington",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "2005-07-21",
+    "season": 2024
+  },
+  {
+    "external_id": 1630551,
+    "first_name": "Justin",
+    "last_name": "Champagnie",
+    "full_name": "Justin Champagnie",
+    "nba_team_code": "WAS",
+    "position": "G-F",
+    "birth_date": "2001-06-29",
+    "season": 2024
+  },
+  {
+    "external_id": 1629673,
+    "first_name": "Jordan",
+    "last_name": "Poole",
+    "full_name": "Jordan Poole",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "1999-06-19",
+    "season": 2024
+  },
+  {
+    "external_id": 1630180,
+    "first_name": "Saddiq",
+    "last_name": "Bey",
+    "full_name": "Saddiq Bey",
+    "nba_team_code": "WAS",
+    "position": "G-F",
+    "birth_date": "1999-04-09",
+    "season": 2024
+  },
+  {
+    "external_id": 1627763,
+    "first_name": "Malcolm",
+    "last_name": "Brogdon",
+    "full_name": "Malcolm Brogdon",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "1992-12-11",
+    "season": 2024
+  },
+  {
+    "external_id": 1630264,
+    "first_name": "Anthony",
+    "last_name": "Gill",
+    "full_name": "Anthony Gill",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "1992-10-17",
+    "season": 2024
+  },
+  {
+    "external_id": 1642273,
+    "first_name": "Kyshawn",
+    "last_name": "George",
+    "full_name": "Kyshawn George",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "2003-12-12",
+    "season": 2024
+  },
+  {
+    "external_id": 1642259,
+    "first_name": "Alex",
+    "last_name": "Sarr",
+    "full_name": "Alex Sarr",
+    "nba_team_code": "WAS",
+    "position": "C",
+    "birth_date": "2005-04-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1630550,
+    "first_name": "JT",
+    "last_name": "Thor",
+    "full_name": "JT Thor",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "2002-08-26",
+    "season": 2024
+  },
+  {
+    "external_id": 1626158,
+    "first_name": "Richaun",
+    "last_name": "Holmes",
+    "full_name": "Richaun Holmes",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "1993-10-15",
+    "season": 2024
+  },
+  {
+    "external_id": 1630557,
+    "first_name": "Corey",
+    "last_name": "Kispert",
+    "full_name": "Corey Kispert",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "1999-03-03",
+    "season": 2024
+  },
+  {
+    "external_id": 203114,
+    "first_name": "Khris",
+    "last_name": "Middleton",
+    "full_name": "Khris Middleton",
+    "nba_team_code": "WAS",
+    "position": "F",
+    "birth_date": "1991-08-12",
+    "season": 2024
+  },
+  {
+    "external_id": 203935,
+    "first_name": "Marcus",
+    "last_name": "Smart",
+    "full_name": "Marcus Smart",
+    "nba_team_code": "WAS",
+    "position": "G",
+    "birth_date": "1994-03-06",
+    "season": 2024
+  }
+]

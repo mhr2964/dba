@@ -93,6 +93,15 @@ async def create(
             log.warning(f"Could not reorder DBA roles: {exc}")
 
     await trade_repo.seed_picks_for_league(pool, league.id, season_year)
+
+    try:
+        from services import roster_seed_service
+        await roster_seed_service.apply_reseed(pool, league.id, league.current_season, dry_run=False)
+    except FileNotFoundError:
+        pass  # No seed for this year — silently skip
+    except Exception as exc:
+        log.warning(f"Roster reseed at league creation failed: {exc}")
+
     await _post_onboarding_guide(guild, pool, league.id, name)
     log.info(f"League '{name}' created in guild {guild.id} by {commissioner.id}")
     return league

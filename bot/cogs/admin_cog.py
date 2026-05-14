@@ -11,7 +11,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import admin_repo, player_repo, team_repo
 from phase.helpers import get_league_or_error, require_commissioner
-from services import league_service
+from services import league_service, roster_seed_service
 
 log = get_logger(__name__)
 
@@ -406,6 +406,129 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             f"**{found_player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
             ephemeral=True,
         )
+
+
+    @app_commands.command(
+        name="reseed-rosters",
+        description="Commissioner: reconcile league rosters against a season seed file",
+    )
+    @app_commands.describe(
+        year="Season year to reconcile against (e.g. 2024)",
+        mode="dry-run previews changes without writing; apply commits them",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="dry-run", value="dry-run"),
+            app_commands.Choice(name="apply", value="apply"),
+        ]
+    )
+    async def reseed_rosters(
+        self,
+        interaction: discord.Interaction,
+        year: int,
+        mode: app_commands.Choice[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        mode_value = mode.value if mode is not None else "dry-run"
+        pool = await get_pool()
+
+        # Validate seed file exists before doing any work.
+        try:
+            roster_seed_service.load_seed(year)
+        except FileNotFoundError:
+            available = roster_seed_service.list_available_seed_years()
+            supported = ", ".join(str(y) for y in available) if available else "none"
+            await interaction.followup.send(
+                f"No roster seed found for **{year}**. Supported years: {supported}",
+                ephemeral=True,
+            )
+            return
+
+        if mode_value == "dry-run":
+            diff = await roster_seed_service.diff_league_against_seed(
+                pool, league.id, year
+            )
+
+            to_insert = diff["to_insert"]
+            to_move = diff["to_move"]
+            already_correct = diff["already_correct"]
+            unknown_in_db = diff["unknown_in_db"]
+
+            embed = discord.Embed(
+                title=f"Roster Reseed Preview — {year}",
+                color=discord.Color.blue(),
+            )
+            embed.add_field(name="To insert", value=str(len(to_insert)), inline=True)
+            embed.add_field(name="To move", value=str(len(to_move)), inline=True)
+            embed.add_field(name="Already correct", value=str(already_correct), inline=True)
+            embed.add_field(
+                name="Unknown in DB (not in seed)",
+                value=str(len(unknown_in_db)),
+                inline=True,
+            )
+
+            # First 10 pending changes as bullet lines.
+            change_lines: list[str] = []
+            for row in to_insert[:5]:
+                name = row.get("full_name") or f"{row.get('first_name','')} {row.get('last_name','')}".strip()
+                change_lines.append(f"+ Insert **{name}** → {row.get('nba_team_code')}")
+            for entry in to_move[: max(0, 10 - len(change_lines))]:
+                seed_row = entry["seed_row"]
+                name = seed_row.get("full_name") or (
+                    f"{seed_row.get('first_name','')} {seed_row.get('last_name','')}".strip()
+                )
+                change_lines.append(
+                    f"~ Move **{name}**: {entry['from_team_code']} → {entry['to_team_code']}"
+                )
+
+            if change_lines:
+                embed.add_field(
+                    name="Sample changes (first 10)",
+                    value="\n".join(change_lines),
+                    inline=False,
+                )
+
+            embed.set_footer(text="Run with mode:apply to commit these changes.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        else:  # apply
+            result = await roster_seed_service.apply_reseed(
+                pool, league.id, year, dry_run=False
+            )
+
+            embed = discord.Embed(
+                title=f"Roster Reseed Applied — {year}",
+                color=discord.Color.green() if not result["errors"] else discord.Color.orange(),
+            )
+            embed.add_field(name="Inserted", value=str(result["inserted"]), inline=True)
+            embed.add_field(name="Moved", value=str(result["moved"]), inline=True)
+            embed.add_field(name="Skipped", value=str(result["skipped"]), inline=True)
+
+            if result["errors"]:
+                # Show first 5 errors to avoid embed overflow.
+                error_text = "\n".join(result["errors"][:5])
+                if len(result["errors"]) > 5:
+                    error_text += f"\n… and {len(result['errors']) - 5} more"
+                embed.add_field(name="Errors", value=error_text, inline=False)
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            await admin_repo.log_commissioner_action(
+                pool,
+                league_id=league.id,
+                user_id=interaction.user.id,
+                action_type="reseed_rosters",
+                target_ref=str(year),
+                detail=(
+                    f"Reseed applied for season {year}: "
+                    f"inserted={result['inserted']} moved={result['moved']} "
+                    f"skipped={result['skipped']} errors={len(result['errors'])}"
+                ),
+            )
 
 
 class AdminCog(commands.Cog):
