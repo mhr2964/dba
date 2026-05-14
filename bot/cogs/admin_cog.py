@@ -494,6 +494,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
             embed.set_footer(text="Run with mode:apply to commit these changes.")
             await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
         else:  # apply
             result = await roster_seed_service.apply_reseed(
@@ -529,6 +530,70 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     f"skipped={result['skipped']} errors={len(result['errors'])}"
                 ),
             )
+
+    @app_commands.command(
+        name="purge-server",
+        description="Remove all DBA categories, channels, and roles left over after a DB reset",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def purge_server(self, interaction: discord.Interaction) -> None:
+        """Scans the guild by name pattern and deletes DBA artifacts.
+        Safe to run after a DB wipe when league_channels/league_roles tables are empty.
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        deleted_categories: list[str] = []
+        deleted_channels: int = 0
+        deleted_roles: list[str] = []
+
+        # Delete any category whose name starts with the basketball emoji we use.
+        for category in list(guild.categories):
+            if category.name.startswith("🏀"):
+                for ch in list(category.channels):
+                    try:
+                        await ch.delete(reason="DBA purge-server")
+                        deleted_channels += 1
+                    except discord.HTTPException:
+                        pass
+                try:
+                    await category.delete(reason="DBA purge-server")
+                    deleted_categories.append(category.name)
+                except discord.HTTPException:
+                    pass
+
+        # Load NBA team full names so we can match team roles exactly.
+        import json
+        from pathlib import Path
+        _teams_path = Path(__file__).parent.parent.parent / "data" / "seeds" / "nba_teams.json"
+        try:
+            _nba_teams = json.loads(_teams_path.read_text())
+            _team_full_names = {f"{t['city']} {t['name']}" for t in _nba_teams}
+        except Exception:
+            _team_full_names = set()
+
+        # Delete DBA Commissioner role and any role matching a team's full name.
+        for role in list(guild.roles):
+            if role.name == "DBA Commissioner" or role.name in _team_full_names:
+                try:
+                    await role.delete(reason="DBA purge-server")
+                    deleted_roles.append(role.name)
+                except discord.HTTPException:
+                    pass
+
+        embed = discord.Embed(
+            title="Server Purge Complete",
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="Categories deleted",
+            value="\n".join(deleted_categories) or "none",
+            inline=False,
+        )
+        embed.add_field(name="Channels deleted", value=str(deleted_channels), inline=True)
+        embed.add_field(name="Roles deleted", value=str(len(deleted_roles)), inline=True)
+        embed.set_footer(text="Server is clean. Use /league create to start fresh.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class AdminCog(commands.Cog):
