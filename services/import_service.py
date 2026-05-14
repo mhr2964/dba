@@ -210,6 +210,21 @@ def _overall_from_stats(player_id: int, stats_lookup: dict[int, dict], exp: int)
 _2K_RATINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "seeds", "nba_2k_ratings.json")
 _2k_ratings_cache: dict | None = None
 
+_STATS_RATINGS_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "stats_ratings")
+_stats_ratings_cache: dict[int, dict] = {}
+
+
+def _load_stats_ratings_for_season(season: int) -> dict[str, int]:
+    """Load pre-built stats_ratings/{season}.json keyed by string player_id → overall."""
+    if season not in _stats_ratings_cache:
+        path = os.path.normpath(os.path.join(_STATS_RATINGS_DIR, f"{season}.json"))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                _stats_ratings_cache[season] = _json.load(f)
+        except Exception:
+            _stats_ratings_cache[season] = {}
+    return _stats_ratings_cache[season]
+
 
 def _load_2k_ratings() -> dict:
     global _2k_ratings_cache
@@ -553,11 +568,19 @@ async def import_players_from_api(
 
                 position = _normalize_position(str(row.get("POSITION", "")))
                 full_name = str(row.get("PLAYER", ""))
-                overall = _overall_from_2k(full_name, season, exp)
+                player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
+
+                # stats_ratings/{season}.json is keyed by nba_api player_id — most accurate source.
+                # 2K ratings cover 2015-2020; exp-band is the last resort.
+                ratings_file = _load_stats_ratings_for_season(season)
+                if str(player_id_raw) in ratings_file:
+                    overall = int(ratings_file[str(player_id_raw)])
+                else:
+                    overall = _overall_from_2k(full_name, season, exp)
+
                 attrs = _generate_attributes(overall, position)
                 hidden = _generate_hidden(overall, exp)
 
-                player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
                 tendencies = _derive_tendencies(player_id_raw, position, stats_lookup)
 
                 # Set clutch_rating based on overall tier (overrides the 50 placeholder).

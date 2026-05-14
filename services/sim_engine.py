@@ -338,6 +338,24 @@ def _roll_injuries(
     return injuries
 
 
+def _simulate_overtime(rng: Random, home_score: int, away_score: int) -> tuple[int, int]:
+    """Play OT periods until scores differ.  Max 4 OT; home team wins on 4OT tie."""
+    MAX_OT = 4
+    for _ in range(MAX_OT):
+        if home_score != away_score:
+            break
+        # ~5-min OT period: each team scores 0–14 pts (regulation avg ~25/qtr → ~6 in 5 min,
+        # ceiling raised so games don't always end 0-0 OT).
+        home_ot = rng.randint(0, 14)
+        away_ot = rng.randint(0, 14)
+        home_score += home_ot
+        away_score += away_ot
+    # If still tied after max OT, home team wins (extremely rare edge case).
+    if home_score == away_score:
+        home_score += 1
+    return home_score, away_score
+
+
 def sim_game(
     home_team: dict,
     away_team: dict,
@@ -398,7 +416,13 @@ def sim_game(
     home_score = max(60, int(home_poss * home_ppp))
     away_score = max(60, int(away_poss * away_ppp))
 
-    winner_id = home_team["team_id"] if home_score >= away_score else away_team["team_id"]
+    # Overtime: tied games cannot end — simulate up to 4 OT periods.
+    # Each OT period is ~5 min (~25% of a quarter).  Score ceiling per team
+    # is derived from their regulation points-per-quarter average scaled to 5 min.
+    if home_score == away_score:
+        home_score, away_score = _simulate_overtime(rng, home_score, away_score)
+
+    winner_id = home_team["team_id"] if home_score > away_score else away_team["team_id"]
     home_diff = home_score - away_score
     away_diff = -home_diff
 
