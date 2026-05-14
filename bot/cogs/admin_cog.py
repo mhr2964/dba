@@ -535,11 +535,19 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         name="purge-server",
         description="Remove all DBA categories, channels, and roles left over after a DB reset",
     )
+    @app_commands.describe(confirm="Type CONFIRM to proceed — this deletes all DBA channels and roles")
     @app_commands.default_permissions(administrator=True)
-    async def purge_server(self, interaction: discord.Interaction) -> None:
+    async def purge_server(self, interaction: discord.Interaction, confirm: str = "") -> None:
         """Scans the guild by name pattern and deletes DBA artifacts.
         Safe to run after a DB wipe when league_channels/league_roles tables are empty.
         """
+        if confirm != "CONFIRM":
+            await interaction.response.send_message(
+                "This will delete **all DBA channels, categories, and roles** from the server.\n"
+                "Run `/admin purge-server confirm:CONFIRM` to proceed.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild

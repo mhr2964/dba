@@ -335,12 +335,16 @@ async def standings_command(interaction: discord.Interaction) -> None:
         return
 
     rows = await game_repo.get_standings(pool, league.id, league.current_season)
-    if not rows:
-        await interaction.response.send_message("No standings data yet.", ephemeral=True)
-        return
-
     teams = await team_repo.get_all(pool, league.id)
     teams_by_id = {t.id: t for t in teams}
+
+    if not rows:
+        # Pre-season: synthesise 0-0 rows from the teams table so standings is useful from day 1.
+        rows = [
+            {"team_id": t.id, "wins": 0, "losses": 0, "conference": t.conference,
+             "division": t.division, "streak": 0, "last_10_wins": 0, "last_10_losses": 0}
+            for t in teams
+        ]
 
     embed = sim_embeds.standings_embed(rows, teams_by_id)
     await interaction.response.send_message(embed=embed)
