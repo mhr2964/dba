@@ -7,7 +7,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import trade_embeds
-from bot.embeds.info_embeds import trade_grade_embed
 from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
@@ -369,7 +368,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         trade, grade_info = await trade_service.approve(pool, trade_id, interaction.user.id)
         result_embed = trade_embeds.trade_result(trade, "approved")
-        await interaction.followup.send(embed=result_embed)
+        await interaction.followup.send(content="Trade approved.", ephemeral=True)
 
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
         if transactions_channel_id:
