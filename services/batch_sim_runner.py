@@ -328,6 +328,31 @@ async def _sim_single_game(
     season: int,
     news_channel: Optional[discord.TextChannel],
 ) -> Optional[dict]:
+    import asyncpg as _asyncpg
+    for _attempt in range(2):
+        try:
+            return await _sim_single_game_inner(pool, game, league_id, season, news_channel)
+        except (_asyncpg.ConnectionDoesNotExistError, _asyncpg.ConnectionIsClosedError, OSError) as exc:
+            if _attempt == 0:
+                log.warning(f"DB connection dropped for game {game['id']}, retrying: {exc}")
+                # Force pool to recycle the broken connection
+                try:
+                    await pool.execute("SELECT 1")
+                except Exception:
+                    pass
+                continue
+            log.error(f"DB connection retry failed for game {game['id']}: {exc}")
+            return None
+    return None
+
+
+async def _sim_single_game_inner(
+    pool,
+    game: dict,
+    league_id: int,
+    season: int,
+    news_channel: Optional[discord.TextChannel],
+) -> Optional[dict]:
     home_team = await team_repo.get_by_id(pool, game["home_team_id"])
     away_team = await team_repo.get_by_id(pool, game["away_team_id"])
     if not home_team or not away_team:
