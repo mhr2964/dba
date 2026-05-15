@@ -36,61 +36,100 @@ async def create(
     if existing:
         raise DBAError(f"This server already has an active league: **{existing.name}**.")
 
+    # PHASE 1: All Discord API calls — no DB writes yet.
+    # If any Discord call fails here, nothing has been written to the DB (safe to fail cleanly).
     category = await guild.create_category(f"🏀 {name}")
-
     channel_ids: dict[str, int] = {}
-    for role in CHANNEL_ROLES:
-        ch = await category.create_text_channel(role)
-        channel_ids[role] = ch.id
+    created_discord_objects: list = [category]
 
-    commissioner_role = await guild.create_role(
-        name="DBA Commissioner",
-        color=discord.Color.gold(),
-        hoist=True,
-        reason=f"DBA league '{name}' created",
-    )
-    await commissioner.add_roles(commissioner_role, reason="Assigned as DBA Commissioner")
+    try:
+        for role_name in CHANNEL_ROLES:
+            ch = await category.create_text_channel(role_name)
+            channel_ids[role_name] = ch.id
+            created_discord_objects.append(ch)
 
-    league = await league_repo.create(
-        pool,
-        guild_id=guild.id,
-        name=name,
-        season_year=season_year,
-        commissioner_id=commissioner.id,
-    )
+        commissioner_role = await guild.create_role(
+            name="DBA Commissioner",
+            color=discord.Color.gold(),
+            hoist=True,
+            reason=f"DBA league '{name}' created",
+        )
+        created_discord_objects.append(commissioner_role)
+        await commissioner.add_roles(commissioner_role, reason="Assigned as DBA Commissioner")
 
-    for role, channel_id in channel_ids.items():
-        await league_repo.add_channel(pool, league.id, role, channel_id)
-
-    await league_repo.add_role(
-        pool, league.id, "commissioner", None, commissioner_role.id
-    )
-
-    nba_teams = _load_nba_teams()
-    team_roles: list[discord.Role] = []
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            for team_data in nba_teams:
-                team = await team_repo.create(conn, league.id, team_data)
-                discord_role = await guild.create_role(
-                    name=f"{team_data['city']} {team_data['name']}",
-                    reason=f"DBA team role for {team.full_name}",
-                )
-                await league_repo.add_role(conn, league.id, "team", team.id, discord_role.id)
-                team_roles.append(discord_role)
-
-            team_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM teams WHERE league_id = $1", league.id
+        # Create all 30 team Discord roles upfront — DB transaction hasn't opened yet.
+        nba_teams = _load_nba_teams()
+        team_role_map: list[tuple[dict, discord.Role]] = []
+        for team_data in nba_teams:
+            discord_role = await guild.create_role(
+                name=f"{team_data['city']} {team_data['name']}",
+                reason="DBA team role",
             )
-            if team_count != 30:
-                log.error(
-                    f"Team creation incomplete for league {league.id}: "
-                    f"expected 30, got {team_count}. Rolling back."
+            created_discord_objects.append(discord_role)
+            team_role_map.append((team_data, discord_role))
+
+    except Exception as discord_err:
+        # Roll back everything created on Discord — DB is still untouched.
+        for obj in reversed(created_discord_objects):
+            try:
+                await obj.delete()
+            except Exception:
+                pass
+        raise DBAError(
+            f"League setup failed during Discord setup: {discord_err}. "
+            "No data was saved — please try `/league create` again."
+        ) from discord_err
+
+    # PHASE 2: All DB writes in a single atomic transaction.
+    # Discord is fully set up; now persist everything atomically so a partial
+    # failure can never leave an orphaned leagues row.
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                league = await league_repo.create(
+                    conn,
+                    guild_id=guild.id,
+                    name=name,
+                    season_year=season_year,
+                    commissioner_id=commissioner.id,
                 )
-                raise DBAError(
-                    f"League setup failed: only {team_count}/30 teams were created. "
-                    "The team rows have been rolled back — please try `/league create` again."
+                for role_name, channel_id in channel_ids.items():
+                    await league_repo.add_channel(conn, league.id, role_name, channel_id)
+                await league_repo.add_role(
+                    conn, league.id, "commissioner", None, commissioner_role.id
                 )
+                for team_data, discord_role in team_role_map:
+                    team = await team_repo.create(conn, league.id, team_data)
+                    await league_repo.add_role(
+                        conn, league.id, "team", team.id, discord_role.id
+                    )
+                team_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM teams WHERE league_id = $1", league.id
+                )
+                if team_count != 30:
+                    log.error(
+                        f"Team creation incomplete for league (guild {guild.id}): "
+                        f"expected 30, got {team_count}. Rolling back."
+                    )
+                    raise DBAError(
+                        f"League setup failed: only {team_count}/30 teams were created. "
+                        "The database changes have been rolled back — please try `/league create` again."
+                    )
+
+    except Exception as db_err:
+        # DB failed — roll back all Discord objects so the server is left clean.
+        for obj in reversed(created_discord_objects):
+            try:
+                await obj.delete()
+            except Exception:
+                pass
+        raise DBAError(
+            f"League setup failed during database setup: {db_err}. "
+            "All Discord channels/roles have been cleaned up — please try `/league create` again."
+        ) from db_err
+
+    # Collect team roles in creation order for role positioning below.
+    team_roles = [discord_role for _, discord_role in team_role_map]
 
     # Place all DBA roles just below the bot's managed role so the bot can
     # always manage (and later delete) them regardless of future reordering.

@@ -335,7 +335,31 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
                         pass
 
         # Single DELETE cascades to all child tables
-        await pool.execute("DELETE FROM leagues WHERE id = $1", league.id)
+        try:
+            await pool.execute("DELETE FROM leagues WHERE id = $1", league.id)
+        except Exception as exc:
+            log.error(f"Failed to delete league {league.id} from DB: {exc}", exc_info=True)
+            await interaction.followup.send(
+                "Discord channels/roles were deleted, but the league record could not be removed "
+                f"from the database. Contact the server admin. Error: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        # Verify the row is actually gone — a silent failure here would re-wedge the server.
+        still_exists = await pool.fetchval("SELECT id FROM leagues WHERE id = $1", league.id)
+        if still_exists:
+            log.critical(
+                f"League {league.id} DELETE appeared to succeed but row still exists — "
+                "possible FK constraint or trigger preventing deletion."
+            )
+            await interaction.followup.send(
+                "Warning: the DELETE command ran without error but the league record still exists "
+                "in the database. Contact the server admin immediately.",
+                ephemeral=True,
+            )
+            return
+
         log.info(f"League '{league.name}' (id={league.id}) deleted by {interaction.user.id}")
 
         await interaction.followup.send(
