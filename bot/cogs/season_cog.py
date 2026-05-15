@@ -95,33 +95,55 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
 
         async def _run_import() -> None:
             import asyncio
-            result = await import_service.import_players_from_api(
-                league_id=league.id,
-                season=season,
-                guild=interaction.guild,
-            )
-            pool = await get_pool()
-            news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-            if news_channel_id:
-                channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
-                    embed = discord.Embed(
-                        title="Player Import Complete",
-                        color=discord.Color.green() if not result["errors"] else discord.Color.orange(),
-                    )
-                    embed.add_field(name="Teams Imported", value=str(result["teams_imported"]), inline=True)
-                    embed.add_field(name="Players Imported", value=str(result["players_imported"]), inline=True)
-                    if result["errors"]:
-                        error_text = "\n".join(result["errors"][:10])
-                        if len(result["errors"]) > 10:
-                            error_text += f"\n… and {len(result['errors']) - 10} more"
-                        embed.add_field(name="Errors", value=error_text, inline=False)
-                    await channel.send(embed=embed)
-            log.info(
-                f"import-players: league={league.id} season={season} "
-                f"teams={result['teams_imported']} players={result['players_imported']} "
-                f"errors={len(result['errors'])}"
-            )
+            try:
+                result = await import_service.import_players_from_api(
+                    league_id=league.id,
+                    season=season,
+                    guild=interaction.guild,
+                )
+                pool = await get_pool()
+                news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+                if news_channel_id:
+                    channel = interaction.guild.get_channel(news_channel_id)
+                    if channel:
+                        skipped = result.get("teams_skipped", 0)
+                        imported = result["teams_imported"]
+                        status_parts = [f"{imported} team(s) imported"]
+                        if skipped:
+                            status_parts.append(f"{skipped} already up to date")
+                        embed = discord.Embed(
+                            title="Player Import Complete",
+                            color=discord.Color.green() if not result["errors"] else discord.Color.orange(),
+                        )
+                        embed.add_field(name="Teams", value=", ".join(status_parts), inline=True)
+                        embed.add_field(name="Players Imported", value=str(result["players_imported"]), inline=True)
+                        if result["errors"]:
+                            error_text = "\n".join(result["errors"][:10])
+                            if len(result["errors"]) > 10:
+                                error_text += f"\n… and {len(result['errors']) - 10} more"
+                            embed.add_field(name="Errors", value=error_text, inline=False)
+                        await channel.send(embed=embed)
+                log.info(
+                    f"import-players: league={league.id} season={season} "
+                    f"teams={result['teams_imported']} skipped={result.get('teams_skipped', 0)} "
+                    f"players={result['players_imported']} errors={len(result['errors'])}"
+                )
+            except Exception as exc:
+                log.error(f"import-players task failed: league={league.id} season={season} — {exc}", exc_info=True)
+                try:
+                    pool = await get_pool()
+                    news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+                    if news_channel_id:
+                        channel = interaction.guild.get_channel(news_channel_id)
+                        if channel:
+                            embed = discord.Embed(
+                                title="Player Import Failed",
+                                description=f"An unexpected error occurred: {exc}",
+                                color=discord.Color.red(),
+                            )
+                            await channel.send(embed=embed)
+                except Exception:
+                    log.error("import-players: could not post failure embed", exc_info=True)
 
         import asyncio
         asyncio.create_task(_run_import())

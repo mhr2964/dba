@@ -490,6 +490,40 @@ def trade_deadline_open_embed() -> discord.Embed:
     return embed
 
 
+def standings_snapshot_embed(standings_rows: List[dict], game_index: int) -> discord.Embed:
+    """Standings-only embed for the #standings channel — full conference tables, sorted by win%."""
+    def _win_pct(r: dict) -> float:
+        games = r["wins"] + r["losses"]
+        return r["wins"] / games if games > 0 else 0.0
+
+    east = sorted(
+        [r for r in standings_rows if r.get("conference") == "East"],
+        key=lambda r: -_win_pct(r),
+    )
+    west = sorted(
+        [r for r in standings_rows if r.get("conference") == "West"],
+        key=lambda r: -_win_pct(r),
+    )
+
+    def _conf_lines(rows: List[dict]) -> str:
+        lines = []
+        for i, r in enumerate(rows, start=1):
+            code = r.get("nba_team_code", str(r.get("team_id", "?")))
+            w = r.get("wins", 0)
+            l = r.get("losses", 0)
+            pct = f"{_win_pct(r):.3f}".lstrip("0") or ".000"
+            lines.append(f"`{i:2}.` **{code}**  {w}–{l}  `{pct}`")
+        return "\n".join(lines) or "No data"
+
+    embed = discord.Embed(
+        title=f"League Standings — After Game {game_index}",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Eastern Conference", value=_conf_lines(east), inline=True)
+    embed.add_field(name="Western Conference", value=_conf_lines(west), inline=True)
+    return embed
+
+
 def user_matchup_sim_failed_embed() -> discord.Embed:
     """Error embed when the scheduled user matchup fails to sim."""
     embed = discord.Embed(

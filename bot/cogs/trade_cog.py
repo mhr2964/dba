@@ -615,6 +615,26 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             ch = interaction.guild.get_channel(block_channel_id)
             if ch:
                 await ch.send(embed=embed)
+                all_entries = await trade_block_repo.get_league_block(pool, league.id)
+                entries_by_team: dict[int, list[dict]] = {}
+                for entry in all_entries:
+                    entries_by_team.setdefault(entry["team_id"], []).append(entry)
+                teams_by_id: dict = {}
+                players_by_id: dict = {}
+                for entry in all_entries:
+                    tid = entry["team_id"]
+                    if tid not in teams_by_id:
+                        t = await team_repo.get_by_id(pool, tid)
+                        if t:
+                            teams_by_id[tid] = t
+                    pid = entry["player_id"]
+                    if pid not in players_by_id:
+                        p = await player_repo.get_by_id(pool, pid)
+                        if p:
+                            players_by_id[pid] = {"full_name": p.full_name, "overall": p.overall}
+                league_embed = trade_embeds.trade_block_league_embed(entries_by_team, teams_by_id, players_by_id)
+                league_embed.title = "League Block Snapshot"
+                await ch.send(embed=league_embed)
 
     @app_commands.command(name="remove", description="Remove a player from your trade block")
     @app_commands.describe(player="Player name to remove from your trade block")
@@ -650,6 +670,38 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
 
         await trade_block_repo.remove_from_block(pool, league.id, found_player.id)
         await interaction.followup.send(f"Removed **{found_player.full_name}** from your trade block.")
+
+        block_channel_id = await league_repo.get_channel(pool, league.id, "trade-block")
+        if block_channel_id:
+            ch = interaction.guild.get_channel(block_channel_id)
+            if ch:
+                removed_embed = discord.Embed(
+                    title="Trade Block — Player Removed",
+                    description=f"**{found_player.full_name}** (OVR {found_player.overall}) has been removed from the trade block.",
+                    color=discord.Color.greyple(),
+                )
+                removed_embed.add_field(name="Team", value=user_team.full_name, inline=True)
+                await ch.send(embed=removed_embed)
+                all_entries = await trade_block_repo.get_league_block(pool, league.id)
+                entries_by_team: dict[int, list[dict]] = {}
+                for entry in all_entries:
+                    entries_by_team.setdefault(entry["team_id"], []).append(entry)
+                teams_by_id: dict = {}
+                players_by_id: dict = {}
+                for entry in all_entries:
+                    tid = entry["team_id"]
+                    if tid not in teams_by_id:
+                        t = await team_repo.get_by_id(pool, tid)
+                        if t:
+                            teams_by_id[tid] = t
+                    pid = entry["player_id"]
+                    if pid not in players_by_id:
+                        p = await player_repo.get_by_id(pool, pid)
+                        if p:
+                            players_by_id[pid] = {"full_name": p.full_name, "overall": p.overall}
+                league_embed = trade_embeds.trade_block_league_embed(entries_by_team, teams_by_id, players_by_id)
+                league_embed.title = "League Block Snapshot"
+                await ch.send(embed=league_embed)
 
     @app_commands.command(name="view", description="View a team's trade block")
     @app_commands.describe(team="Team code (defaults to your team)")

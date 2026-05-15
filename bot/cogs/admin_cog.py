@@ -11,7 +11,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import admin_repo, player_repo, team_repo
 from phase.helpers import get_league_or_error, require_commissioner
-from services import league_service, roster_seed_service
+from services import import_service, league_service, roster_seed_service
 
 log = get_logger(__name__)
 
@@ -625,6 +625,55 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         embed.add_field(name="Roles deleted", value=str(len(deleted_roles)), inline=True)
         embed.set_footer(text="Server is clean. Use /league create to start fresh.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+    @app_commands.command(
+        name="rebuild-lineups",
+        description="Commissioner: regenerate starting lineups for all teams (top-OVR ordering)",
+    )
+    async def rebuild_lineups(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        pool = await get_pool()
+        teams = await team_repo.get_all(pool, league.id)
+
+        n_success = 0
+        errors: list[str] = []
+        for team in teams:
+            try:
+                players_sorted = await roster_seed_service._players_for_team(pool, league.id, team.id)
+                await import_service._generate_lineup(pool, league.id, team.id, players_sorted)
+                n_success += 1
+            except Exception as exc:
+                team_label = getattr(team, "nba_team_code", str(team.id))
+                log.error(f"rebuild-lineups: failed for team {team_label} — {exc}", exc_info=True)
+                errors.append(f"{team_label}: {exc}")
+
+        embed = discord.Embed(
+            title="Lineups Rebuilt",
+            color=discord.Color.green() if not errors else discord.Color.orange(),
+        )
+        embed.add_field(name="Teams updated", value=str(n_success), inline=True)
+        embed.add_field(name="League", value=str(league.id), inline=True)
+        if errors:
+            error_text = "\n".join(errors[:10])
+            if len(errors) > 10:
+                error_text += f"\n… and {len(errors) - 10} more"
+            embed.add_field(name="Errors", value=error_text, inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        await admin_repo.log_commissioner_action(
+            pool,
+            league_id=league.id,
+            user_id=interaction.user.id,
+            action_type="rebuild_lineups",
+            target_ref=str(league.id),
+            detail=f"Rebuilt lineups for {n_success}/{len(teams)} teams. Errors: {len(errors)}",
+        )
 
 
 class AdminCog(commands.Cog):

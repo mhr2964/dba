@@ -509,6 +509,7 @@ async def import_players_from_api(
         news_channel = guild.get_channel(news_channel_id)
 
     teams_imported = 0
+    teams_skipped = 0
     players_imported = 0
     errors: list[str] = []
 
@@ -543,6 +544,7 @@ async def import_players_from_api(
 
         if await _team_has_players(pool, league_id, team_id):
             log.info(f"import_players: {code} already has players, skipping")
+            teams_skipped += 1
             continue
 
         try:
@@ -647,6 +649,7 @@ async def import_players_from_api(
     )
     return {
         "teams_imported": teams_imported,
+        "teams_skipped": teams_skipped,
         "players_imported": players_imported,
         "errors": errors,
     }

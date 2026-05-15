@@ -436,6 +436,13 @@ async def _get_box_scores_channel(guild: discord.Guild, pool, league_id: int) ->
     return guild.get_channel(channel_id)
 
 
+async def _get_standings_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
+    channel_id = await league_repo.get_channel(pool, league_id, "standings")
+    if not channel_id:
+        return None
+    return guild.get_channel(channel_id)
+
+
 async def _get_news_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
     channel_id = await league_repo.get_channel(pool, league_id, "league-news")
     if not channel_id:
@@ -888,6 +895,7 @@ async def sim_until_rival(
     games = await game_repo.get_games_in_range(pool, league_id, season, current_index + 1, stop_index)
 
     box_channel = await _get_box_scores_channel(guild, pool, league_id)
+    standings_channel = await _get_standings_channel(guild, pool, league_id)
     news_channel = await _get_news_channel(guild, pool, league_id)
     injury_channel = await _get_injury_channel(guild, pool, league_id)
 
@@ -917,8 +925,16 @@ async def sim_until_rival(
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
             standings = await game_repo.get_standings(pool, league_id, season)
             embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-            await box_channel.send(embed=embed)
+            try:
+                await box_channel.send(embed=embed)
+            except (discord.HTTPException, Exception) as exc:
+                log.warning(f"channel send failed: {exc}")
             last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            if standings_channel:
+                try:
+                    await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
+                except (discord.HTTPException, Exception) as exc:
+                    log.warning(f"channel send failed: {exc}")
             await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
             await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
@@ -928,8 +944,16 @@ async def sim_until_rival(
     if batch_results and box_channel:
         standings = await game_repo.get_standings(pool, league_id, season)
         embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-        await box_channel.send(embed=embed)
+        try:
+            await box_channel.send(embed=embed)
+        except (discord.HTTPException, Exception) as exc:
+            log.warning(f"channel send failed: {exc}")
         last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        if standings_channel:
+            try:
+                await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
+            except (discord.HTTPException, Exception) as exc:
+                log.warning(f"channel send failed: {exc}")
         await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
         await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
@@ -944,7 +968,10 @@ async def sim_until_rival(
         away_manager = guild.get_member(away_team.manager_user_id) if away_team and away_team.manager_user_id else None
 
         embed = sim_embeds.matchup_alert(next_user_game, home_team, away_team, home_manager, away_manager)
-        await news_channel.send(embed=embed)
+        try:
+            await news_channel.send(embed=embed)
+        except (discord.HTTPException, Exception) as exc:
+            log.warning(f"channel send failed: {exc}")
 
     return {"games_simmed": games_simmed, "next_matchup": next_user_game, "season_complete": season_complete}
 
@@ -973,6 +1000,7 @@ async def sim_range(
     games = await game_repo.get_games_in_range(pool, league_id, season, current_index + 1, to_game_index)
 
     box_channel = await _get_box_scores_channel(guild, pool, league_id)
+    standings_channel = await _get_standings_channel(guild, pool, league_id)
     news_channel = await _get_news_channel(guild, pool, league_id)
     injury_channel = await _get_injury_channel(guild, pool, league_id)
 
@@ -1002,8 +1030,16 @@ async def sim_range(
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
             standings = await game_repo.get_standings(pool, league_id, season)
             embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-            await box_channel.send(embed=embed)
+            try:
+                await box_channel.send(embed=embed)
+            except (discord.HTTPException, Exception) as exc:
+                log.warning(f"channel send failed: {exc}")
             last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            if standings_channel:
+                try:
+                    await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
+                except (discord.HTTPException, Exception) as exc:
+                    log.warning(f"channel send failed: {exc}")
             await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
             await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
@@ -1013,8 +1049,16 @@ async def sim_range(
     if batch_results and box_channel:
         standings = await game_repo.get_standings(pool, league_id, season)
         embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-        await box_channel.send(embed=embed)
+        try:
+            await box_channel.send(embed=embed)
+        except (discord.HTTPException, Exception) as exc:
+            log.warning(f"channel send failed: {exc}")
         last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        if standings_channel:
+            try:
+                await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
+            except (discord.HTTPException, Exception) as exc:
+                log.warning(f"channel send failed: {exc}")
         await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
         await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
