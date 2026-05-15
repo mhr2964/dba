@@ -338,14 +338,18 @@ def batch_recap_with_standings(
 
     # Standings top-5 per conference
     def _top5_str(rows: List[dict]) -> str:
-        def _win_pct(r: dict) -> float:
-            games = r["wins"] + r["losses"]
-            return r["wins"] / games if games > 0 else 0.0
+        def _smoothed_win_pct(r: dict) -> float:
+            """Laplace-smoothed win% for sorting: (wins+1)/(wins+losses+2).
+            Prevents a 2-0 team from outranking an 11-1 team — small samples
+            are pulled toward .500, larger samples dominate correctly."""
+            w = r.get("wins") or 0
+            l = r.get("losses") or 0
+            return (w + 1) / (w + l + 2)
 
         def _games_played(r: dict) -> int:
             return (r.get("wins") or 0) + (r.get("losses") or 0)
 
-        sorted_rows = sorted(rows, key=lambda r: (-_win_pct(r), -_games_played(r)))[:5]
+        sorted_rows = sorted(rows, key=lambda r: (-_smoothed_win_pct(r), -_games_played(r)))[:5]
         parts = []
         for i, row in enumerate(sorted_rows, start=1):
             code = row.get("nba_team_code", str(row.get("team_id", "?")))
@@ -406,17 +410,20 @@ def _championship_odds(standings_rows: List[dict]) -> dict[int, float]:
     """
     _SEED_FACTORS = {1: 1.4, 2: 1.2, 3: 1.0, 4: 1.0, 5: 0.7, 6: 0.7, 7: 0.3, 8: 0.3}
 
-    def _conf_win_pct(r: dict) -> float:
-        games = r["wins"] + r["losses"]
-        return r["wins"] / games if games > 0 else 0.0
+    def _conf_smoothed_win_pct(r: dict) -> float:
+        """Laplace-smoothed win% for sorting: (wins+1)/(wins+losses+2).
+        Determines conference seed order consistently with standings display."""
+        w = r.get("wins") or 0
+        l = r.get("losses") or 0
+        return (w + 1) / (w + l + 2)
 
     east = sorted(
         [r for r in standings_rows if r["conference"] == "East"],
-        key=lambda r: -_conf_win_pct(r),
+        key=lambda r: -_conf_smoothed_win_pct(r),
     )
     west = sorted(
         [r for r in standings_rows if r["conference"] == "West"],
-        key=lambda r: -_conf_win_pct(r),
+        key=lambda r: -_conf_smoothed_win_pct(r),
     )
 
     raw: dict[int, float] = {}
@@ -536,19 +543,27 @@ def trade_deadline_open_embed() -> discord.Embed:
 def standings_snapshot_embed(standings_rows: List[dict], game_index: int) -> discord.Embed:
     """Standings-only embed for the #standings channel — full conference tables, sorted by win%."""
     def _win_pct(r: dict) -> float:
+        """Raw win% for display only."""
         games = r["wins"] + r["losses"]
         return r["wins"] / games if games > 0 else 0.0
+
+    def _smoothed_win_pct(r: dict) -> float:
+        """Laplace-smoothed win% for sorting: (wins+1)/(wins+losses+2).
+        Prevents a 2-0 team from outranking an 11-1 team in sort order."""
+        w = r.get("wins") or 0
+        l = r.get("losses") or 0
+        return (w + 1) / (w + l + 2)
 
     def _games_played(r: dict) -> int:
         return (r.get("wins") or 0) + (r.get("losses") or 0)
 
     east = sorted(
         [r for r in standings_rows if r.get("conference") == "East"],
-        key=lambda r: (-_win_pct(r), -_games_played(r)),
+        key=lambda r: (-_smoothed_win_pct(r), -_games_played(r)),
     )
     west = sorted(
         [r for r in standings_rows if r.get("conference") == "West"],
-        key=lambda r: (-_win_pct(r), -_games_played(r)),
+        key=lambda r: (-_smoothed_win_pct(r), -_games_played(r)),
     )
 
     def _conf_lines(rows: List[dict]) -> str:

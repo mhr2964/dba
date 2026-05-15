@@ -67,19 +67,42 @@ async def check_and_get_potm_awards(
     """
     current_year_month = current_game_date[:7]  # e.g. "2024-11"
 
+    log.info(
+        f"POTM check: league={league_id} season={season} "
+        f"current_game_date={current_game_date} current_year_month={current_year_month}"
+    )
+
     last_ym: Optional[str] = await pool.fetchval(
         "SELECT last_potm_year_month FROM leagues WHERE id = $1",
         league_id,
     )
 
+    log.info(f"POTM check: last_potm_year_month={last_ym!r}")
+
     if last_ym == current_year_month:
+        log.info("POTM check: already awarded for current month, skipping")
         return None  # already awarded this month
 
-    # First-ever run: seed last_ym to the month before current so we award exactly one month.
+    # First-ever run: seed last_ym to the month before the earliest simmed game in
+    # the season so that all elapsed months are eligible.  Using _prev_month(current)
+    # would skip every month except the last one when simming crosses multiple months.
     if last_ym is None:
-        last_ym = _prev_month(current_year_month)
+        earliest_date: Optional[str] = await pool.fetchval(
+            """
+            SELECT MIN(scheduled_date)::text FROM games
+            WHERE league_id = $1 AND season = $2 AND status = 'simmed'
+            """,
+            league_id,
+            season,
+        )
+        if earliest_date:
+            last_ym = _prev_month(earliest_date[:7])
+        else:
+            last_ym = _prev_month(current_year_month)
+        log.info(f"POTM check: first run, seeding last_ym={last_ym!r} from earliest simmed date={earliest_date!r}")
 
     months_to_award = _months_between_exclusive_inclusive(last_ym, current_year_month)
+    log.info(f"POTM check: months_to_award={months_to_award}")
     if not months_to_award:
         return None
 

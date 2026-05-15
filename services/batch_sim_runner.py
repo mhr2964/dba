@@ -661,7 +661,12 @@ async def _maybe_post_potm(
     current_game_date: Optional[str],
 ) -> None:
     """Post Player of the Month awards if a new month has elapsed since the last award."""
+    log.info(
+        f"_maybe_post_potm called: league={league_id} season={season} "
+        f"current_game_date={current_game_date!r}"
+    )
     if not current_game_date:
+        log.info("_maybe_post_potm: no current_game_date, skipping")
         return
     try:
         awards = await potm_service.check_and_get_potm_awards(

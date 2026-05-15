@@ -451,9 +451,9 @@ async def get_standings(pool: asyncpg.Pool, league_id: int, season: int) -> List
         JOIN teams t ON t.id = sc.team_id
         WHERE sc.league_id = $1 AND sc.season = $2
         ORDER BY t.conference ASC,
-                 CASE WHEN (sc.wins + sc.losses) > 0
-                      THEN sc.wins::float / (sc.wins + sc.losses)
-                      ELSE 0.0 END DESC,
+                 -- Laplace-smoothed win%: (wins+1)/(wins+losses+2)
+                 -- Prevents a 2-0 team from outranking an 11-1 team at DB sort level.
+                 (sc.wins::float + 1) / (sc.wins + sc.losses + 2) DESC NULLS LAST,
                  sc.wins DESC
         """,
         league_id,

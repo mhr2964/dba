@@ -145,6 +145,20 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             return
 
         pool = await get_pool()
+
+        # Guard: no schedule means no games to sim.  Without this check the runner
+        # would see 0 pending games, conclude the season is complete, and auto-advance
+        # the phase — leaving the league in an unrecoverable state.
+        total_scheduled = await game_repo.get_total_regular_season_games(
+            pool, league.id, league.current_season
+        )
+        if total_scheduled == 0:
+            await interaction.followup.send(
+                "No schedule found. Run `/season start` to generate the schedule before simming games.",
+                ephemeral=True,
+            )
+            return
+
         current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
         to_index = await _target_index_for_n_more_per_team(pool, league.id, count)
 

@@ -246,8 +246,23 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
     @app_commands.command(name="advance", description="Commissioner: manually advance the league phase")
     @app_commands.describe(phase_name="Target phase name (e.g. REGULAR_SEASON_ACTIVE)")
     async def advance(self, interaction: discord.Interaction, phase_name: str) -> None:
+        from phase.states import Phase as _Phase
+
+        _VALID_PHASES = ", ".join(f"`{p.value}`" for p in _Phase)
+
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
+
+        # Validate phase name before touching the DB.  Phase(unknown) raises ValueError,
+        # which the global error handler catches as "Something went wrong" with no context.
+        try:
+            _Phase(phase_name)
+        except ValueError:
+            await interaction.response.send_message(
+                f"Unknown phase `{phase_name}`.\nValid phases: {_VALID_PHASES}",
+                ephemeral=True,
+            )
+            return
 
         if phase_name == league.current_phase:
             await interaction.response.send_message(
