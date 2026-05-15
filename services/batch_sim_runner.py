@@ -541,28 +541,51 @@ async def _maybe_post_columnist(
     if not analysis_channel:
         return
 
-    # Gather team context for the batch.
-    teams_played: list[str] = []
-    top_scorer_name: str | None = None
-    top_scorer_pts: int = 0
+    # Build real per-game context so the AI writes about actual results, not fabrications.
+    games_data: list[dict] = []
+    overall_top_scorer: str | None = None
+    overall_top_pts: int = 0
+
     for br in batch_results:
         ht = br["home_team"]
         at = br["away_team"]
-        if hasattr(ht, "full_name"):
-            teams_played.append(ht.full_name)
-        if hasattr(at, "full_name"):
-            teams_played.append(at.full_name)
-        for line in br["result"].get("home_box", []) + br["result"].get("away_box", []):
-            pts = line.get("points", 0)
-            if pts > top_scorer_pts:
-                top_scorer_pts = pts
-                top_scorer_name = line.get("player_name") or f"Player {line.get('player_id', '?')}"
+        r = br["result"]
+        hs: int = r["home_score"]
+        as_: int = r["away_score"]
+        winner_id = r.get("winner_team_id")
+        winner_code = (ht.nba_team_code if hasattr(ht, "nba_team_code") and winner_id == ht.id
+                       else at.nba_team_code if hasattr(at, "nba_team_code") else "???")
+
+        all_box = r.get("home_box", []) + r.get("away_box", [])
+        game_top = max(all_box, key=lambda l: l.get("points", 0), default={})
+        game_top_name = game_top.get("player_name", "") if game_top else ""
+        game_top_pts = game_top.get("points", 0) if game_top else 0
+
+        if game_top_pts > overall_top_pts:
+            overall_top_pts = game_top_pts
+            overall_top_scorer = game_top_name
+
+        away_code = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
+        home_code = ht.nba_team_code if hasattr(ht, "nba_team_code") else "???"
+
+        games_data.append({
+            "game": f"{away_code} @ {home_code}",
+            "score": f"{away_code} {as_} - {home_code} {hs}",
+            "winner": winner_code,
+            "margin": abs(hs - as_),
+            "top_performer": f"{game_top_name} ({game_top_pts} pts)" if game_top_name else None,
+        })
+
+    # Sort by interest: close finishes and big blowouts float to the top.
+    def _game_interest(g: dict) -> float:
+        m = g["margin"]
+        return max(0.0, 8.0 - m) + max(0.0, m - 20.0)
+    games_data.sort(key=_game_interest, reverse=True)
 
     batch_context = {
-        "games_in_batch": len(batch_results),
-        "teams": list(dict.fromkeys(teams_played))[:8],
-        "top_scorer": top_scorer_name,
-        "top_scorer_pts": top_scorer_pts,
+        "season_games": games_data[:10],  # all games (≤10 per batch)
+        "top_performer_of_batch": f"{overall_top_scorer} ({overall_top_pts} pts)" if overall_top_scorer else None,
+        "games_count": len(batch_results),
     }
 
     # Rotation — pick this batch's columnist.
