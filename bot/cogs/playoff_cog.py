@@ -46,7 +46,11 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
         await interaction.response.defer()
 
         pool = await get_pool()
-        bracket = await playoff_service.seed_playoffs(league.id, league.current_season)
+        try:
+            bracket = await playoff_service.seed_playoffs(league.id, league.current_season)
+        except DBAError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
 
         all_series = (
             bracket["playin_east"]

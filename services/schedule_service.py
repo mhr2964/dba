@@ -127,7 +127,9 @@ async def generate_season(league_id: int, season: int) -> int:
 
     teams = await team_repo.get_all(pool, league_id)
     if len(teams) != 30:
-        log.warning(f"League {league_id} has {len(teams)} teams, expected 30")
+        raise ValueError(
+            f"Expected 30 teams, got {len(teams)} — run /league delete and /league create again"
+        )
 
     human_team_ids = {t.id for t in teams if t.manager_user_id is not None}
 

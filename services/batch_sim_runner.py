@@ -309,6 +309,11 @@ async def _persist_game_result(
 
     await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel)
 
+    # Inject team IDs that records_service needs to resolve team names.
+    # sim_engine result has winner_team_id but not home_team_id/away_team_id.
+    result["home_team_id"] = home_team.id
+    result["away_team_id"] = away_team.id
+
     record_announcements, at_announcements = await records_service.check_and_update_records(
         pool, game["league_id"], season, game_id, result
     )
@@ -1057,6 +1062,27 @@ async def _maybe_post_columnist(
             await analysis_channel.send(embed=embed)
 
 
+async def _maybe_advance_trade_deadline(
+    pool,
+    league_id: int,
+    league_phase: str,
+    current_game_index: int,
+    deadline_game_index: Optional[int],
+) -> None:
+    """Auto-advance phase to TRADE_DEADLINE_OPEN when the sim passes the deadline game index."""
+    if league_phase != Phase.REGULAR_SEASON_ACTIVE.value:
+        return
+    if not deadline_game_index or current_game_index < deadline_game_index:
+        return
+    try:
+        await league_service.advance_phase(league_id, Phase.TRADE_DEADLINE_OPEN.value)
+        log.info(
+            f"Trade deadline opened for league {league_id} at game index {current_game_index}"
+        )
+    except Exception as exc:
+        log.warning(f"_maybe_advance_trade_deadline failed: {exc}")
+
+
 async def _maybe_advance_season_complete(
     pool,
     league_id: int,
@@ -1101,6 +1127,10 @@ async def sim_until_rival(
     pool = await get_pool()
     total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
     deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
+    _league_phase_row = await pool.fetchrow(
+        "SELECT current_phase FROM leagues WHERE id = $1", league_id
+    )
+    _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
     next_user_game = await game_repo.get_user_matchup_ahead(pool, league_id, season, current_index)
@@ -1169,6 +1199,7 @@ async def sim_until_rival(
             await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
+            await _maybe_advance_trade_deadline(pool, league_id, _league_phase, last_idx, deadline_game_index)
             batch_results = []
 
     if batch_results and box_channel:
@@ -1197,6 +1228,7 @@ async def sim_until_rival(
         await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
+        await _maybe_advance_trade_deadline(pool, league_id, _league_phase, last_idx, deadline_game_index)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
 
@@ -1227,6 +1259,10 @@ async def sim_range(
     pool = await get_pool()
     total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
     deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
+    _league_phase_row = await pool.fetchrow(
+        "SELECT current_phase FROM leagues WHERE id = $1", league_id
+    )
+    _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
 
@@ -1293,6 +1329,7 @@ async def sim_range(
             await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
+            await _maybe_advance_trade_deadline(pool, league_id, _league_phase, last_idx, deadline_game_index)
             batch_results = []
 
     if batch_results and box_channel:
@@ -1321,6 +1358,7 @@ async def sim_range(
         await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
+        await _maybe_advance_trade_deadline(pool, league_id, _league_phase, last_idx, deadline_game_index)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
     return {"warning": False, "games_simmed": games_simmed, "user_matchups": [], "season_complete": season_complete}

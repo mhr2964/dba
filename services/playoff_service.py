@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import discord
 
+from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, series_repo, team_repo
@@ -55,6 +56,12 @@ async def seed_playoffs(league_id: int, season: int) -> dict:
     west_seeds = _standings_to_seeds(standings, "West")
 
     async def _create_playin(conf_seeds: List[dict], playin_round: str) -> List[series_repo.Series]:
+        conference = "East" if "east" in playin_round else "West"
+        if len(conf_seeds) < 10:
+            raise DBAError(
+                f"{conference} conference has only {len(conf_seeds)} seeded teams — "
+                f"need at least 10 to run the play-in. Check that all 30 teams were imported."
+            )
         # seeds 7 vs 8 (index 6 vs 7), seeds 9 vs 10 (index 8 vs 9)
         s1 = await series_repo.create_series(
             pool, league_id, season, playin_round,
@@ -80,6 +87,12 @@ async def seed_playoffs(league_id: int, season: int) -> dict:
     # unknown we skip creating 1v8 and 2v7 now; sim_play_in creates them.
     # We pre-create 3v6 and 4v5 for both conferences.
     async def _create_r1_known(conf_seeds: List[dict], round_name: str) -> List[series_repo.Series]:
+        conference = "East" if "east" in round_name else "West"
+        if len(conf_seeds) < 6:
+            raise DBAError(
+                f"{conference} conference has only {len(conf_seeds)} seeded teams — "
+                f"need at least 6 for the playoff bracket. Check that all 30 teams were imported."
+            )
         s1 = await series_repo.create_series(
             pool, league_id, season, round_name,
             high_seed_id=conf_seeds[3]["team_id"],   # 4 seed

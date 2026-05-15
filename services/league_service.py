@@ -68,14 +68,29 @@ async def create(
 
     nba_teams = _load_nba_teams()
     team_roles: list[discord.Role] = []
-    for team_data in nba_teams:
-        team = await team_repo.create(pool, league.id, team_data)
-        discord_role = await guild.create_role(
-            name=f"{team_data['city']} {team_data['name']}",
-            reason=f"DBA team role for {team.full_name}",
-        )
-        await league_repo.add_role(pool, league.id, "team", team.id, discord_role.id)
-        team_roles.append(discord_role)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for team_data in nba_teams:
+                team = await team_repo.create(conn, league.id, team_data)
+                discord_role = await guild.create_role(
+                    name=f"{team_data['city']} {team_data['name']}",
+                    reason=f"DBA team role for {team.full_name}",
+                )
+                await league_repo.add_role(conn, league.id, "team", team.id, discord_role.id)
+                team_roles.append(discord_role)
+
+            team_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM teams WHERE league_id = $1", league.id
+            )
+            if team_count != 30:
+                log.error(
+                    f"Team creation incomplete for league {league.id}: "
+                    f"expected 30, got {team_count}. Rolling back."
+                )
+                raise DBAError(
+                    f"League setup failed: only {team_count}/30 teams were created. "
+                    "The team rows have been rolled back — please try `/league create` again."
+                )
 
     # Place all DBA roles just below the bot's managed role so the bot can
     # always manage (and later delete) them regardless of future reordering.
