@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import discord
 from discord import app_commands
@@ -331,15 +332,27 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
 class TeamGroup(app_commands.Group, name="team", description="Team management commands"):
 
     @app_commands.command(name="assign", description="Assign a manager to a team")
-    @app_commands.describe(user="Discord member to assign", team_code="NBA team code (e.g. LAL)")
+    @app_commands.describe(
+        user="Discord member to assign (mention)",
+        user_id="Discord user ID (alternative to mention)",
+        team_code="NBA team code (e.g. LAL)",
+    )
     @app_commands.default_permissions(administrator=True)
     async def assign(
         self,
         interaction: discord.Interaction,
-        user: discord.Member,
         team_code: str,
+        user: Optional[discord.Member] = None,
+        user_id: Optional[str] = None,
     ) -> None:
         await interaction.response.defer()
+
+        member = user
+        if member is None and user_id is not None:
+            member = interaction.guild.get_member(int(user_id))
+        if member is None:
+            await interaction.followup.send("Provide either a user mention or a user_id.", ephemeral=True)
+            return
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -350,10 +363,10 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             guild=interaction.guild,
             league=league,
             team_code=team_code,
-            user=user,
+            user=member,
         )
 
-        embed = league_embeds.team_assigned(team, user)
+        embed = league_embeds.team_assigned(team, member)
         await interaction.followup.send(embed=embed)
 
         pool = await get_pool()
@@ -362,7 +375,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             channel = interaction.guild.get_channel(news_channel_id)
             if channel:
                 await channel.send(
-                    f"📋 {user.mention} has claimed the **{team.full_name}** (`{team.nba_team_code}`)!"
+                    f"📋 {member.mention} has claimed the **{team.full_name}** (`{team.nba_team_code}`)!"
                 )
 
     @app_commands.command(name="remove", description="Remove a manager from a team")
