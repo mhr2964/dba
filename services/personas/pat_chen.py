@@ -26,6 +26,9 @@ pat_chen = Persona(
         "- Lead with the tactical observation, then back it with the numbers\n"
         "- 3-4 paragraphs max\n"
         "- Never use filler phrases like 'in conclusion' or 'it remains to be seen'\n\n"
+        "PLAYER OF THE MONTH RULE: When the context includes a 'month_label' key (e.g. 'October 2024'), "
+        "you are writing a Player of the Month award piece. The headline MUST start with that month name — "
+        "e.g. 'October 2024: Dončić Claims West Player of the Month'. Never omit the month from the headline.\n\n"
         "Return ONLY valid JSON — no markdown, no code fences:\n"
         "{\"headline\": \"<tactical headline, specific>\", \"body\": \"<3-4 paragraphs of film room analysis>\"}"
     ),
