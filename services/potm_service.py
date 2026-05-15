@@ -111,8 +111,8 @@ async def check_and_get_potm_awards(
     for ym in months_to_award:
         year_part, month_part = int(ym[:4]), int(ym[5:7])
         _, last_day = calendar.monthrange(year_part, month_part)
-        month_start = f"{ym}-01"
-        month_end = f"{ym}-{last_day:02d}"
+        month_start = datetime.date(year_part, month_part, 1)
+        month_end = datetime.date(year_part, month_part, last_day)
 
         rows = await pool.fetch(
             """
