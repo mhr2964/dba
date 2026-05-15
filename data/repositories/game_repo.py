@@ -209,7 +209,9 @@ async def mark_simmed(
     away_score: int,
     winner_id: int,
     seed: int,
+    quarters: dict | None = None,
 ) -> None:
+    q = quarters or {}
     await pool.execute(
         """
         UPDATE games
@@ -218,7 +220,17 @@ async def mark_simmed(
             away_score = $3,
             winner_team_id = $4,
             rng_seed = $5,
-            simmed_at = NOW()
+            simmed_at = NOW(),
+            q1_home = $6,
+            q1_away = $7,
+            q2_home = $8,
+            q2_away = $9,
+            q3_home = $10,
+            q3_away = $11,
+            q4_home = $12,
+            q4_away = $13,
+            ot_home = $14,
+            ot_away = $15
         WHERE id = $1
         """,
         game_id,
@@ -226,6 +238,16 @@ async def mark_simmed(
         away_score,
         winner_id,
         seed,
+        q.get("q1_home"),
+        q.get("q1_away"),
+        q.get("q2_home"),
+        q.get("q2_away"),
+        q.get("q3_home"),
+        q.get("q3_away"),
+        q.get("q4_home"),
+        q.get("q4_away"),
+        q.get("ot_home"),
+        q.get("ot_away"),
     )
 
 
@@ -494,6 +516,11 @@ async def get_game_by_index(
             g.away_score,
             g.home_team_id,
             g.away_team_id,
+            g.q1_home, g.q1_away,
+            g.q2_home, g.q2_away,
+            g.q3_home, g.q3_away,
+            g.q4_home, g.q4_away,
+            g.ot_home, g.ot_away,
             ht.nba_team_code  AS home_code,
             ht.city || ' ' || ht.name AS home_full_name,
             at.nba_team_code  AS away_code,

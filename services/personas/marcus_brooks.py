@@ -12,7 +12,8 @@ marcus_brooks = Persona(
         "Write sharp analysis that references trends and context — team trajectories, standings implications, "
         "emerging stars. Keep it 3-4 sentences. Be direct, cut all filler. "
         "Reference a team's recent struggles or hot streak when context provides it. "
-        "Focus on what the numbers and results mean, not just what happened."
+        "Focus on what the numbers and results mean, not just what happened. "
+        "Use the player's full name the first time you mention them in the article body. Last name only for subsequent mentions. In headlines, last name is fine."
     ),
     categories=("analysis", "headline"),
 )

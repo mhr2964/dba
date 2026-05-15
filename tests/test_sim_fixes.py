@@ -306,7 +306,7 @@ async def test_records_big_game_detected(db_pool):
         ],
         "away_box": [],
     }
-    announcements = await check_and_update_records(db_pool, league_id, 2025, game_id, result)
+    season_announcements, _at_announcements = await check_and_update_records(db_pool, league_id, 2025, game_id, result)
 
     record_row = await db_pool.fetchrow(
         "SELECT value, player_id FROM season_records "
@@ -316,7 +316,7 @@ async def test_records_big_game_detected(db_pool):
     assert record_row is not None
     assert record_row["value"] == 55.0
     assert record_row["player_id"] == player_id
-    assert any("55" in a for a in announcements)
+    assert any("55" in a for a in season_announcements)
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,21 @@ from __future__ import annotations
 from random import Random
 from typing import List
 
+
+def _split_quarters(total: int, game_seed: int, side: str) -> list[int]:
+    """Distribute `total` into 4 quarters using seeded noise.
+
+    side is a short string ('home'/'away') so home and away draws are independent.
+    """
+    rng_q = Random(game_seed + hash(side))
+    weights = [rng_q.gauss(1.0, 0.3) for _ in range(4)]
+    weights = [max(0.5, w) for w in weights]  # no zero-point quarters
+    factor = sum(weights)
+    splits = [round(total * w / factor) for w in weights]
+    # Last quarter absorbs any rounding drift so the sum is exact.
+    splits[3] += total - sum(splits)
+    return splits  # [q1, q2, q3, q4]
+
 _POSITION_SCORING_WEIGHT = {
     "PG": 1.05,
     "SG": 1.10,
@@ -66,8 +81,11 @@ def _build_player_line(
     """Build one player's stat line. Points are pre-allocated by caller."""
     pts = player.get("_allocated_points", 0)
 
-    fg_pct = _player_fg_pct(player)
-    three_pct = _player_3pct(player)
+    # Apply per-game shooting noise so FG% varies instead of always hitting the expected rate.
+    raw_fg = _player_fg_pct(player)
+    fg_pct = max(0.25, min(0.65, raw_fg * rng.gauss(1.0, 0.08)))
+    raw_3p = _player_3pct(player)
+    three_pct = max(0.20, min(0.55, raw_3p * rng.gauss(1.0, 0.10)))
 
     # Tendency-driven shot mix: tendency_3pt=50 → ~15% of pts from 3; 100 → ~35%; 0 → ~5%
     t3 = player.get("tendency_3pt", 50)
@@ -277,6 +295,20 @@ def _build_box_for_team(
                 new_weights[i] = max(scoring_weights[i] * bench_factor, 0.01)
         scoring_weights = new_weights
 
+    # Star scoring bump: top-2 players by weight get an extra allocation multiplier
+    # applied BEFORE normalization so the effect is additive against the rest of the roster.
+    # Cap: no single player can exceed 40% of total team scoring weight.
+    if n >= 2:
+        indexed_weights = sorted(enumerate(scoring_weights), key=lambda x: x[1], reverse=True)
+        top_idx = indexed_weights[0][0]
+        second_idx = indexed_weights[1][0]
+        scoring_weights[top_idx] *= 1.15
+        scoring_weights[second_idx] *= 1.05
+        # Enforce 40% cap on the top player (post-bump total, iterated once to converge).
+        total_w_star = sum(scoring_weights)
+        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.40:
+            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.40 / 0.60
+
     # Clutch adjustment: in close games, high-clutch players get more late-game usage.
     if abs(score_diff) < 12:
         clutch_adj = [(p.get("clutch_rating", 50) - 50) / 100.0 for p in players]  # -0.5 to +0.5
@@ -390,7 +422,7 @@ def sim_game(
     away_def = away_team.get("defense_rating") or 75
 
     def _ppp(off: float, opp_def: float) -> float:
-        base = 1.05 + (off - 60) / (95 - 60) * 0.20
+        base = 1.08 + (off - 60) / (95 - 60) * 0.22
         base *= 1 - (opp_def - 60) / (95 - 60) * 0.10
         base *= rng.gauss(1.0, 0.05)
         return base
@@ -413,14 +445,28 @@ def sim_game(
         if fatigue.get("away_b2b"):
             away_ppp -= 0.03
 
-    home_score = max(60, int(home_poss * home_ppp))
-    away_score = max(60, int(away_poss * away_ppp))
+    home_score_reg = max(60, int(home_poss * home_ppp))
+    away_score_reg = max(60, int(away_poss * away_ppp))
+
+    # Quarter splits are based on regulation totals and seeded independently of the main rng.
+    game_seed = (rng_seed ^ 0xDEAD) & 0xFFFFFF
+    home_quarters = _split_quarters(home_score_reg, game_seed, "home")  # [q1,q2,q3,q4]
+    away_quarters = _split_quarters(away_score_reg, game_seed, "away")
+
+    home_score = home_score_reg
+    away_score = away_score_reg
+
+    # OT points are whatever exceeds the regulation quarter sum.
+    ot_home: int = 0
+    ot_away: int = 0
 
     # Overtime: tied games cannot end — simulate up to 4 OT periods.
     # Each OT period is ~5 min (~25% of a quarter).  Score ceiling per team
     # is derived from their regulation points-per-quarter average scaled to 5 min.
     if home_score == away_score:
         home_score, away_score = _simulate_overtime(rng, home_score, away_score)
+        ot_home = home_score - home_score_reg
+        ot_away = away_score - away_score_reg
 
     winner_id = home_team["team_id"] if home_score > away_score else away_team["team_id"]
     home_diff = home_score - away_score
@@ -452,4 +498,14 @@ def sim_game(
         "home_box": home_box,
         "away_box": away_box,
         "injuries": injuries,
+        "q1_home": home_quarters[0],
+        "q1_away": away_quarters[0],
+        "q2_home": home_quarters[1],
+        "q2_away": away_quarters[1],
+        "q3_home": home_quarters[2],
+        "q3_away": away_quarters[2],
+        "q4_home": home_quarters[3],
+        "q4_away": away_quarters[3],
+        "ot_home": ot_home if ot_home > 0 else None,
+        "ot_away": ot_away if ot_away > 0 else None,
     }

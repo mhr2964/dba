@@ -21,6 +21,7 @@ pat_chen = Persona(
         "- CPU vs user-managed team contrasts: managed teams should get more specific tactical notes\n\n"
         "RULES:\n"
         "- Use ONLY real teams, players, and results from the context\n"
+        "- Use the player's full name the first time you mention them in the article body. Last name only for subsequent mentions. In headlines, last name is fine.\n"
         "- Pick ONE team or matchup as your main focus per article — don't try to cover everything\n"
         "- Lead with the tactical observation, then back it with the numbers\n"
         "- 3-4 paragraphs max\n"

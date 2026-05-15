@@ -20,14 +20,59 @@ from services import batch_sim_runner, league_service
 log = get_logger(__name__)
 
 
-def _quarter_splits(total: int, seed: int) -> list[int]:
-    """Split a final score into 4 plausible quarter scores that sum to total."""
-    from random import Random
-    rng = Random(seed)
-    avg = total / 4.0
-    qs = [max(16, int(rng.gauss(avg, 3.5))) for _ in range(4)]
-    qs[-1] = max(10, qs[-1] + (total - sum(qs)))
-    return qs
+async def _target_index_for_n_more_per_team(pool, league_id: int, n_more: int) -> int:
+    """
+    Return the game_index where every team has played N more games than their current count.
+
+    Walks upcoming unplayed games in game_index order, tracking per-team played counts.
+    Safety cap: at most current max game_index + (n_more * 15 + 10) to prevent runaway.
+    """
+    # Current per-team played counts.
+    sc_rows = await pool.fetch(
+        "SELECT team_id, wins + losses AS played FROM standings_cache WHERE league_id = $1",
+        league_id,
+    )
+    base_played: dict[int, int] = {r["team_id"]: r["played"] for r in sc_rows}
+    target_played: dict[int, int] = {tid: v + n_more for tid, v in base_played.items()}
+    if not target_played:
+        return n_more * 15  # fallback for empty standings
+
+    # Pending games in order.
+    pending = await pool.fetch(
+        """
+        SELECT id AS game_id, game_index, home_team_id, away_team_id
+        FROM games
+        WHERE league_id = $1 AND status != 'simmed'
+        ORDER BY game_index ASC
+        """,
+        league_id,
+    )
+    if not pending:
+        return 0
+
+    # Safety cap.
+    max_idx = pending[-1]["game_index"]
+    cap = max_idx + n_more * 15 + 10
+
+    in_progress: dict[int, int] = {tid: 0 for tid in base_played}
+    last_idx = 0
+
+    for row in pending:
+        if row["game_index"] > cap:
+            break
+        home_id = row["home_team_id"]
+        away_id = row["away_team_id"]
+        in_progress[home_id] = in_progress.get(home_id, 0) + 1
+        in_progress[away_id] = in_progress.get(away_id, 0) + 1
+        last_idx = row["game_index"]
+        # Check if all teams have reached their target.
+        if all(
+            (base_played.get(tid, 0) + in_progress.get(tid, 0)) >= target_played.get(tid, n_more)
+            for tid in target_played
+        ):
+            return row["game_index"]
+
+    return last_idx
 
 
 class SimGroup(app_commands.Group, name="sim", description="Advance the league simulation"):
@@ -76,9 +121,9 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         if summary["games_simmed"] > 0:
             await game_repo.reset_ready(pool, league.id)
 
-    @app_commands.command(name="games", description="Sim exactly N games from the current position")
+    @app_commands.command(name="games", description="Sim until every team has played N more games")
     @app_commands.describe(
-        count="Number of games to sim (1–50)",
+        count="Number of games for each team to play (1–20)",
         force="Skip the ready check and user-matchup warning (does not override phase restrictions)",
     )
     async def games(
@@ -95,13 +140,13 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             await require_all_ready(interaction, league)
         await require_no_pending_trades(league)
 
-        if count < 1 or count > 50:
-            await interaction.followup.send("Count must be between 1 and 50.", ephemeral=True)
+        if count < 1 or count > 20:
+            await interaction.followup.send("Count must be between 1 and 20.", ephemeral=True)
             return
 
         pool = await get_pool()
         current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
-        to_index = current_index + count
+        to_index = await _target_index_for_n_more_per_team(pool, league.id, count)
 
         if not force:
             user_matchups = await batch_sim_runner.check_user_matchups_in_range(
@@ -506,12 +551,26 @@ async def _auto_sim_and_advance(league, guild: discord.Guild, _pool) -> None:
     home_score: int = result["result"]["home_score"]
     away_score: int = result["result"]["away_score"]
     game_index: int = result["game"]["game_index"]
-    game_id: int = result["game"]["id"]
 
     hc = home_team.nba_team_code
     ac = away_team.nba_team_code
-    home_qs = _quarter_splits(home_score, game_id)
-    away_qs = _quarter_splits(away_score, game_id + 1)
+    res = result["result"]
+    home_qs = [
+        res.get("q1_home") or 0,
+        res.get("q2_home") or 0,
+        res.get("q3_home") or 0,
+        res.get("q4_home") or home_score - (
+            (res.get("q1_home") or 0) + (res.get("q2_home") or 0) + (res.get("q3_home") or 0)
+        ),
+    ]
+    away_qs = [
+        res.get("q1_away") or 0,
+        res.get("q2_away") or 0,
+        res.get("q3_away") or 0,
+        res.get("q4_away") or away_score - (
+            (res.get("q1_away") or 0) + (res.get("q2_away") or 0) + (res.get("q3_away") or 0)
+        ),
+    ]
 
     box_channel_id = await league_repo.get_channel(pool, league.id, "box-scores")
     box_channel = guild.get_channel(box_channel_id) if box_channel_id else None

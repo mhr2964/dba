@@ -10,7 +10,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, player_repo, strategy_repo, team_repo
 from phase.states import Phase
-from services import awards_service, columnist_service, cpu_trade_service, league_service, records_service, sim_engine, strategy_service
+from services import awards_service, columnist_service, cpu_trade_service, league_service, potm_service, records_service, sim_engine, strategy_service
 from services.personas import PERSONAS as _PERSONAS
 from bot.embeds import awards_embeds, sim_embeds
 
@@ -249,6 +249,9 @@ async def _persist_game_result(
     injury_channel: Optional[discord.TextChannel] = None,
 ) -> dict:
     game_id = game["id"]
+    _quarter_keys = ("q1_home", "q1_away", "q2_home", "q2_away",
+                     "q3_home", "q3_away", "q4_home", "q4_away", "ot_home", "ot_away")
+    quarters = {k: result.get(k) for k in _quarter_keys}
     await game_repo.mark_simmed(
         pool,
         game_id,
@@ -256,6 +259,7 @@ async def _persist_game_result(
         result["away_score"],
         result["winner_team_id"],
         game.get("rng_seed") or 0,
+        quarters=quarters,
     )
 
     all_box = result["home_box"] + result["away_box"]
@@ -305,12 +309,15 @@ async def _persist_game_result(
 
     await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel)
 
-    record_announcements = await records_service.check_and_update_records(
+    record_announcements, at_announcements = await records_service.check_and_update_records(
         pool, game["league_id"], season, game_id, result
     )
     for announcement in record_announcements:
         if news_channel:
             await news_channel.send(embed=sim_embeds.season_record_embed(announcement))
+    for at_announcement in at_announcements:
+        if news_channel:
+            await news_channel.send(embed=sim_embeds.season_record_embed(at_announcement))
 
     return standings_update
 
@@ -341,8 +348,8 @@ async def _sim_single_game(
         "away_b2b": await game_repo.is_back_to_back(pool, league_id, season, game["away_team_id"], game_date),
     }
 
-    home_strategy = await strategy_service.get_sim_modifiers(pool, league_id, home_team.id)
-    away_strategy = await strategy_service.get_sim_modifiers(pool, league_id, away_team.id)
+    home_strategy = await strategy_service.get_sim_modifiers(pool, league_id, home_team.id, players=home_players)
+    away_strategy = await strategy_service.get_sim_modifiers(pool, league_id, away_team.id, players=away_players)
 
     home_player_ids = [p["id"] for p in home_players]
     away_player_ids = [p["id"] for p in away_players]
@@ -646,6 +653,57 @@ async def _maybe_post_awards_races(
         log.warning(f"_maybe_post_awards_races failed silently: {exc}")
 
 
+async def _maybe_post_potm(
+    pool,
+    guild: discord.Guild,
+    league_id: int,
+    season: int,
+    current_game_date: Optional[str],
+) -> None:
+    """Post Player of the Month awards if a new month has elapsed since the last award."""
+    if not current_game_date:
+        return
+    try:
+        awards = await potm_service.check_and_get_potm_awards(
+            pool, league_id, season, current_game_date
+        )
+        if not awards:
+            return
+        pat = _PERSONAS.get("pat_chen")
+        if not pat:
+            return
+        news_channel = await _get_news_channel(guild, pool, league_id)
+        if not news_channel:
+            return
+        # Group awards by month so we generate one article per month (East+West together).
+        from collections import defaultdict as _defaultdict
+        by_month: dict[str, list[dict]] = _defaultdict(list)
+        for award in awards:
+            by_month[award["month_label"]].append(award)
+        for month_awards in by_month.values():
+            context = potm_service.get_potm_context(month_awards)
+            article = await columnist_service.generate(
+                pool, league_id, season,
+                persona_id="pat_chen",
+                category="player_of_the_month",
+                context=context,
+            )
+            if article:
+                rgb = _PERSONA_COLORS.get("pat_chen", (100, 100, 100))
+                embed = discord.Embed(
+                    title=f"🏆 {article['headline']}",
+                    description=article["body"][:2000],
+                    color=discord.Color.from_rgb(*rgb),
+                )
+                embed.set_footer(text=f"by {pat.display_name} · {pat.byline}")
+                try:
+                    await news_channel.send(embed=embed)
+                except Exception as exc:
+                    log.warning(f"POTM post failed: {exc}")
+    except Exception as exc:
+        log.warning(f"_maybe_post_potm failed: {exc}")
+
+
 _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
     "maya_chen":      (255, 165, 0),
     "jordan_rivera":  (138, 43, 226),
@@ -661,6 +719,9 @@ async def _maybe_post_columnist(
     season: int,
     batch_results: list[dict],
     guild: discord.Guild,
+    batch_start_index: int = 0,
+    batch_end_index: int = 0,
+    total_regular_games: int = 0,
 ) -> None:
     """
     Post a columnist article after each batch, rotating through _COLUMNIST_ROTATION.
@@ -683,6 +744,7 @@ async def _maybe_post_columnist(
     overall_top_scorer: str | None = None
     overall_top_pts: int = 0
     overall_top_scorer_team: str | None = None
+    _overall_top_game: dict = {}
 
     for br in batch_results:
         ht = br["home_team"]
@@ -718,13 +780,32 @@ async def _maybe_post_columnist(
             overall_top_pts = game_top_pts_val
             overall_top_scorer = game_top_name
             overall_top_scorer_team = game_top_team_code
+            _overall_top_game = game_top
+
+        # Build full stat-line dict for this game's top performer.
+        if game_top_name and game_top:
+            game_top_performer_dict = {
+                "name": game_top_name,
+                "team": game_top_team_code,
+                "pts": game_top.get("points", 0),
+                "reb": game_top.get("rebounds_off", 0) + game_top.get("rebounds_def", 0),
+                "ast": game_top.get("assists", 0),
+                "stl": game_top.get("steals", 0),
+                "blk": game_top.get("blocks", 0),
+                "tpm": game_top.get("tpm", 0),
+                "tpa": game_top.get("tpa", 0),
+                "fgm": game_top.get("fgm", 0),
+                "fga": game_top.get("fga", 0),
+            }
+        else:
+            game_top_performer_dict = None
 
         games_data.append({
             "game": f"{away_code} @ {home_code}",
             "score": f"{away_code} {as_} - {home_code} {hs}",
             "winner": winner_code,
             "margin": abs(hs - as_),
-            "top_performer": f"{game_top_name} ({game_top_team_code}, {game_top_pts} pts)" if game_top_name else None,
+            "top_performer": game_top_performer_dict,
         })
 
     # Sort by interest: close finishes and big blowouts float to the top.
@@ -733,14 +814,135 @@ async def _maybe_post_columnist(
         return max(0.0, 8.0 - m) + max(0.0, m - 20.0)
     games_data.sort(key=_game_interest, reverse=True)
 
+    if overall_top_scorer and _overall_top_game:
+        _top_of_batch = {
+            "name": overall_top_scorer,
+            "team": overall_top_scorer_team,
+            "pts": _overall_top_game.get("points", 0),
+            "reb": _overall_top_game.get("rebounds_off", 0) + _overall_top_game.get("rebounds_def", 0),
+            "ast": _overall_top_game.get("assists", 0),
+            "stl": _overall_top_game.get("steals", 0),
+            "blk": _overall_top_game.get("blocks", 0),
+            "tpm": _overall_top_game.get("tpm", 0),
+            "tpa": _overall_top_game.get("tpa", 0),
+            "fgm": _overall_top_game.get("fgm", 0),
+            "fga": _overall_top_game.get("fga", 0),
+        }
+    else:
+        _top_of_batch = None
+
     batch_context = {
         "season_games": games_data[:10],  # all games (≤10 per batch)
-        "top_performer_of_batch": (
-            f"{overall_top_scorer} ({overall_top_scorer_team}, {overall_top_pts} pts)"
-            if overall_top_scorer else None
-        ),
+        "top_performer_of_batch": _top_of_batch,
         "games_count": len(batch_results),
     }
+
+    # 1b: Add standings snapshot.
+    try:
+        standings = await game_repo.get_standings(pool, league_id, season)
+        east_rows = sorted(
+            [r for r in standings if r.get("conference") == "East"],
+            key=lambda r: -(r.get("win_pct") or 0.0),
+        )
+        west_rows = sorted(
+            [r for r in standings if r.get("conference") == "West"],
+            key=lambda r: -(r.get("win_pct") or 0.0),
+        )
+        batch_context["standings_east"] = [
+            {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"], "pct": round(r.get("win_pct") or 0.0, 3)}
+            for r in east_rows[:5]
+        ]
+        batch_context["standings_west"] = [
+            {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"], "pct": round(r.get("win_pct") or 0.0, 3)}
+            for r in west_rows[:5]
+        ]
+
+        # 1c: Build narrative_hooks.
+        narrative_hooks: list[str] = []
+        # Collect teams that appeared in this batch.
+        batch_team_codes: dict[int, str] = {}
+        for br in batch_results:
+            ht = br["home_team"]
+            at = br["away_team"]
+            if ht:
+                batch_team_codes[ht.id] = ht.nba_team_code if hasattr(ht, "nba_team_code") else "???"
+            if at:
+                batch_team_codes[at.id] = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
+
+        # Pull win/loss streaks for those teams.
+        if batch_team_codes:
+            streak_rows = await pool.fetch(
+                """
+                SELECT team_id, win_streak, loss_streak
+                FROM standings_cache
+                WHERE league_id = $1 AND team_id = ANY($2)
+                """,
+                league_id, list(batch_team_codes.keys()),
+            )
+            for row in streak_rows:
+                code = batch_team_codes.get(row["team_id"], "???")
+                ws = row.get("win_streak") or 0
+                ls = row.get("loss_streak") or 0
+                if ws >= 4 and len(narrative_hooks) < 6:
+                    narrative_hooks.append(f"{code} has won {ws} straight")
+                elif ls >= 4 and len(narrative_hooks) < 6:
+                    narrative_hooks.append(f"{code} has lost {ls} straight")
+
+        # East/West title race hooks.
+        if len(east_rows) >= 2 and len(narrative_hooks) < 6:
+            e1, e2 = east_rows[0], east_rows[1]
+            e1_gb = ((e2["wins"] - e1["wins"]) + (e1["losses"] - e2["losses"])) / 2.0
+            if abs(e1_gb) <= 2.0:
+                diff_str = f"{abs(e1_gb):.1f}"
+                narrative_hooks.append(
+                    f"East title race: {e1['nba_team_code']} leads {e2['nba_team_code']} by {diff_str} games"
+                )
+        if len(west_rows) >= 2 and len(narrative_hooks) < 6:
+            w1, w2 = west_rows[0], west_rows[1]
+            w1_gb = ((w2["wins"] - w1["wins"]) + (w1["losses"] - w2["losses"])) / 2.0
+            if abs(w1_gb) <= 2.0:
+                diff_str = f"{abs(w1_gb):.1f}"
+                narrative_hooks.append(
+                    f"West title race: {w1['nba_team_code']} leads {w2['nba_team_code']} by {diff_str} games"
+                )
+
+        # 30+ point games.
+        for gd in games_data:
+            if len(narrative_hooks) >= 6:
+                break
+            tp = gd.get("top_performer")
+            if isinstance(tp, dict) and tp.get("pts", 0) >= 30:
+                wl = "W" if tp.get("team") == gd.get("winner") else "L"
+                narrative_hooks.append(
+                    f"{tp['name']} dropped {tp['pts']} in a {wl} for {tp['team']}"
+                )
+
+        batch_context["narrative_hooks"] = narrative_hooks[:6]
+    except Exception as _standings_exc:
+        log.warning(f"_maybe_post_columnist: standings/hooks enrichment failed: {_standings_exc}")
+
+    # 1d: Add game_index_range.
+    if batch_end_index > 0 and total_regular_games > 0:
+        batch_context["game_index_range"] = {
+            "first": batch_start_index,
+            "last": batch_end_index,
+            "season_pct": round(batch_end_index / total_regular_games * 100, 1),
+        }
+
+    # 1e: Compute subject_team_ids from the two most common teams in this batch.
+    from collections import Counter as _Counter
+    _team_id_counter: _Counter = _Counter()
+    for br in batch_results:
+        ht = br["home_team"]
+        at = br["away_team"]
+        r = br["result"]
+        if ht:
+            _team_id_counter[ht.id] += 1
+        if at:
+            _team_id_counter[at.id] += 1
+    subject_team_ids = [tid for tid, _ in _team_id_counter.most_common(2)]
+
+    _FORMAT_VARIANTS = ["classic_debate", "co_sign_trap", "tony_monologue", "trial"]
 
     # Rotation — pick this batch's columnist.
     persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
@@ -749,6 +951,10 @@ async def _maybe_post_columnist(
     # Pat Chen: enrich context with team strategy data.
     # Build a copy so we don't mutate the shared batch_context used by other callers.
     columnist_context = batch_context
+    if persona_id == "hot_take_hour":
+        # Fix 2: inject format_variant so the four Hot Take Hour variants cycle.
+        columnist_context = dict(batch_context)
+        columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index - 1) % len(_FORMAT_VARIANTS)]
     if persona_id == "pat_chen":
         try:
             team_ids_in_batch = list({
@@ -778,9 +984,16 @@ async def _maybe_post_columnist(
                     "defensive_scheme": r["defensive_scheme"] or "auto",
                     "pace": r["offensive_pace"] or "normal",
                     "defensive_intensity": r["defensive_intensity"] or "standard",
+                    "archetype_label": strategy_service.get_team_archetype_label(league_id, r["team_id"]),
                 }
                 for r in strat_rows
             ]
+            # Fix 3: expose archetype labels as a flat code->label dict.
+            pat_context["team_archetypes"] = {
+                r["nba_team_code"]: strategy_service.get_team_archetype_label(league_id, r["team_id"])
+                for r in strat_rows
+                if strategy_service.get_team_archetype_label(league_id, r["team_id"]) is not None
+            }
             columnist_context = pat_context
         except Exception as _exc:
             log.warning(f"Pat Chen strategy enrichment failed: {_exc}")
@@ -790,6 +1003,7 @@ async def _maybe_post_columnist(
         persona_id=persona_id,
         category="game_recap",
         context=columnist_context,
+        subject_team_ids=subject_team_ids,
     )
     if article:
         if persona_id == "hot_take_hour":
@@ -825,6 +1039,7 @@ async def _maybe_post_columnist(
             persona_id="marcus_brooks",
             category="power_rankings",
             context=batch_context,
+            subject_team_ids=subject_team_ids,
         )
         if mb_article:
             embed = discord.Embed(
@@ -877,6 +1092,7 @@ async def sim_until_rival(
     bot: Optional[discord.Client] = None,
     suppress_matchup_alert: bool = False,
 ) -> dict:
+    strategy_service.clear_archetype_cache()
     pool = await get_pool()
     total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
     deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
@@ -929,6 +1145,7 @@ async def sim_until_rival(
                 await box_channel.send(embed=embed)
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
+            first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
             last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             if standings_channel:
                 try:
@@ -936,7 +1153,15 @@ async def sim_until_rival(
                 except (discord.HTTPException, Exception) as exc:
                     log.warning(f"channel send failed: {exc}")
             await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
-            await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+            await _maybe_post_columnist(
+                pool, league_id, season, batch_results, guild,
+                batch_start_index=first_game_idx,
+                batch_end_index=last_game_idx,
+                total_regular_games=total_regular_games,
+            )
+            _last_game_date = batch_results[-1]["game"].get("scheduled_date")
+            _last_game_date_str = str(_last_game_date) if _last_game_date else None
+            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
             batch_results = []
@@ -948,6 +1173,7 @@ async def sim_until_rival(
             await box_channel.send(embed=embed)
         except (discord.HTTPException, Exception) as exc:
             log.warning(f"channel send failed: {exc}")
+        first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
         last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         if standings_channel:
             try:
@@ -955,7 +1181,15 @@ async def sim_until_rival(
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
         await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
-        await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+        await _maybe_post_columnist(
+            pool, league_id, season, batch_results, guild,
+            batch_start_index=first_game_idx,
+            batch_end_index=last_game_idx,
+            total_regular_games=total_regular_games,
+        )
+        _last_game_date = batch_results[-1]["game"].get("scheduled_date")
+        _last_game_date_str = str(_last_game_date) if _last_game_date else None
+        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
 
@@ -984,6 +1218,7 @@ async def sim_range(
     bot: Optional[discord.Client] = None,
     force: bool = False,
 ) -> dict:
+    strategy_service.clear_archetype_cache()
     pool = await get_pool()
     total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
     deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
@@ -1034,6 +1269,7 @@ async def sim_range(
                 await box_channel.send(embed=embed)
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
+            first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
             last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             if standings_channel:
                 try:
@@ -1041,7 +1277,15 @@ async def sim_range(
                 except (discord.HTTPException, Exception) as exc:
                     log.warning(f"channel send failed: {exc}")
             await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
-            await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+            await _maybe_post_columnist(
+                pool, league_id, season, batch_results, guild,
+                batch_start_index=first_game_idx,
+                batch_end_index=last_game_idx,
+                total_regular_games=total_regular_games,
+            )
+            _last_game_date = batch_results[-1]["game"].get("scheduled_date")
+            _last_game_date_str = str(_last_game_date) if _last_game_date else None
+            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
             batch_results = []
@@ -1053,6 +1297,7 @@ async def sim_range(
             await box_channel.send(embed=embed)
         except (discord.HTTPException, Exception) as exc:
             log.warning(f"channel send failed: {exc}")
+        first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
         last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         if standings_channel:
             try:
@@ -1060,7 +1305,15 @@ async def sim_range(
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
         await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
-        await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+        await _maybe_post_columnist(
+            pool, league_id, season, batch_results, guild,
+            batch_start_index=first_game_idx,
+            batch_end_index=last_game_idx,
+            total_regular_games=total_regular_games,
+        )
+        _last_game_date = batch_results[-1]["game"].get("scheduled_date")
+        _last_game_date_str = str(_last_game_date) if _last_game_date else None
+        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
 

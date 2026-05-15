@@ -106,7 +106,16 @@ def _top_performers(away_box: list[dict], home_box: list[dict]) -> list[str]:
         last = row.get("last_name", "")
         name = f"{first[0]}. {last}" if first else last
         team_code = row.get("team_code", "")
-        lines.append(f"**{name}** ({team_code}) — {stat_val} {stat_label}")
+        pts = row.get("points", 0)
+        reb = row.get("rebounds_off", 0) + row.get("rebounds_def", 0)
+        ast = row.get("assists", 0)
+        fgm = row.get("fgm", 0)
+        fga = row.get("fga", 0)
+        tpm = row.get("tpm", 0)
+        tpa = row.get("tpa", 0)
+        lines.append(
+            f"**{name}** ({team_code}) — {pts} PTS · {fgm}/{fga} FG · {tpm}/{tpa} 3P · {ast} AST · {reb} REB"
+        )
 
     return lines
 
@@ -159,6 +168,36 @@ def box_score_summary_embed(
 
     embed.add_field(name=f"{away_code} Totals", value=_team_totals(away_box), inline=True)
     embed.add_field(name=f"{home_code} Totals", value=_team_totals(home_box), inline=True)
+
+    # Quarters table — only rendered when quarter data is present.
+    if game_row.get("q1_home") is not None:
+        q_headers = ["Q1", "Q2", "Q3", "Q4"]
+        home_qs = [
+            game_row.get("q1_home", 0), game_row.get("q2_home", 0),
+            game_row.get("q3_home", 0), game_row.get("q4_home", 0),
+        ]
+        away_qs = [
+            game_row.get("q1_away", 0), game_row.get("q2_away", 0),
+            game_row.get("q3_away", 0), game_row.get("q4_away", 0),
+        ]
+        ot_home = game_row.get("ot_home")
+        ot_away = game_row.get("ot_away")
+        if ot_home:
+            q_headers.append("OT")
+            home_qs.append(ot_home)
+            away_qs.append(ot_away or 0)
+        q_headers.append("F")
+        home_qs.append(home_score)
+        away_qs.append(away_score)
+
+        col_w = 4
+        team_w = 5
+        header_row = " " * team_w + "".join(h.rjust(col_w) for h in q_headers)
+        home_row = away_code.ljust(team_w) + "".join(str(v).rjust(col_w) for v in away_qs)
+        away_row = home_code.ljust(team_w) + "".join(str(v).rjust(col_w) for v in home_qs)
+        quarters_block = f"```\n{header_row}\n{home_row}\n{away_row}\n```"
+        embed.add_field(name="Quarters", value=quarters_block, inline=False)
+
     embed.set_footer(text=f"Game #{game_index} | {scheduled_date} | Use menu below for full box scores")
     return embed
 
@@ -302,7 +341,11 @@ def batch_recap_with_standings(
         def _win_pct(r: dict) -> float:
             games = r["wins"] + r["losses"]
             return r["wins"] / games if games > 0 else 0.0
-        sorted_rows = sorted(rows, key=lambda r: -_win_pct(r))[:5]
+
+        def _games_played(r: dict) -> int:
+            return (r.get("wins") or 0) + (r.get("losses") or 0)
+
+        sorted_rows = sorted(rows, key=lambda r: (-_win_pct(r), -_games_played(r)))[:5]
         parts = []
         for i, row in enumerate(sorted_rows, start=1):
             code = row.get("nba_team_code", str(row.get("team_id", "?")))
@@ -496,13 +539,16 @@ def standings_snapshot_embed(standings_rows: List[dict], game_index: int) -> dis
         games = r["wins"] + r["losses"]
         return r["wins"] / games if games > 0 else 0.0
 
+    def _games_played(r: dict) -> int:
+        return (r.get("wins") or 0) + (r.get("losses") or 0)
+
     east = sorted(
         [r for r in standings_rows if r.get("conference") == "East"],
-        key=lambda r: -_win_pct(r),
+        key=lambda r: (-_win_pct(r), -_games_played(r)),
     )
     west = sorted(
         [r for r in standings_rows if r.get("conference") == "West"],
-        key=lambda r: -_win_pct(r),
+        key=lambda r: (-_win_pct(r), -_games_played(r)),
     )
 
     def _conf_lines(rows: List[dict]) -> str:

@@ -14,6 +14,7 @@ marcus_cole = Persona(
         "RULES:\n"
         "- This is a COMPLETED trade. Do NOT write about talks collapsing, negotiations, or rumors.\n"
         "- Name every player moving and their destination team in sentence one.\n"
+        "- Use the player's full name the first time you mention them in the article body. Last name only for subsequent mentions. In headlines, last name is fine.\n"
         "- Use ONLY players and teams from the context — zero fabrication.\n"
         "- Include pick details if they're in the trade.\n"
         "- End with one sentence on what this means for each team.\n"

@@ -10,3 +10,6 @@ build/
 .pytest_cache/
 .DS_Store
 data/seeds/nba_2k_ratings_raw.csv
+data/bdl_cache/
+.test-screenshots/
+.claude/worktrees/
