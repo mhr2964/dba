@@ -9,7 +9,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, player_repo, strategy_repo, team_repo
 from phase.states import Phase
-from services import league_service, records_service, sim_engine, storyline_service, strategy_service
+from services import columnist_service, league_service, records_service, sim_engine, storyline_service, strategy_service
 from bot.embeds import sim_embeds
 
 _SEVERITY_LABELS: dict[str, str] = {
@@ -31,6 +31,9 @@ _INJURY_GAMES_MISSED: dict[str, tuple[int, int]] = {
 }
 
 _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
+
+# Tracks games processed so Marcus Brooks fires every ~200 games (every 20 batches of 10).
+_marcus_game_counter: int = 0
 
 
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
@@ -473,6 +476,90 @@ async def _maybe_post_storylines(
         await news_channel.send(embed=recap)
 
 
+async def _maybe_post_columnist(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """
+    Post a columnist article after each batch.
+
+    Maya Chen writes a game-recap flavour piece for every batch.
+    Marcus Brooks writes a power-rankings / analysis piece every 20 batches
+    (approximately every 200 games).
+    """
+    global _marcus_game_counter
+
+    if not batch_results:
+        return
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    # Gather team context for the batch.
+    teams_played: list[str] = []
+    top_scorer_name: str | None = None
+    top_scorer_pts: int = 0
+    for br in batch_results:
+        ht = br["home_team"]
+        at = br["away_team"]
+        if hasattr(ht, "full_name"):
+            teams_played.append(ht.full_name)
+        if hasattr(at, "full_name"):
+            teams_played.append(at.full_name)
+        for line in br["result"].get("home_box", []) + br["result"].get("away_box", []):
+            pts = line.get("points", 0)
+            if pts > top_scorer_pts:
+                top_scorer_pts = pts
+                top_scorer_name = line.get("player_name") or f"Player {line.get('player_id', '?')}"
+
+    batch_context = {
+        "games_in_batch": len(batch_results),
+        "teams": list(dict.fromkeys(teams_played))[:8],
+        "top_scorer": top_scorer_name,
+        "top_scorer_pts": top_scorer_pts,
+    }
+
+    # Maya Chen — every batch, game-recap flavour.
+    article = await columnist_service.generate(
+        pool, league_id, season,
+        persona_id="maya_chen",
+        category="game_recap",
+        context=batch_context,
+    )
+    if article:
+        embed = discord.Embed(
+            title=article["headline"],
+            description=article["body"][:2000],
+            color=discord.Color.from_rgb(255, 165, 0),
+        )
+        embed.set_footer(text="by Maya Chen · DBA Insider")
+        await analysis_channel.send(embed=embed)
+
+    # Marcus Brooks — every 20 batches.
+    _marcus_game_counter += len(batch_results)
+    if _marcus_game_counter >= 200:
+        _marcus_game_counter = 0
+        mb_article = await columnist_service.generate(
+            pool, league_id, season,
+            persona_id="marcus_brooks",
+            category="power_rankings",
+            context=batch_context,
+        )
+        if mb_article:
+            embed = discord.Embed(
+                title=mb_article["headline"],
+                description=mb_article["body"][:2000],
+                color=discord.Color.from_rgb(0, 128, 255),
+            )
+            embed.set_footer(text="by Marcus Brooks · DBA Power Index")
+            await analysis_channel.send(embed=embed)
+
+
 async def _maybe_advance_season_complete(
     pool,
     league_id: int,
@@ -562,6 +649,7 @@ async def sim_until_rival(
             )
             await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+            await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
             batch_results = []
 
     if batch_results and box_channel:
@@ -571,6 +659,7 @@ async def sim_until_rival(
         )
         await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+        await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
 
@@ -641,6 +730,7 @@ async def sim_range(
             )
             await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+            await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
             batch_results = []
 
     if batch_results and box_channel:
@@ -650,6 +740,7 @@ async def sim_range(
         )
         await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+        await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
     return {"warning": False, "games_simmed": games_simmed, "user_matchups": [], "season_complete": season_complete}
