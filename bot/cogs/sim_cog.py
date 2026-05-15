@@ -78,7 +78,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
 
     @app_commands.command(name="games", description="Sim exactly N games from the current position")
     @app_commands.describe(
-        count="Number of games to sim (1–20)",
+        count="Number of games to sim (1–50)",
         force="Skip past user matchups without stopping",
     )
     async def games(
@@ -95,8 +95,8 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             await require_all_ready(interaction, league)
         await require_no_pending_trades(league)
 
-        if count < 1 or count > 20:
-            await interaction.followup.send("Count must be between 1 and 20.", ephemeral=True)
+        if count < 1 or count > 50:
+            await interaction.followup.send("Count must be between 1 and 50.", ephemeral=True)
             return
 
         pool = await get_pool()

@@ -531,13 +531,24 @@ async def _run_cpu_trades_inner(
         )
         team_codes = {r["id"]: r["nba_team_code"] for r in team_rows}
 
+        # Look up real player names so embeds and Marcus Cole AI context use them.
+        _player_ids = [a.player_id for a in assets if a.asset_type == "player" and a.player_id]
+        if _player_ids:
+            _name_rows = await pool.fetch(
+                "SELECT id, first_name, last_name FROM players WHERE id = ANY($1)",
+                _player_ids,
+            )
+            _player_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in _name_rows}
+        else:
+            _player_names = {}
+
         def _asset_lines(from_team_id: int) -> list[str]:
             lines = []
             for a in assets:
                 if a.from_team_id != from_team_id:
                     continue
                 if a.asset_type == "player" and a.player_id:
-                    lines.append(f"Player #{a.player_id}")
+                    lines.append(_player_names.get(a.player_id) or f"Player #{a.player_id}")
                 elif a.asset_type == "pick" and a.pick_id:
                     lines.append(f"Pick #{a.pick_id}")
             return lines or ["(nothing)"]
