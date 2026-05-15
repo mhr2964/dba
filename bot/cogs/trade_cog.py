@@ -590,16 +590,54 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
             return
 
-        matches = await player_repo.search_by_name(pool, league.id, player)
-        matches = [p for p in matches if p.team_id == user_team.id]
-        if not matches:
-            await interaction.followup.send(f"No player matching '{player}' found on your roster.", ephemeral=True)
-            return
-        if len(matches) > 1:
-            names = ", ".join(p.full_name for p in matches)
-            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
-            return
-        found_player = matches[0]
+        # Try numeric ID first so users can copy the ID shown in /roster output.
+        try:
+            player_int_id = int(player)
+        except ValueError:
+            player_int_id = None
+
+        if player_int_id is not None:
+            found_player = await player_repo.get_by_id(pool, player_int_id)
+            if found_player is None or found_player.league_id != league.id:
+                await interaction.followup.send(
+                    f"No player with ID {player_int_id} found in this league.", ephemeral=True
+                )
+                return
+            if found_player.team_id != user_team.id:
+                owner_team = await team_repo.get_by_id(pool, found_player.team_id) if found_player.team_id else None
+                team_label = owner_team.full_name if owner_team else "another team"
+                await interaction.followup.send(
+                    f"**{found_player.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                    ephemeral=True,
+                )
+                return
+        else:
+            matches = await player_repo.search_by_name(pool, league.id, player)
+            roster_matches = [p for p in matches if p.team_id == user_team.id]
+            if not roster_matches:
+                # Secondary check: does the player exist on any other team?
+                league_matches = [p for p in matches if p.team_id is not None]
+                if league_matches:
+                    other = league_matches[0]
+                    owner_team = await team_repo.get_by_id(pool, other.team_id)
+                    team_label = owner_team.full_name if owner_team else "another team"
+                    await interaction.followup.send(
+                        f"**{other.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"No player matching '{player}' found on your roster.", ephemeral=True
+                    )
+                return
+            if len(roster_matches) > 1:
+                names = ", ".join(p.full_name for p in roster_matches)
+                await interaction.followup.send(
+                    f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+                )
+                return
+            found_player = roster_matches[0]
+
         player_id = found_player.id
 
         await trade_block_repo.add_to_block(
@@ -652,16 +690,53 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
             return
 
-        matches = await player_repo.search_by_name(pool, league.id, player)
-        matches = [p for p in matches if p.team_id == user_team.id]
-        if not matches:
-            await interaction.followup.send(f"No player matching '{player}' found on your roster.", ephemeral=True)
-            return
-        if len(matches) > 1:
-            names = ", ".join(p.full_name for p in matches)
-            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
-            return
-        found_player = matches[0]
+        # Try numeric ID first so users can copy the ID shown in /roster output.
+        try:
+            player_int_id = int(player)
+        except ValueError:
+            player_int_id = None
+
+        if player_int_id is not None:
+            found_player = await player_repo.get_by_id(pool, player_int_id)
+            if found_player is None or found_player.league_id != league.id:
+                await interaction.followup.send(
+                    f"No player with ID {player_int_id} found in this league.", ephemeral=True
+                )
+                return
+            if found_player.team_id != user_team.id:
+                owner_team = await team_repo.get_by_id(pool, found_player.team_id) if found_player.team_id else None
+                team_label = owner_team.full_name if owner_team else "another team"
+                await interaction.followup.send(
+                    f"**{found_player.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                    ephemeral=True,
+                )
+                return
+        else:
+            matches = await player_repo.search_by_name(pool, league.id, player)
+            roster_matches = [p for p in matches if p.team_id == user_team.id]
+            if not roster_matches:
+                # Secondary check: does the player exist on any other team?
+                league_matches = [p for p in matches if p.team_id is not None]
+                if league_matches:
+                    other = league_matches[0]
+                    owner_team = await team_repo.get_by_id(pool, other.team_id)
+                    team_label = owner_team.full_name if owner_team else "another team"
+                    await interaction.followup.send(
+                        f"**{other.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"No player matching '{player}' found on your roster.", ephemeral=True
+                    )
+                return
+            if len(roster_matches) > 1:
+                names = ", ".join(p.full_name for p in roster_matches)
+                await interaction.followup.send(
+                    f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+                )
+                return
+            found_player = roster_matches[0]
 
         on_block = await trade_block_repo.is_on_block(pool, league.id, found_player.id)
         if not on_block:
