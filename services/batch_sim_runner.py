@@ -600,28 +600,16 @@ async def _maybe_post_columnist(
     )
     if article:
         if persona_id == "hot_take_hour":
-            # Special debate embed: body must be JSON with debate structure.
-            try:
-                parsed = json.loads(article["body"])
-                embed = discord.Embed(
-                    title=f"🔥 Hot Take Hour: {parsed['topic']}",
-                    description=(
-                        f"**Dave:** {parsed['dave']}\n\n"
-                        f"**Tony:** {parsed['tony']}\n\n"
-                        f"**Dave:** {parsed['dave_rebuttal']}"
-                    ),
-                    color=discord.Color.red(),
-                )
-                embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
-            except (json.JSONDecodeError, KeyError):
-                # Body wasn't the expected JSON shape — fall back to raw text.
-                log.warning("hot_take_hour: body was not parseable debate JSON, falling back to raw text")
-                embed = discord.Embed(
-                    title=article["headline"],
-                    description=article["body"][:2000],
-                    color=discord.Color.red(),
-                )
-                embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
+            # Body is plain text formatted as "DAVE: ...\n\nTONY: ...\n\nDAVE: ..."
+            # Bold the speaker labels for Discord markdown.
+            body = article["body"]
+            body = body.replace("DAVE:", "**Dave:**").replace("TONY:", "**Tony:**")
+            embed = discord.Embed(
+                title=f"🔥 {article['headline']}",
+                description=body[:2000],
+                color=discord.Color.red(),
+            )
+            embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
         else:
             persona = _PERSONAS.get(persona_id)
             rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))

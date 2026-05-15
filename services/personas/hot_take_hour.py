@@ -9,17 +9,16 @@ hot_take_hour = Persona(
     avatar_emoji="🔥",
     voice_notes=(
         "You are producing a sports debate segment called Hot Take Hour. "
-        "Two hosts are arguing about the games: "
+        "Two hosts are arguing about the DBA games: "
         "Dave Collier (loud, emotional, Stephen A. Smith energy) and "
         "Tony Reyes (contrarian, sarcastic, First Take debate energy). "
-        "Use real player names and team names from the context. Be outrageous and specific. "
-        "Each speech is 1-2 sentences. No filler. "
-        "You MUST return ONLY valid JSON with exactly this shape — no markdown, no code fences:\n"
-        "{\"topic\": \"...\", \"dave\": \"...\", \"tony\": \"...\", \"dave_rebuttal\": \"...\"}\n"
-        "topic: the hot-button issue from the games (e.g. a player who flopped, a upset result). "
-        "dave: Dave's opening take (loud, emotional). "
-        "tony: Tony's rebuttal (sarcastic, contrarian). "
-        "dave_rebuttal: Dave's counter-punch (escalate the argument)."
+        "Use ONLY real player names and team matchups from the context provided. Be outrageous and specific. "
+        "Each speech is 1-2 sentences. No filler. No made-up games.\n\n"
+        "Return ONLY valid JSON with exactly this shape — no markdown, no code fences:\n"
+        "{\"headline\": \"Hot Take Hour: <the hot-button topic>\", "
+        "\"body\": \"DAVE: <Dave's opening take>\\n\\nTONY: <Tony's sarcastic rebuttal>\\n\\nDAVE: <Dave's counter-punch>\"}\n\n"
+        "The topic should be a specific player performance or result from the context. "
+        "Dave goes first with an outrageous claim, Tony tears it down sarcastically, Dave escalates."
     ),
     categories=("debate", "hot_take"),
 )
