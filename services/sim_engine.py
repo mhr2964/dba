@@ -302,12 +302,12 @@ def _build_box_for_team(
         indexed_weights = sorted(enumerate(scoring_weights), key=lambda x: x[1], reverse=True)
         top_idx = indexed_weights[0][0]
         second_idx = indexed_weights[1][0]
-        scoring_weights[top_idx] *= 1.15
-        scoring_weights[second_idx] *= 1.05
-        # Enforce 40% cap on the top player (post-bump total, iterated once to converge).
+        scoring_weights[top_idx] *= 1.08
+        scoring_weights[second_idx] *= 1.03
+        # Enforce 34% cap on the top player (post-bump total, iterated once to converge).
         total_w_star = sum(scoring_weights)
-        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.40:
-            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.40 / 0.60
+        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.34:
+            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.34 / 0.66
 
     # Clutch adjustment: in close games, high-clutch players get more late-game usage.
     if abs(score_diff) < 12:
