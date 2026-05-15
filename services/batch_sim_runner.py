@@ -158,7 +158,7 @@ async def _persist_injuries(
     game_id: int,
     season: int,
     result: dict,
-    news_channel: Optional[discord.TextChannel],
+    injury_channel: Optional[discord.TextChannel],
 ) -> None:
     raw_injuries = result.get("injuries", [])
     if not raw_injuries:
@@ -190,7 +190,7 @@ async def _persist_injuries(
             "affects_progression": affects_prog,
         })
 
-        if severity in _ANNOUNCE_SEVERITIES and news_channel:
+        if severity in _ANNOUNCE_SEVERITIES and injury_channel:
             player_row = await pool.fetchrow(
                 "SELECT first_name, last_name, team_id FROM players WHERE id = $1",
                 inj["player_id"],
@@ -215,7 +215,7 @@ async def _persist_injuries(
             embed.add_field(name="Games Missed", value=gms_label, inline=True)
             embed.add_field(name="Status", value=human_severity, inline=True)
             embed.set_footer(text=f"Game #{game.get('game_index', game_id)}")
-            await news_channel.send(embed=embed)
+            await injury_channel.send(embed=embed)
 
     await game_repo.insert_injuries(pool, rows)
 
@@ -228,6 +228,7 @@ async def _persist_game_result(
     away_team: team_repo.Team,
     season: int,
     news_channel: Optional[discord.TextChannel],
+    injury_channel: Optional[discord.TextChannel] = None,
 ) -> dict:
     game_id = game["id"]
     await game_repo.mark_simmed(
@@ -284,7 +285,7 @@ async def _persist_game_result(
         )
         await news_channel.send(embed=embed)
 
-    await _persist_injuries(pool, game, game_id, season, result, news_channel)
+    await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel)
 
     record_announcements = await records_service.check_and_update_records(
         pool, game["league_id"], season, game_id, result
@@ -302,6 +303,7 @@ async def _sim_single_game(
     league_id: int,
     season: int,
     news_channel: Optional[discord.TextChannel],
+    injury_channel: Optional[discord.TextChannel] = None,
 ) -> Optional[dict]:
     home_team = await team_repo.get_by_id(pool, game["home_team_id"])
     away_team = await team_repo.get_by_id(pool, game["away_team_id"])
@@ -352,7 +354,7 @@ async def _sim_single_game(
     for line in result.get("home_box", []) + result.get("away_box", []):
         line["player_name"] = _name_by_id.get(line.get("player_id"), "")
 
-    await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel)
+    await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel, injury_channel)
     return {
         "game": game,
         "home_team": home_team,
@@ -421,6 +423,13 @@ async def _get_news_channel(guild: discord.Guild, pool, league_id: int) -> Optio
     if not channel_id:
         return None
     return guild.get_channel(channel_id)
+
+
+async def _get_injury_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
+    channel_id = await league_repo.get_channel(pool, league_id, "injuries")
+    if not channel_id:
+        return None
+    return guild.get_channel(channel_id) or await _get_news_channel(guild, pool, league_id)
 
 
 async def _maybe_post_storylines(
@@ -521,6 +530,7 @@ async def sim_until_rival(
 
     box_channel = await _get_box_scores_channel(guild, pool, league_id)
     news_channel = await _get_news_channel(guild, pool, league_id)
+    injury_channel = await _get_injury_channel(guild, pool, league_id)
 
     games_simmed = 0
     batch_results = []
@@ -529,7 +539,7 @@ async def sim_until_rival(
         if game.get("status") == "simmed":
             continue
 
-        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel)
+        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel)
         if sim_result is None:
             continue
 
@@ -599,6 +609,7 @@ async def sim_range(
 
     box_channel = await _get_box_scores_channel(guild, pool, league_id)
     news_channel = await _get_news_channel(guild, pool, league_id)
+    injury_channel = await _get_injury_channel(guild, pool, league_id)
 
     games_simmed = 0
     batch_results = []
@@ -607,7 +618,7 @@ async def sim_range(
         if game.get("status") == "simmed":
             continue
 
-        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel)
+        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel)
         if sim_result is None:
             continue
 
@@ -659,4 +670,5 @@ async def sim_single_matchup(
     if not game.get("is_user_matchup") or game.get("status") == "simmed":
         return None
     news_channel = await _get_news_channel(guild, pool, league_id)
-    return await _sim_single_game(pool, game, league_id, season, news_channel)
+    injury_channel = await _get_injury_channel(guild, pool, league_id)
+    return await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel)
