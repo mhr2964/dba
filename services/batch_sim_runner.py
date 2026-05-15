@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from typing import List, Optional
 
 import discord
@@ -10,6 +11,7 @@ from data.db import get_pool
 from data.repositories import game_repo, league_repo, player_repo, strategy_repo, team_repo
 from phase.states import Phase
 from services import columnist_service, league_service, records_service, sim_engine, storyline_service, strategy_service
+from services.personas import PERSONAS as _PERSONAS
 from bot.embeds import sim_embeds
 
 _SEVERITY_LABELS: dict[str, str] = {
@@ -34,6 +36,10 @@ _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 
 # Tracks games processed so Marcus Brooks fires every ~200 games (every 20 batches of 10).
 _marcus_game_counter: int = 0
+
+# Columnist rotation — cycles through these personas on every batch.
+_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour"]
+_columnist_rotation_index: int = 0
 
 
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
@@ -219,6 +225,15 @@ async def _persist_injuries(
             embed.add_field(name="Status", value=human_severity, inline=True)
             embed.set_footer(text=f"Game #{game.get('game_index', game_id)}")
             await injury_channel.send(embed=embed)
+
+            # Ping the team manager if this is a managed team.
+            _mgr_row = await pool.fetchrow(
+                "SELECT manager_user_id FROM teams WHERE id = $1", inj["team_id"]
+            )
+            if _mgr_row and _mgr_row["manager_user_id"]:
+                await injury_channel.send(
+                    f"<@{_mgr_row['manager_user_id']}> — **{player_name}** just went down."
+                )
 
     await game_repo.insert_injuries(pool, rows)
 
@@ -435,6 +450,17 @@ async def _get_injury_channel(guild: discord.Guild, pool, league_id: int) -> Opt
     return guild.get_channel(channel_id) or await _get_news_channel(guild, pool, league_id)
 
 
+def _interest_score_from_batch_result(br: dict) -> float:
+    """Compute an interest score from a batch result dict (wraps sim result)."""
+    r = br["result"]
+    margin = abs(r["home_score"] - r["away_score"])
+    all_box = r.get("home_box", []) + r.get("away_box", [])
+    top_pts = max((line.get("points", 0) for line in all_box), default=0)
+    clutch = max(0.0, 10.0 - margin)
+    blowout = max(0.0, margin - 20.0)
+    return clutch + blowout + float(top_pts)
+
+
 async def _maybe_post_storylines(
     pool,
     league_id: int,
@@ -444,6 +470,14 @@ async def _maybe_post_storylines(
     """Build team name lookup and post a sim recap storylines embed if any are generated."""
     if not batch_results or not news_channel:
         return
+
+    # Only post to league-news if at least one game was genuinely newsworthy.
+    max_interest = max(
+        (_interest_score_from_batch_result(br) for br in batch_results),
+        default=0.0,
+    )
+    if max_interest < 18.0:
+        return  # Nothing extraordinary happened — don't spam league-news
 
     team_ids = set()
     for br in batch_results:
@@ -476,6 +510,14 @@ async def _maybe_post_storylines(
         await news_channel.send(embed=recap)
 
 
+_PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
+    "maya_chen":      (255, 165, 0),
+    "jordan_rivera":  (138, 43, 226),
+    "keisha_williams": (0, 128, 255),
+    "hot_take_hour":  (255, 0, 0),
+}
+
+
 async def _maybe_post_columnist(
     pool,
     league_id: int,
@@ -484,13 +526,12 @@ async def _maybe_post_columnist(
     guild: discord.Guild,
 ) -> None:
     """
-    Post a columnist article after each batch.
+    Post a columnist article after each batch, rotating through _COLUMNIST_ROTATION.
 
-    Maya Chen writes a game-recap flavour piece for every batch.
-    Marcus Brooks writes a power-rankings / analysis piece every 20 batches
-    (approximately every 200 games).
+    Marcus Brooks also fires every ~200 games (every 20 batches of 10), independently.
+    hot_take_hour uses a JSON debate format instead of a plain article embed.
     """
-    global _marcus_game_counter
+    global _marcus_game_counter, _columnist_rotation_index
 
     if not batch_results:
         return
@@ -524,26 +565,57 @@ async def _maybe_post_columnist(
         "top_scorer_pts": top_scorer_pts,
     }
 
-    # Maya Chen — every batch, game-recap flavour.
+    # Rotation — pick this batch's columnist.
+    persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
+    _columnist_rotation_index += 1
+
     article = await columnist_service.generate(
         pool, league_id, season,
-        persona_id="maya_chen",
+        persona_id=persona_id,
         category="game_recap",
         context=batch_context,
     )
     if article:
-        embed = discord.Embed(
-            title=article["headline"],
-            description=article["body"][:2000],
-            color=discord.Color.from_rgb(255, 165, 0),
-        )
-        embed.set_footer(text="by Maya Chen · DBA Insider")
+        if persona_id == "hot_take_hour":
+            # Special debate embed: body must be JSON with debate structure.
+            try:
+                parsed = json.loads(article["body"])
+                embed = discord.Embed(
+                    title=f"🔥 Hot Take Hour: {parsed['topic']}",
+                    description=(
+                        f"**Dave:** {parsed['dave']}\n\n"
+                        f"**Tony:** {parsed['tony']}\n\n"
+                        f"**Dave:** {parsed['dave_rebuttal']}"
+                    ),
+                    color=discord.Color.red(),
+                )
+                embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
+            except (json.JSONDecodeError, KeyError):
+                # Body wasn't the expected JSON shape — fall back to raw text.
+                log.warning("hot_take_hour: body was not parseable debate JSON, falling back to raw text")
+                embed = discord.Embed(
+                    title=article["headline"],
+                    description=article["body"][:2000],
+                    color=discord.Color.red(),
+                )
+                embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
+        else:
+            persona = _PERSONAS.get(persona_id)
+            rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
+            embed = discord.Embed(
+                title=article["headline"],
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(*rgb),
+            )
+            if persona:
+                embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
         await analysis_channel.send(embed=embed)
 
-    # Marcus Brooks — every 20 batches.
+    # Marcus Brooks — every ~200 games (every 20 batches), independently of the rotation.
     _marcus_game_counter += len(batch_results)
     if _marcus_game_counter >= 200:
         _marcus_game_counter = 0
+        mb_persona = _PERSONAS.get("marcus_brooks")
         mb_article = await columnist_service.generate(
             pool, league_id, season,
             persona_id="marcus_brooks",
@@ -556,7 +628,8 @@ async def _maybe_post_columnist(
                 description=mb_article["body"][:2000],
                 color=discord.Color.from_rgb(0, 128, 255),
             )
-            embed.set_footer(text="by Marcus Brooks · DBA Power Index")
+            if mb_persona:
+                embed.set_footer(text=f"by {mb_persona.display_name} · {mb_persona.byline}")
             await analysis_channel.send(embed=embed)
 
 
@@ -643,20 +716,16 @@ async def sim_until_rival(
                 )
 
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
-            embed = sim_embeds.batch_recap(
-                batch_results,
-                f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
-            )
+            standings = await game_repo.get_standings(pool, league_id, season)
+            embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
             await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
             await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
             batch_results = []
 
     if batch_results and box_channel:
-        embed = sim_embeds.batch_recap(
-            batch_results,
-            f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
-        )
+        standings = await game_repo.get_standings(pool, league_id, season)
+        embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
         await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
         await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
@@ -724,20 +793,16 @@ async def sim_range(
                 )
 
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
-            embed = sim_embeds.batch_recap(
-                batch_results,
-                f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
-            )
+            standings = await game_repo.get_standings(pool, league_id, season)
+            embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
             await box_channel.send(embed=embed)
             await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
             await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
             batch_results = []
 
     if batch_results and box_channel:
-        embed = sim_embeds.batch_recap(
-            batch_results,
-            f"Games {batch_results[0]['game']['game_index']}–{batch_results[-1]['game']['game_index']}",
-        )
+        standings = await game_repo.get_standings(pool, league_id, season)
+        embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
         await box_channel.send(embed=embed)
         await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
         await _maybe_post_columnist(pool, league_id, season, batch_results, guild)

@@ -252,6 +252,71 @@ def batch_recap(games_results: List[dict], title: str) -> discord.Embed:
     return embed
 
 
+def batch_recap_with_standings(
+    games_results: List[dict],
+    standings_rows: List[dict],
+) -> discord.Embed:
+    """
+    Combined batch recap + top-5 per conference standings snapshot.
+    Builds the same score list as batch_recap, then appends East/West top-5 fields.
+    """
+    # --- Date range title (same logic as batch_recap) ---
+    dates = [r["game"].get("scheduled_date") for r in games_results if r["game"].get("scheduled_date")]
+    if dates:
+        lo, hi = min(dates), max(dates)
+        if lo == hi:
+            embed_title = f"{lo.strftime('%b')} {lo.day}"
+        else:
+            embed_title = f"{lo.strftime('%b')} {lo.day} – {hi.strftime('%b')} {hi.day}"
+    else:
+        first_idx = games_results[0]["game"].get("game_index", "?") if games_results else "?"
+        last_idx = games_results[-1]["game"].get("game_index", "?") if games_results else "?"
+        embed_title = f"Games {first_idx}–{last_idx}"
+
+    embed = discord.Embed(title=embed_title, color=discord.Color.blurple())
+
+    # Game index subtitle
+    if games_results:
+        first_idx = games_results[0]["game"].get("game_index", "?")
+        last_idx = games_results[-1]["game"].get("game_index", "?")
+        embed.add_field(name="Games", value=f"Games {first_idx}–{last_idx}", inline=True)
+
+    # Score lines
+    lines = []
+    for r in games_results:
+        home_team = r["home_team"]
+        away_team = r["away_team"]
+        result = r["result"]
+        home_name = home_team.nba_team_code if home_team else "???"
+        away_name = away_team.nba_team_code if away_team else "???"
+        lines.append(
+            f"`{away_name}` @ `{home_name}`:  **{result['away_score']}–{result['home_score']}**"
+        )
+    embed.description = "\n".join(lines) if lines else "No games."
+
+    # Separator
+    embed.add_field(name="​", value="​", inline=False)
+
+    # Standings top-5 per conference
+    def _top5_str(rows: List[dict]) -> str:
+        sorted_rows = sorted(rows, key=lambda r: (-r["wins"], r["losses"]))[:5]
+        parts = []
+        for i, row in enumerate(sorted_rows, start=1):
+            code = row.get("nba_team_code", str(row.get("team_id", "?")))
+            w = row.get("wins", 0)
+            l = row.get("losses", 0)
+            parts.append(f"{i}. {code} {w}-{l}")
+        return "\n".join(parts) if parts else "No data"
+
+    east_rows = [r for r in standings_rows if r.get("conference") == "East"]
+    west_rows = [r for r in standings_rows if r.get("conference") == "West"]
+
+    embed.add_field(name="East Top 5", value=_top5_str(east_rows), inline=True)
+    embed.add_field(name="West Top 5", value=_top5_str(west_rows), inline=True)
+
+    return embed
+
+
 def matchup_alert(
     game: dict,
     home_team,

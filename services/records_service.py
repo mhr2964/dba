@@ -79,8 +79,10 @@ async def check_and_update_records(
             team_id=high_team_id,
             game_id=game_id,
         )
+        _team_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", high_team_id)
+        _team_code = _team_row["nba_team_code"] if _team_row else "???"
         announcements.append(
-            f"New season record: Highest team score — {high_score} points!"
+            f"New season record: {_team_code} dropped {high_score} points!"
         )
 
     margin = abs(home_score - away_score)
@@ -98,8 +100,10 @@ async def check_and_update_records(
             team_id=winner_team_id,
             game_id=game_id,
         )
+        _winner_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", winner_team_id)
+        _winner_code = _winner_row["nba_team_code"] if _winner_row else "???"
         announcements.append(
-            f"New season record: Biggest blowout — {margin}-point margin!"
+            f"New season record: {_winner_code} blew someone out by {margin} points!"
         )
 
     for line in all_box:
