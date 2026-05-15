@@ -6,6 +6,12 @@ import asyncpg
 
 from data.repositories import records_repo
 
+_RECORD_FLOORS = {
+    "most_pts_game_player": 30,
+    "highest_team_score":   120,
+    "biggest_blowout":      20,
+}
+
 
 async def check_and_update_records(
     pool: asyncpg.Pool,
@@ -42,7 +48,7 @@ async def check_and_update_records(
             best_pts = line["points"]
             best_scorer = line
 
-    if best_scorer is not None:
+    if best_scorer is not None and best_pts > _RECORD_FLOORS["most_pts_game_player"]:
         await records_repo.set_record(
             pool,
             league_id,
@@ -64,7 +70,7 @@ async def check_and_update_records(
     current_team_value: float = current_team_score["value"] if current_team_score else 0.0
 
     high_score = max(home_score, away_score)
-    if high_score > current_team_value:
+    if high_score > current_team_value and high_score > _RECORD_FLOORS["highest_team_score"]:
         # Determine which team scored highest
         if home_score >= away_score:
             high_team_id = result.get("home_team_id") or (home_box[0]["team_id"] if home_box else None)
@@ -89,7 +95,7 @@ async def check_and_update_records(
     current_blowout = await records_repo.get_record(pool, league_id, season, "biggest_blowout")
     current_blowout_value: float = current_blowout["value"] if current_blowout else 0.0
 
-    if margin > current_blowout_value:
+    if margin > current_blowout_value and margin > _RECORD_FLOORS["biggest_blowout"]:
         winner_team_id = result.get("winner_team_id")
         await records_repo.set_record(
             pool,

@@ -192,6 +192,159 @@ async def _get_eligible_players(
     return eligible
 
 
+async def get_race_leaders(
+    pool,
+    league_id: int,
+    season: int,
+    top_n: int = 5,
+) -> dict[str, list[dict]]:
+    """Return top-N candidates per award race (mvp, dpoy, roy, 6moy) for odds generation."""
+    result = {}
+    sort_keys = {
+        "mvp":  lambda p: p["ppg"] + 0.4 * p["rpg"] + 0.6 * p["apg"],
+        "dpoy": lambda p: p["bpg"] + p["spg"] + 0.3 * p["rpg"],
+        "roy":  lambda p: p["ppg"] + 0.3 * p["rpg"] + 0.3 * p["apg"],
+        "6moy": lambda p: p["ppg"] + 0.3 * p["apg"],
+    }
+    for award_type, sort_key in sort_keys.items():
+        try:
+            players = await _get_eligible_players(pool, league_id, season, award_type)
+        except Exception:
+            players = []
+        sorted_players = sorted(players, key=sort_key, reverse=True)[:top_n]
+        result[award_type] = sorted_players
+    return result
+
+
+async def generate_awards_race_odds(
+    pool,
+    league_id: int,
+    season: int,
+) -> dict | None:
+    """
+    Returns AI-generated odds dict shaped:
+      {"mvp": [{"name": str, "pct": int}, ...], "dpoy": [...], "roy": [...], "6moy": [...]}
+    or None if not enough data or Claude fails.
+    """
+    import os, json
+    import anthropic
+
+    leaders = await get_race_leaders(pool, league_id, season, top_n=5)
+
+    # Gate: need at least one award with candidates having 25+ games.
+    has_enough = any(
+        any(p.get("games_played", 0) >= 25 for p in candidates)
+        for candidates in leaders.values()
+        if candidates
+    )
+    if not has_enough:
+        return None
+
+    # Fetch player names.
+    all_player_ids = [p["player_id"] for candidates in leaders.values() for p in candidates]
+    if not all_player_ids:
+        return None
+    name_rows = await pool.fetch(
+        "SELECT id, first_name, last_name FROM players WHERE id = ANY($1)",
+        all_player_ids,
+    )
+    names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in name_rows}
+
+    # Fetch team records for context.
+    standings = await pool.fetch(
+        """
+        SELECT sc.team_id, sc.wins, sc.losses, t.nba_team_code
+        FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id = $1 AND sc.season = $2
+        """,
+        league_id, season,
+    )
+    team_record = {r["team_id"]: f"{r['nba_team_code']} {r['wins']}-{r['losses']}" for r in standings}
+
+    # Build prompt section per award.
+    award_labels = {"mvp": "MVP", "dpoy": "DPOY", "roy": "ROY", "6moy": "6th Man"}
+    sections = []
+    empty_awards = []
+    for award_type, candidates in leaders.items():
+        if not candidates:
+            empty_awards.append(award_type)
+            continue
+        label = award_labels[award_type]
+        lines = [f"{label}:"]
+        for p in candidates:
+            pid = p["player_id"]
+            pname = names.get(pid, f"Player#{pid}")
+            team_str = team_record.get(p.get("team_id", 0), "")
+            gp = p.get("games_played", 0)
+            ppg = p.get("ppg", 0.0)
+            rpg = p.get("rpg", 0.0)
+            apg = p.get("apg", 0.0)
+            bpg = p.get("bpg", 0.0)
+            spg = p.get("spg", 0.0)
+            lines.append(
+                f"  - {pname} ({team_str}, {gp}GP): "
+                f"{ppg:.1f}PPG {rpg:.1f}RPG {apg:.1f}APG {bpg:.1f}BPG {spg:.1f}SPG"
+            )
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return None
+
+    prompt = (
+        "You are an NBA writer setting awards-race odds. For each award below, output "
+        "the percentage chance each candidate wins, summing to 100% per award. "
+        "Weigh team record AND individual stats. Round to whole percentages.\n\n"
+        + "\n\n".join(sections)
+        + "\n\nReturn ONLY valid JSON, no markdown, no code fences:\n"
+        '{"mvp": [{"name": "...", "pct": 35}, ...], '
+        '"dpoy": [...], "roy": [...], "6moy": [...]}\n'
+        "Each array sorted descending by pct. Percentages in each award sum to 100. "
+        "Omit awards with no candidates."
+    )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        message = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        parsed = json.loads(raw)
+        # Validate shape and coerce pct to int — Claude sometimes returns floats or strings.
+        if not isinstance(parsed, dict):
+            return None
+        valid = {}
+        for k in ("mvp", "dpoy", "roy", "6moy"):
+            arr = parsed.get(k, [])
+            if isinstance(arr, list) and all(
+                isinstance(item, dict) and "name" in item and "pct" in item
+                for item in arr
+            ):
+                normalized = []
+                for item in arr:
+                    try:
+                        normalized.append({"name": item["name"], "pct": int(item["pct"])})
+                    except (ValueError, TypeError):
+                        continue
+                if normalized:
+                    valid[k] = normalized
+        return valid if valid else None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Awards race odds generation failed: {exc}")
+        return None
+
+
 async def generate_cpu_votes(
     voting_id: int, league_id: int, season: int
 ) -> int:

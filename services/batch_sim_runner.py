@@ -10,9 +10,9 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, player_repo, strategy_repo, team_repo
 from phase.states import Phase
-from services import columnist_service, league_service, records_service, sim_engine, storyline_service, strategy_service
+from services import awards_service, columnist_service, cpu_trade_service, league_service, records_service, sim_engine, strategy_service
 from services.personas import PERSONAS as _PERSONAS
-from bot.embeds import sim_embeds
+from bot.embeds import awards_embeds, sim_embeds
 
 _SEVERITY_LABELS: dict[str, str] = {
     "day_to_day":    "day-to-day",
@@ -38,7 +38,7 @@ _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 _marcus_game_counter: int = 0
 
 # Columnist rotation — cycles through these personas on every batch.
-_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour"]
+_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen"]
 _columnist_rotation_index: int = 0
 
 
@@ -450,6 +450,135 @@ async def _get_injury_channel(guild: discord.Guild, pool, league_id: int) -> Opt
     return guild.get_channel(channel_id) or await _get_news_channel(guild, pool, league_id)
 
 
+async def _get_transactions_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
+    channel_id = await league_repo.get_channel(pool, league_id, "transactions")
+    if not channel_id:
+        return None
+    return guild.get_channel(channel_id)
+
+
+async def _maybe_run_cpu_trades(
+    pool,
+    league_id: int,
+    season: int,
+    current_game_index: int,
+    total_regular_games: int,
+    deadline_game_index: Optional[int],
+    guild: discord.Guild,
+) -> None:
+    if not deadline_game_index:
+        return
+
+    import datetime as _dt
+
+    snapshot_ts = _dt.datetime.now(_dt.timezone.utc)
+
+    trades_proposed = await cpu_trade_service.maybe_initiate_round(
+        pool, league_id, season,
+        current_game_index, total_regular_games, deadline_game_index,
+    )
+    if not trades_proposed:
+        return
+
+    transactions_channel = await _get_transactions_channel(guild, pool, league_id)
+    if not transactions_channel:
+        return
+
+    # Fetch trades created in this call (by timestamp).
+    new_trades = await pool.fetch(
+        """
+        SELECT id, proposer_team_id, counterparty_team_id, status
+        FROM trades
+        WHERE league_id = $1 AND proposed_at >= $2
+        ORDER BY id
+        """,
+        league_id, snapshot_ts,
+    )
+
+    from data.repositories import trade_repo
+
+    for trade_row in new_trades:
+        trade_id = trade_row["id"]
+        status = trade_row["status"]
+
+        # Fetch assets.
+        assets = await trade_repo.get_assets(pool, trade_id)
+
+        proposer_id = trade_row["proposer_team_id"]
+        counterparty_id = trade_row["counterparty_team_id"]
+
+        team_rows = await pool.fetch(
+            "SELECT id, nba_team_code FROM teams WHERE id = ANY($1)",
+            [proposer_id, counterparty_id],
+        )
+        team_codes = {r["id"]: r["nba_team_code"] for r in team_rows}
+
+        def _asset_lines(from_team_id: int) -> list[str]:
+            lines = []
+            for a in assets:
+                if a.from_team_id != from_team_id:
+                    continue
+                if a.asset_type == "player" and a.player_id:
+                    lines.append(f"Player #{a.player_id}")
+                elif a.asset_type == "pick" and a.pick_id:
+                    lines.append(f"Pick #{a.pick_id}")
+            return lines or ["(nothing)"]
+
+        proposer_code = team_codes.get(proposer_id, f"Team {proposer_id}")
+        counterparty_code = team_codes.get(counterparty_id, f"Team {counterparty_id}")
+
+        title = "✅ Trade Executed" if status == "approved" else "⏳ Trade Pending Review"
+        color = discord.Color.green() if status == "approved" else discord.Color.orange()
+
+        embed = discord.Embed(title=title, color=color)
+        embed.add_field(
+            name=f"{counterparty_code} receives",
+            value="\n".join(_asset_lines(proposer_id)),
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{proposer_code} receives",
+            value="\n".join(_asset_lines(counterparty_id)),
+            inline=True,
+        )
+        if status == "pending_commissioner":
+            embed.add_field(
+                name="Action required",
+                value="Commissioner must review and approve or reject this trade.",
+                inline=False,
+            )
+        embed.set_footer(text=f"CPU-initiated · Trade #{trade_id}")
+        await transactions_channel.send(embed=embed)
+
+        # Marcus Cole — insider trade report to #analysis.
+        trade_context = {
+            "proposer_team": proposer_code,
+            "counterparty_team": counterparty_code,
+            "proposer_sends": _asset_lines(proposer_id),
+            "counterparty_sends": _asset_lines(counterparty_id),
+            "trade_status": status,
+        }
+        mc_article = await columnist_service.generate(
+            pool, league_id, season,
+            persona_id="marcus_cole",
+            category="trade_report",
+            context=trade_context,
+        )
+        if mc_article:
+            analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+            analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+            if analysis_channel:
+                mc_persona = _PERSONAS.get("marcus_cole")
+                embed = discord.Embed(
+                    title=f"📡 {mc_article['headline']}",
+                    description=mc_article["body"][:2000],
+                    color=discord.Color.from_rgb(255, 69, 0),
+                )
+                if mc_persona:
+                    embed.set_footer(text=f"by {mc_persona.display_name} · {mc_persona.byline}")
+                await analysis_channel.send(embed=embed)
+
+
 def _interest_score_from_batch_result(br: dict) -> float:
     """Compute an interest score from a batch result dict (wraps sim result)."""
     r = br["result"]
@@ -461,53 +590,21 @@ def _interest_score_from_batch_result(br: dict) -> float:
     return clutch + blowout + float(top_pts)
 
 
-async def _maybe_post_storylines(
+async def _maybe_post_awards_races(
     pool,
     league_id: int,
-    batch_results: list[dict],
+    season: int,
     news_channel: Optional[discord.TextChannel],
+    current_game_index: int = 0,
 ) -> None:
-    """Build team name lookup and post a sim recap storylines embed if any are generated."""
-    if not batch_results or not news_channel:
+    if not news_channel:
         return
-
-    # Only post to league-news if at least one game was genuinely newsworthy.
-    max_interest = max(
-        (_interest_score_from_batch_result(br) for br in batch_results),
-        default=0.0,
-    )
-    if max_interest < 18.0:
-        return  # Nothing extraordinary happened — don't spam league-news
-
-    team_ids = set()
-    for br in batch_results:
-        team_ids.add(br["home_team"].id)
-        team_ids.add(br["away_team"].id)
-
-    teams_by_id: dict[int, dict] = {}
-    for br in batch_results:
-        ht = br["home_team"]
-        at = br["away_team"]
-        teams_by_id[ht.id] = {"name": ht.name if hasattr(ht, "name") else f"Team {ht.id}"}
-        teams_by_id[at.id] = {"name": at.name if hasattr(at, "name") else f"Team {at.id}"}
-
-    game_dicts = []
-    for br in batch_results:
-        r = br["result"]
-        game_dicts.append({
-            "home_score": r["home_score"],
-            "away_score": r["away_score"],
-            "home_team_id": br["home_team"].id,
-            "away_team_id": br["away_team"].id,
-            "winner_team_id": r["winner_team_id"],
-            "home_box": r.get("home_box", []),
-            "away_box": r.get("away_box", []),
-        })
-
-    storylines = await storyline_service.generate_storylines_ai(game_dicts, teams_by_id)
-    recap = sim_embeds.sim_recap_embed(storylines)
-    if recap:
-        await news_channel.send(embed=recap)
+    odds = await awards_service.generate_awards_race_odds(pool, league_id, season)
+    if not odds:
+        return
+    embed = awards_embeds.awards_race_embed(odds, game_index=current_game_index)
+    if embed:
+        await news_channel.send(embed=embed)
 
 
 _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
@@ -515,6 +612,7 @@ _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
     "jordan_rivera":  (138, 43, 226),
     "keisha_williams": (0, 128, 255),
     "hot_take_hour":  (255, 0, 0),
+    "pat_chen":       (0, 180, 150),
 }
 
 
@@ -592,11 +690,50 @@ async def _maybe_post_columnist(
     persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
     _columnist_rotation_index += 1
 
+    # Pat Chen: enrich context with team strategy data.
+    # Build a copy so we don't mutate the shared batch_context used by other callers.
+    columnist_context = batch_context
+    if persona_id == "pat_chen":
+        try:
+            team_ids_in_batch = list({
+                br["home_team"].id for br in batch_results
+            } | {
+                br["away_team"].id for br in batch_results
+            })
+            strat_rows = await pool.fetch(
+                """
+                SELECT t.id AS team_id, t.nba_team_code,
+                       ts.offensive_scheme, ts.defensive_scheme,
+                       ts.offensive_pace, ts.defensive_intensity,
+                       sc.wins, sc.losses
+                FROM teams t
+                LEFT JOIN team_strategies ts ON ts.team_id = t.id AND ts.league_id = $1
+                LEFT JOIN standings_cache sc ON sc.team_id = t.id AND sc.league_id = $1 AND sc.season = $2
+                WHERE t.id = ANY($3)
+                """,
+                league_id, season, team_ids_in_batch,
+            )
+            pat_context = dict(batch_context)
+            pat_context["team_strategies"] = [
+                {
+                    "team": r["nba_team_code"],
+                    "record": f"{r['wins'] or 0}-{r['losses'] or 0}",
+                    "offensive_scheme": r["offensive_scheme"] or "auto",
+                    "defensive_scheme": r["defensive_scheme"] or "auto",
+                    "pace": r["offensive_pace"] or "normal",
+                    "defensive_intensity": r["defensive_intensity"] or "standard",
+                }
+                for r in strat_rows
+            ]
+            columnist_context = pat_context
+        except Exception as _exc:
+            log.warning(f"Pat Chen strategy enrichment failed: {_exc}")
+
     article = await columnist_service.generate(
         pool, league_id, season,
         persona_id=persona_id,
         category="game_recap",
-        context=batch_context,
+        context=columnist_context,
     )
     if article:
         if persona_id == "hot_take_hour":
@@ -685,6 +822,8 @@ async def sim_until_rival(
     suppress_matchup_alert: bool = False,
 ) -> dict:
     pool = await get_pool()
+    total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
+    deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
     next_user_game = await game_repo.get_user_matchup_ahead(pool, league_id, season, current_index)
@@ -730,16 +869,22 @@ async def sim_until_rival(
             standings = await game_repo.get_standings(pool, league_id, season)
             embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
             await box_channel.send(embed=embed)
-            await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+            last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
             await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+            last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
             batch_results = []
 
     if batch_results and box_channel:
         standings = await game_repo.get_standings(pool, league_id, season)
         embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
         await box_channel.send(embed=embed)
-        await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+        last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
         await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+        last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
 
@@ -764,6 +909,8 @@ async def sim_range(
     force: bool = False,
 ) -> dict:
     pool = await get_pool()
+    total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
+    deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
 
@@ -807,16 +954,22 @@ async def sim_range(
             standings = await game_repo.get_standings(pool, league_id, season)
             embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
             await box_channel.send(embed=embed)
-            await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+            last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
             await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+            last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
             batch_results = []
 
     if batch_results and box_channel:
         standings = await game_repo.get_standings(pool, league_id, season)
         embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
         await box_channel.send(embed=embed)
-        await _maybe_post_storylines(pool, league_id, batch_results, news_channel)
+        last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
         await _maybe_post_columnist(pool, league_id, season, batch_results, guild)
+        last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
     return {"warning": False, "games_simmed": games_simmed, "user_matchups": [], "season_complete": season_complete}
