@@ -91,7 +91,8 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_rivalry")
-        await require_all_ready(interaction, league)
+        if not force:
+            await require_all_ready(interaction, league)
         await require_no_pending_trades(league)
 
         if count < 1 or count > 20:
@@ -147,7 +148,8 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_season")
-        await require_all_ready(interaction, league)
+        if not force:
+            await require_all_ready(interaction, league)
         await require_no_pending_trades(league)
 
         pool = await get_pool()
