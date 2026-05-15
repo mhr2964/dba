@@ -466,6 +466,24 @@ async def _maybe_run_cpu_trades(
     deadline_game_index: Optional[int],
     guild: discord.Guild,
 ) -> None:
+    try:
+        await _run_cpu_trades_inner(
+            pool, league_id, season, current_game_index,
+            total_regular_games, deadline_game_index, guild,
+        )
+    except Exception as exc:
+        log.warning(f"_maybe_run_cpu_trades failed silently: {exc}")
+
+
+async def _run_cpu_trades_inner(
+    pool,
+    league_id: int,
+    season: int,
+    current_game_index: int,
+    total_regular_games: int,
+    deadline_game_index: Optional[int],
+    guild: discord.Guild,
+) -> None:
     if not deadline_game_index:
         return
 
@@ -597,14 +615,17 @@ async def _maybe_post_awards_races(
     news_channel: Optional[discord.TextChannel],
     current_game_index: int = 0,
 ) -> None:
-    if not news_channel:
-        return
-    odds = await awards_service.generate_awards_race_odds(pool, league_id, season)
-    if not odds:
-        return
-    embed = awards_embeds.awards_race_embed(odds, game_index=current_game_index)
-    if embed:
-        await news_channel.send(embed=embed)
+    try:
+        if not news_channel:
+            return
+        odds = await awards_service.generate_awards_race_odds(pool, league_id, season)
+        if not odds:
+            return
+        embed = awards_embeds.awards_race_embed(odds, game_index=current_game_index)
+        if embed:
+            await news_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_awards_races failed silently: {exc}")
 
 
 _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {

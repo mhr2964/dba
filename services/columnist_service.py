@@ -85,7 +85,7 @@ async def generate(
         client = anthropic.AsyncAnthropic(api_key=api_key)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            max_tokens=800,
             system=persona.voice_notes,
             messages=[{"role": "user", "content": user_content}],
         )

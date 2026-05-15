@@ -16,7 +16,13 @@ _ACTIVE_PHASES = frozenset({
 })
 
 # Number of games before the deadline over which pressure ramps from 0 → 1.
-_RAMP_WINDOW = 21
+# A window of 150 games means pressure builds starting from the midseason mark,
+# giving steady CPU trade activity through the second half of the season.
+_RAMP_WINDOW = 150
+
+# Minimum baseline pressure so trades can fire even early in the season
+# (prevents a completely dead trade block for the first half of the year).
+_BASELINE_PRESSURE = 0.15
 
 # Pressure override during the open deadline window.
 _DEADLINE_OPEN_PRESSURE = 1.2
@@ -52,14 +58,14 @@ async def maybe_initiate_round(
         return 0
 
     # Compute deadline pressure.
+    # Ramps from _BASELINE_PRESSURE → 1.0 over the last _RAMP_WINDOW games before deadline.
+    # Baseline ensures at least some trade activity throughout the season.
     if league.current_phase == "TRADE_DEADLINE_OPEN":
         pressure = _DEADLINE_OPEN_PRESSURE
     else:
         games_until_deadline = deadline_game_index - current_game_index
-        pressure = max(0.0, 1.0 - games_until_deadline / _RAMP_WINDOW)
-
-    if pressure == 0.0:
-        return 0
+        ramp = max(0.0, 1.0 - games_until_deadline / _RAMP_WINDOW)
+        pressure = max(_BASELINE_PRESSURE, ramp)
 
     # Number of trade offers to attempt this round.
     n_offers = int(pressure * 2) + (1 if random.random() < pressure else 0)

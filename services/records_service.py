@@ -108,8 +108,16 @@ async def check_and_update_records(
         )
         _winner_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", winner_team_id)
         _winner_code = _winner_row["nba_team_code"] if _winner_row else "???"
+        # Derive loser team from box score team IDs.
+        _all_team_ids = list({l.get("team_id") for l in all_box if l.get("team_id")})
+        _loser_team_id = next((tid for tid in _all_team_ids if tid != winner_team_id), None)
+        if _loser_team_id:
+            _loser_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", _loser_team_id)
+            _loser_code = _loser_row["nba_team_code"] if _loser_row else "???"
+        else:
+            _loser_code = "???"
         announcements.append(
-            f"New season record: {_winner_code} blew someone out by {margin} points!"
+            f"New season record: {_winner_code} blew out {_loser_code} by {margin} points!"
         )
 
     for line in all_box:
