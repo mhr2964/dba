@@ -664,6 +664,7 @@ async def _maybe_post_columnist(
     games_data: list[dict] = []
     overall_top_scorer: str | None = None
     overall_top_pts: int = 0
+    overall_top_scorer_team: str | None = None
 
     for br in batch_results:
         ht = br["home_team"]
@@ -675,24 +676,37 @@ async def _maybe_post_columnist(
         winner_code = (ht.nba_team_code if hasattr(ht, "nba_team_code") and winner_id == ht.id
                        else at.nba_team_code if hasattr(at, "nba_team_code") else "???")
 
-        all_box = r.get("home_box", []) + r.get("away_box", [])
-        game_top = max(all_box, key=lambda l: l.get("points", 0), default={})
-        game_top_name = game_top.get("player_name", "") if game_top else ""
-        game_top_pts = game_top.get("points", 0) if game_top else 0
-
-        if game_top_pts > overall_top_pts:
-            overall_top_pts = game_top_pts
-            overall_top_scorer = game_top_name
-
         away_code = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
         home_code = ht.nba_team_code if hasattr(ht, "nba_team_code") else "???"
+
+        # Track which team the top scorer belongs to so the AI gets correct attribution.
+        game_top: dict = {}
+        game_top_pts_val: int = 0
+        game_top_team_code: str = ""
+        for box_lines, team_code in [
+            (r.get("home_box", []), home_code),
+            (r.get("away_box", []), away_code),
+        ]:
+            for line in box_lines:
+                if line.get("points", 0) > game_top_pts_val:
+                    game_top_pts_val = line.get("points", 0)
+                    game_top = line
+                    game_top_team_code = team_code
+
+        game_top_name = game_top.get("player_name", "") if game_top else ""
+        game_top_pts = game_top_pts_val
+
+        if game_top_pts_val > overall_top_pts:
+            overall_top_pts = game_top_pts_val
+            overall_top_scorer = game_top_name
+            overall_top_scorer_team = game_top_team_code
 
         games_data.append({
             "game": f"{away_code} @ {home_code}",
             "score": f"{away_code} {as_} - {home_code} {hs}",
             "winner": winner_code,
             "margin": abs(hs - as_),
-            "top_performer": f"{game_top_name} ({game_top_pts} pts)" if game_top_name else None,
+            "top_performer": f"{game_top_name} ({game_top_team_code}, {game_top_pts} pts)" if game_top_name else None,
         })
 
     # Sort by interest: close finishes and big blowouts float to the top.
@@ -703,7 +717,10 @@ async def _maybe_post_columnist(
 
     batch_context = {
         "season_games": games_data[:10],  # all games (≤10 per batch)
-        "top_performer_of_batch": f"{overall_top_scorer} ({overall_top_pts} pts)" if overall_top_scorer else None,
+        "top_performer_of_batch": (
+            f"{overall_top_scorer} ({overall_top_scorer_team}, {overall_top_pts} pts)"
+            if overall_top_scorer else None
+        ),
         "games_count": len(batch_results),
     }
 

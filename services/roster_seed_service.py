@@ -14,6 +14,7 @@ Public surface:
 
 import json
 import os
+import pathlib
 import unicodedata
 from typing import Optional
 
@@ -34,6 +35,45 @@ _SEEDS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "data", "seeds")
 )
 
+# ---------------------------------------------------------------------------
+# Stats-ratings lookup (nba_api player_id keyed by string -> OVR int)
+# ---------------------------------------------------------------------------
+
+_stats_ratings_cache: dict[int, dict[str, int]] = {}
+
+
+def _load_stats_ratings(season: int) -> dict[str, int]:
+    """Load data/stats_ratings/{season}.json. Returns empty dict on any IO/parse error."""
+    path = pathlib.Path(__file__).parent.parent / "data" / "stats_ratings" / f"{season}.json"
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _get_ovr_for_player(
+    external_id: "int | str | None",
+    season: int,
+    player_name: str = "",
+) -> int:
+    """Return OVR with a three-tier priority:
+
+    1. stats_ratings/{season}.json keyed by external_id string (most accurate).
+    2. nba_2k_ratings.json keyed by normalized player name.
+    3. Experience-band fallback (70 for unknown experience).
+    """
+    global _stats_ratings_cache
+    if season not in _stats_ratings_cache:
+        _stats_ratings_cache[season] = _load_stats_ratings(season)
+    ratings = _stats_ratings_cache[season]
+
+    if external_id is not None and str(external_id) in ratings:
+        return ratings[str(external_id)]
+
+    # Tier 2 + 3: delegate to the existing function which handles 2K file + exp fallback.
+    return import_service._overall_from_2k(player_name, season, 0) if player_name else 70
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -50,20 +90,22 @@ def _normalize(name: str) -> str:
     )
 
 
-def _overall_from_ratings_file(season: int, player_name: str = "", exp: int = 0) -> int:
-    """Return overall from nba_2k_ratings.json for season, or 70 as fallback.
+def _overall_from_ratings_file(
+    season: int,
+    player_name: str = "",
+    exp: int = 0,
+    external_id: "int | str | None" = None,
+) -> int:
+    """Return overall using a three-tier priority:
 
-    Wraps import_service._overall_from_2k so the reconciler does not need to
-    duplicate the look-up logic.  Falls back to 70 (not exp-band) when neither
-    the ratings file nor the player name is available — a deterministic default
-    is friendlier for seeded players than a random estimate.
+    1. stats_ratings/{season}.json (nba_api player_id key) — most accurate.
+    2. nba_2k_ratings.json (player name key).
+    3. 70 as a deterministic fallback.
     """
-    if player_name:
-        try:
-            return import_service._overall_from_2k(player_name, season, exp)
-        except Exception:
-            pass
-    return 70
+    try:
+        return _get_ovr_for_player(external_id, season, player_name)
+    except Exception:
+        return 70
 
 
 async def _get_team_id_by_code(
@@ -278,7 +320,11 @@ async def apply_reseed(
             position = import_service._normalize_position(
                 seed_row.get("position", "")
             )
-            overall = _overall_from_ratings_file(season, full_name)
+            overall = _overall_from_ratings_file(
+                season,
+                full_name,
+                external_id=seed_row.get("external_id"),
+            )
             attrs = import_service._generate_attributes(overall, position)
             hidden = import_service._generate_hidden(overall, exp=0)
 

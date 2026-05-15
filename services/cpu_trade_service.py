@@ -72,19 +72,15 @@ async def maybe_initiate_round(
     if n_offers == 0:
         return 0
 
-    # Load entire league trade block and bail early if nothing is listed.
-    league_block = await trade_block_repo.get_league_block(pool, league_id)
-    if not league_block:
-        return 0
-
-    # Build a map: team_id -> list of player_ids on the block.
-    block_by_team: dict[int, list[int]] = {}
-    for entry in league_block:
-        block_by_team.setdefault(entry["team_id"], []).append(entry["player_id"])
-
     # Load all teams; filter to CPU-only.
     all_teams = await team_repo.get_all(pool, league_id)
     cpu_teams = [t for t in all_teams if t.manager_user_id is None]
+
+    # Build a synthetic tradeable-player map from CPU team rosters.
+    # CPU teams never call /trade block add, so we derive their block on the fly.
+    block_by_team = await _build_cpu_trade_block(pool, league_id, cpu_teams)
+    if not block_by_team:
+        return 0
 
     if len(cpu_teams) < 2:
         return 0
@@ -103,6 +99,55 @@ async def maybe_initiate_round(
             continue
 
     return proposed_count
+
+
+async def _build_cpu_trade_block(
+    pool,
+    league_id: int,
+    cpu_teams: list[team_repo.Team],
+) -> dict[int, list[int]]:
+    """
+    For each CPU team, identify players that make sense to offer in a trade.
+    Returns a map of team_id -> list of player_ids considered tradeable.
+
+    CPU teams never manually populate the trade block, so this derives it from
+    each team's roster and cpu_mode instead of querying trade_block entries.
+
+    Logic per cpu_mode:
+    - rebuilding: veterans age >= 32, or age >= 29 with OVR >= 65
+    - contending: mid-tier players OVR 72–84 (trade bait, not franchise cornerstones)
+    - developing: players age >= 30, or age >= 27 with OVR >= 78
+    - default: players OVR 70–82
+    """
+    result: dict[int, list[int]] = {}
+
+    for team in cpu_teams:
+        players = await player_repo.get_roster(pool, league_id, team.id)
+        tradeable: list[int] = []
+        mode = team.cpu_mode or "default"
+
+        for p in players:
+            age = _player_age(p)
+            ovr = p.overall
+
+            if mode == "rebuilding":
+                if age >= 32 or (age >= 29 and ovr >= 65):
+                    tradeable.append(p.id)
+            elif mode == "contending":
+                # Trade non-star bench pieces for better role players.
+                if 72 <= ovr <= 84:
+                    tradeable.append(p.id)
+            elif mode == "developing":
+                if age >= 30 or (ovr >= 78 and age >= 27):
+                    tradeable.append(p.id)
+            else:
+                if 70 <= ovr <= 82:
+                    tradeable.append(p.id)
+
+        if tradeable:
+            result[team.id] = tradeable
+
+    return result
 
 
 async def _attempt_one_offer(

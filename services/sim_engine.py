@@ -4,11 +4,11 @@ from random import Random
 from typing import List
 
 _POSITION_SCORING_WEIGHT = {
-    "PG": 1.10,
-    "SG": 1.15,
+    "PG": 1.05,
+    "SG": 1.10,
     "SF": 1.00,
-    "PF": 0.85,
-    "C":  0.85,
+    "PF": 0.95,
+    "C":  0.90,
 }
 
 _POSITION_PLAYMAKING_WEIGHT = {

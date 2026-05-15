@@ -299,7 +299,10 @@ def batch_recap_with_standings(
 
     # Standings top-5 per conference
     def _top5_str(rows: List[dict]) -> str:
-        sorted_rows = sorted(rows, key=lambda r: (-r["wins"], r["losses"]))[:5]
+        def _win_pct(r: dict) -> float:
+            games = r["wins"] + r["losses"]
+            return r["wins"] / games if games > 0 else 0.0
+        sorted_rows = sorted(rows, key=lambda r: -_win_pct(r))[:5]
         parts = []
         for i, row in enumerate(sorted_rows, start=1):
             code = row.get("nba_team_code", str(row.get("team_id", "?")))
@@ -360,13 +363,17 @@ def _championship_odds(standings_rows: List[dict]) -> dict[int, float]:
     """
     _SEED_FACTORS = {1: 1.4, 2: 1.2, 3: 1.0, 4: 1.0, 5: 0.7, 6: 0.7, 7: 0.3, 8: 0.3}
 
+    def _conf_win_pct(r: dict) -> float:
+        games = r["wins"] + r["losses"]
+        return r["wins"] / games if games > 0 else 0.0
+
     east = sorted(
         [r for r in standings_rows if r["conference"] == "East"],
-        key=lambda r: (-r["wins"], r["losses"]),
+        key=lambda r: -_conf_win_pct(r),
     )
     west = sorted(
         [r for r in standings_rows if r["conference"] == "West"],
-        key=lambda r: (-r["wins"], r["losses"]),
+        key=lambda r: -_conf_win_pct(r),
     )
 
     raw: dict[int, float] = {}
