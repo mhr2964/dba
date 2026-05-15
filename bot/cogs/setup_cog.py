@@ -545,7 +545,7 @@ class SetupCog(commands.Cog):
                     "No league has been created yet.\n\n"
                     "**Step 1:** Use `/league create` to set up your league.\n"
                     "**Step 2:** Use `/team assign` to invite managers.\n"
-                    "**Step 3:** Use `/season generate` to build the schedule."
+                    "**Step 3:** Use `/season start` to build the schedule."
                 ),
                 color=discord.Color.blurple(),
             )

@@ -79,7 +79,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
     @app_commands.command(name="games", description="Sim exactly N games from the current position")
     @app_commands.describe(
         count="Number of games to sim (1–50)",
-        force="Skip past user matchups without stopping",
+        force="Skip the ready check and user-matchup warning (does not override phase restrictions)",
     )
     async def games(
         self,
@@ -90,7 +90,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         await interaction.response.defer()
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
-        await require_phase(league, "sim_rivalry")
+        await require_phase(league, "sim_games")
         if not force:
             await require_all_ready(interaction, league)
         await require_no_pending_trades(league)

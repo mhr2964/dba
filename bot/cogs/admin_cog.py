@@ -657,7 +657,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             color=discord.Color.green() if not errors else discord.Color.orange(),
         )
         embed.add_field(name="Teams updated", value=str(n_success), inline=True)
-        embed.add_field(name="League", value=str(league.id), inline=True)
+        embed.add_field(name="League ID", value=str(league.id), inline=True)
         if errors:
             error_text = "\n".join(errors[:10])
             if len(errors) > 10:

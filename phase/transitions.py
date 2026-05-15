@@ -2,6 +2,7 @@ from phase.states import Phase
 
 ALLOWED: dict[str, set[Phase]] = {
     "sim_rivalry":         {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE},
+    "sim_games":           {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE},
     "sim_season":          {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE},
     "sim_deadline":        {Phase.REGULAR_SEASON_ACTIVE},
     "sim_round":           {Phase.PLAYIN_ACTIVE, Phase.PLAYOFFS_R1, Phase.PLAYOFFS_R2,

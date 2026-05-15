@@ -9,8 +9,8 @@ from data.repositories import league_repo
 from core.errors import DBAError, PhaseError
 
 PHASE_SUGGESTIONS: dict[str, str] = {
-    "SETUP": "Use `/league advance` to move to PRESEASON_READY, then `/season generate` to begin.",
-    "PRESEASON_READY": "Use `/season generate` to create the schedule and start the season.",
+    "SETUP": "Use `/league advance` to move to PRESEASON_READY, then `/season start` to begin.",
+    "PRESEASON_READY": "Use `/season start` to create the schedule and start the season.",
     "REGULAR_SEASON_ACTIVE": "The regular season is underway. Use `/sim rivalry` or `/sim season`.",
     "TRADE_DEADLINE_OPEN": "The trade deadline window is open — make your moves before it closes.",
     "REGULAR_SEASON_POSTDEADLINE": "Trade deadline passed. Continue simming with `/sim season`.",

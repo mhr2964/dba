@@ -1,5 +1,21 @@
 # Changelog — DBA
 
+## 2026-05-15
+- **`#standings` channel receives dedicated posts** — After each batch sim, a standings-only embed (East/West sorted by win%) now posts to the `#standings` channel instead of lumping all standings into `#box-scores`.
+  Files: services/batch_sim_runner.py
+
+- **Trade block shows league-wide snapshot** — On every `/block add` or `/block remove`, the `#trade-block` channel receives a full league snapshot embed showing every team's trade-block players grouped by team, replacing individual per-player cards.
+  Files: commands/admin/trade_block.py
+
+- **`/admin rebuild-lineups` command added** — New commissioner command rebuilds starter/minute assignments for all teams based on current OVR ratings, useful after roster reseeds that corrected OVR values.
+  Files: commands/admin/admin.py
+
+- **`/season import-players` embed improved** — Now shows "X teams imported, Y already up to date" instead of confusing "0 teams / 0 players" when all teams were already seeded.
+  Files: commands/commissioner/season.py
+
+- **Sim loop protected against Discord errors** — All `channel.send()` calls in `sim_until_rival` and `sim_range` are now individually wrapped in try/except blocks. Discord HTTP errors no longer abort mid-batch sims; errors log as warnings and the sim continues.
+  Files: services/batch_sim_runner.py
+
 ## 2026-05-14
 - **Records floors prevent early-season noise** — Scoring records now require 30+ pts (player) or 120+ (team), blowouts need 20+ margin. Triple-doubles unchanged. Prevents announcements from season-opening games.
   Files: services/records_service.py
