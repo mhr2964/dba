@@ -131,6 +131,17 @@ async def generate_season(league_id: int, season: int) -> int:
             f"Expected 30 teams, got {len(teams)} — run /league delete and /league create again"
         )
 
+    # Idempotent: remove any previously-generated games for this league+season
+    # so a second `/season start` call doesn't fail on duplicate game_index.
+    existing = await pool.fetchval(
+        "SELECT COUNT(*) FROM games WHERE league_id = $1 AND season = $2", league_id, season
+    )
+    if existing:
+        log.info(f"Clearing {existing} existing games for league {league_id} season {season}")
+        await pool.execute(
+            "DELETE FROM games WHERE league_id = $1 AND season = $2", league_id, season
+        )
+
     human_team_ids = {t.id for t in teams if t.manager_user_id is not None}
 
     rng_seed = hash((league_id, season, "schedule")) & 0x7FFFFFFFFFFFFFFF

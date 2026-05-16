@@ -31,7 +31,15 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         await require_phase(league, "season_start")
 
         season = season_year if season_year is not None else league.current_season
-        game_count = await schedule_service.generate_season(league.id, season)
+        try:
+            game_count = await schedule_service.generate_season(league.id, season)
+        except Exception as exc:
+            log.error(f"/season start failed for league {league.id}: {exc}", exc_info=True)
+            await interaction.followup.send(
+                f"Schedule generation failed: {exc}\n\nCheck that the league has 30 teams (`/team list`).",
+                ephemeral=True,
+            )
+            return
 
         await league_service.advance_phase(league.id, "REGULAR_SEASON_ACTIVE")
 
