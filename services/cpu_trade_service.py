@@ -317,10 +317,15 @@ async def _attempt_one_offer(
     # to the target value.  A package worth less than 50% or more than 200% of
     # the target is too lopsided to submit — this prevents absurd offers like
     # SGA for Zubac from ever reaching trade_service.propose.
+    log.info(
+        f"Trade check: target={target_value:.1f} package={package_value:.1f} "
+        f"ratio={package_value / max(target_value, 1):.2f} "
+        f"(team {team_a.id} → player {target_player.id} OVR {target_player.overall})"
+    )
     if target_value > 0 and (
         package_value < target_value * 0.50 or package_value > target_value * 2.0
     ):
-        log.debug(
+        log.info(
             f"CPU trade aborted (lopsided): team {team_a.id} package value "
             f"{package_value:.1f} vs target value {target_value:.1f}"
         )
@@ -449,6 +454,20 @@ async def _maybe_auto_approve(
                     proposer_value += v
                 else:
                     counterparty_value += v
+
+    # Second lopsided-trade guard: even if the proposal got through, don't auto-approve
+    # a trade where one side's value exceeds the other by more than 50%.
+    # This catches edge cases where target_value was 0 at proposal time (contract lookup
+    # failure) but the actual values are computable here.
+    max_side = max(proposer_value, counterparty_value)
+    min_side = min(proposer_value, counterparty_value)
+    if max_side > 0 and min_side < max_side * 0.50:
+        log.info(
+            f"CPU-to-CPU trade {trade.id} blocked at auto-approve: lopsided "
+            f"(proposer_value={proposer_value:.1f}, counterparty_value={counterparty_value:.1f}) "
+            f"— leaving as pending_commissioner"
+        )
+        return
 
     # Always auto-approve CPU-to-CPU (human guard above ensures no human is involved).
     async with pool.acquire() as conn:

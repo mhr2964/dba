@@ -1286,13 +1286,21 @@ async def _maybe_post_columnist(
         except Exception as _exc:
             log.warning(f"Pat Chen strategy enrichment failed: {_exc}")
 
-    article = await columnist_service.generate(
-        pool, league_id, season,
-        persona_id=persona_id,
-        category="game_recap",
-        context=columnist_context,
-        subject_team_ids=subject_team_ids,
-    )
+    import asyncio as _asyncio
+    try:
+        article = await _asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id=persona_id,
+                category="game_recap",
+                context=columnist_context,
+                subject_team_ids=subject_team_ids,
+            ),
+            timeout=8.0,
+        )
+    except Exception as _col_exc:
+        log.warning(f"_maybe_post_columnist: article timed out or failed ({persona_id}): {_col_exc}")
+        article = None
     if article:
         if persona_id == "hot_take_hour":
             # Body is plain text formatted as "DAVE: ...\n\nTONY: ...\n\nDAVE: ..."
@@ -1322,13 +1330,20 @@ async def _maybe_post_columnist(
     if _marcus_game_counter >= 200:
         _marcus_game_counter = 0
         mb_persona = _PERSONAS.get("marcus_brooks")
-        mb_article = await columnist_service.generate(
-            pool, league_id, season,
-            persona_id="marcus_brooks",
-            category="power_rankings",
-            context=batch_context,
-            subject_team_ids=subject_team_ids,
-        )
+        try:
+            mb_article = await _asyncio.wait_for(
+                columnist_service.generate(
+                    pool, league_id, season,
+                    persona_id="marcus_brooks",
+                    category="power_rankings",
+                    context=batch_context,
+                    subject_team_ids=subject_team_ids,
+                ),
+                timeout=8.0,
+            )
+        except Exception as _mb_exc:
+            log.warning(f"_maybe_post_columnist: marcus_brooks timed out or failed: {_mb_exc}")
+            mb_article = None
         if mb_article:
             embed = discord.Embed(
                 title=mb_article["headline"],
@@ -1449,6 +1464,7 @@ async def _auto_run_awards(
     }
 
     winners: list[tuple[str, int]] = []  # (award_label, player_id)
+    no_winner_labels: list[str] = []     # award labels with no eligible candidates
 
     for award_type in _AWARD_TYPES:
         try:
@@ -1463,10 +1479,17 @@ async def _auto_run_awards(
 
             if results:
                 winners.append((_AWARD_LABELS[award_type], results[0]["player_id"]))
+            else:
+                # No eligible players voted on (e.g. no rookies for ROY).
+                no_winner_labels.append(_AWARD_LABELS[award_type])
+                log.info(f"Auto-awards: no winner for {award_type} (no eligible players)")
         except Exception as exc:
             log.warning(f"Auto-awards: {award_type} pipeline failed: {exc}", exc_info=True)
+            no_winner_labels.append(_AWARD_LABELS[award_type])
 
-    if not winners or not news_channel:
+    if not winners and not no_winner_labels:
+        return
+    if not news_channel:
         return
 
     # Resolve player names.
@@ -1485,6 +1508,8 @@ async def _auto_run_awards(
         f"**{label}:** {names.get(pid, f'Player #{pid}')}"
         for label, pid in winners
     ]
+    for label in no_winner_labels:
+        lines.append(f"**{label}:** No eligible players")
     embed = discord.Embed(
         title="Season Awards",
         description="\n".join(lines),
@@ -1613,6 +1638,11 @@ async def sim_until_rival(
                     bot, guild, league_id, sim_result,
                     home_t.manager_user_id, away_t.manager_user_id,
                 )
+
+        # Yield to the event loop after every game so Discord slash-command interactions
+        # can be acknowledged within the 3-second window while sim is running.
+        import asyncio as _asyncio_loop
+        await _asyncio_loop.sleep(0)
 
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
             standings = await game_repo.get_standings(pool, league_id, season)
@@ -1743,6 +1773,11 @@ async def sim_range(
                     bot, guild, league_id, sim_result,
                     home_t.manager_user_id, away_t.manager_user_id,
                 )
+
+        # Yield to the event loop after every game so Discord slash-command interactions
+        # can be acknowledged within the 3-second window while sim is running.
+        import asyncio as _asyncio_loop
+        await _asyncio_loop.sleep(0)
 
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
             standings = await game_repo.get_standings(pool, league_id, season)

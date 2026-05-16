@@ -202,7 +202,7 @@ async def get_race_leaders(
     result = {}
     sort_keys = {
         "mvp":  lambda p: float(p["ppg"] or 0) + 0.4 * float(p["rpg"] or 0) + 0.6 * float(p["apg"] or 0),
-        "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.3 * float(p["rpg"] or 0),
+        "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.1 * float(p["rpg"] or 0),
         "roy":  lambda p: float(p["ppg"] or 0) + 0.3 * float(p["rpg"] or 0) + 0.3 * float(p["apg"] or 0),
         "6moy": lambda p: float(p["ppg"] or 0) + 0.3 * float(p["apg"] or 0),
     }
@@ -301,7 +301,7 @@ async def generate_awards_race_odds(
     # Compute positional rank per award (rank among the award's candidates).
     award_sort_keys = {
         "mvp":  lambda p: float(p["ppg"] or 0) + 0.4 * float(p["rpg"] or 0) + 0.6 * float(p["apg"] or 0),
-        "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.3 * float(p["rpg"] or 0),
+        "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.1 * float(p["rpg"] or 0),
         "roy":  lambda p: float(p["ppg"] or 0) + 0.3 * float(p["rpg"] or 0) + 0.3 * float(p["apg"] or 0),
         "6moy": lambda p: float(p["ppg"] or 0) + 0.3 * float(p["apg"] or 0),
     }

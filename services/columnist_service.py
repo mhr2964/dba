@@ -70,13 +70,19 @@ async def generate(
     # and narrative_hooks; the persona should use whatever is most compelling.
     if category == "game_recap":
         task_line = (
-            "Write one article for the DBA NBA simulation league. "
+            "Write one article for the DBA (Discord Basketball Association) simulation league. "
+            "IMPORTANT: This league is the DBA — always say DBA, DBA Finals, DBA Champions, DBA season. "
+            "Never write NBA, NBA Finals, or NBA Champions. "
             "Choose the most interesting angle from the context below — it can be a game recap, "
             "trade analysis, standings narrative, award race drama, or a personality-driven take. "
             "Pick whatever best fits your voice and the most compelling story in the data."
         )
     else:
-        task_line = f"Write one {category} article for the DBA NBA simulation league."
+        task_line = (
+            f"Write one {category} article for the DBA (Discord Basketball Association) simulation league. "
+            "IMPORTANT: This league is the DBA — always say DBA, DBA Finals, DBA Champions, DBA season. "
+            "Never write NBA, NBA Finals, or NBA Champions."
+        )
 
     user_content_parts = [
         task_line,
