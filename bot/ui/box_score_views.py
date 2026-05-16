@@ -25,8 +25,9 @@ def _build_playoff_box_embed(
 class PlayoffBoxScoreView(discord.ui.View):
     """Select menu attached to playoff game recap embeds.
 
-    Each option reveals one team's full per-player box score as an
-    ephemeral response (only the selecting user sees it).
+    Selecting a team edits the message in place to show that team's box score.
+    Selecting 'Game Recap' restores the original recap embed.
+    All three embeds are pre-built at construction time.
     """
 
     def __init__(
@@ -38,8 +39,10 @@ class PlayoffBoxScoreView(discord.ui.View):
         home_box: list[dict],
         away_box: list[dict],
         game_number: int | str,
+        recap_embed: discord.Embed,
     ) -> None:
         super().__init__(timeout=300)
+        self._recap_embed = recap_embed
         self._home_embed = _build_playoff_box_embed(
             home_team_name, home_team_code, home_box, game_number
         )
@@ -48,6 +51,7 @@ class PlayoffBoxScoreView(discord.ui.View):
         )
 
         options = [
+            discord.SelectOption(label="Game Recap", value="recap", default=True),
             discord.SelectOption(label=f"{away_team_name} Box Score", value="away"),
             discord.SelectOption(label=f"{home_team_name} Box Score", value="home"),
         ]
@@ -56,6 +60,7 @@ class PlayoffBoxScoreView(discord.ui.View):
     @discord.ui.select(
         placeholder="View player stats...",
         options=[
+            discord.SelectOption(label="Game Recap", value="recap"),
             discord.SelectOption(label="Away Box Score", value="away"),
             discord.SelectOption(label="Home Box Score", value="home"),
         ],
@@ -64,8 +69,15 @@ class PlayoffBoxScoreView(discord.ui.View):
         self, interaction: discord.Interaction, select: discord.ui.Select
     ) -> None:
         chosen = select.values[0]
-        embed = self._home_embed if chosen == "home" else self._away_embed
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        if chosen == "recap":
+            embed = self._recap_embed
+        elif chosen == "home":
+            embed = self._home_embed
+        else:
+            embed = self._away_embed
+        for opt in self.select_menu.options:
+            opt.default = opt.value == chosen
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 class BoxScoreView(discord.ui.View):

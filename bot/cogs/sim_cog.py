@@ -517,20 +517,37 @@ async def schedule_command(
 
 
 @app_commands.command(name="box-score", description="Show full box score for a simmed game")
-@app_commands.describe(game="Game number from /schedule or recap footers")
+@app_commands.describe(
+    game="Game number from /schedule or recap footers (regular season)",
+    game_id="Game ID from playoff recap footer (use this for playoff games)",
+)
 async def box_score_command(
     interaction: discord.Interaction,
-    game: int,
+    game: Optional[int] = None,
+    game_id: Optional[int] = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if game is None and game_id is None:
+        await interaction.followup.send(
+            "Provide either `game` (game number) or `game_id` (for playoff games).",
+            ephemeral=True,
+        )
+        return
 
     pool = await get_pool()
     league = await get_league_or_error(interaction.guild_id)
 
-    game_row = await game_repo.get_game_by_index(pool, league.id, league.current_season, game)
+    if game_id is not None:
+        game_row = await game_repo.get_game_by_id(pool, league.id, game_id)
+        lookup_label = f"ID #{game_id}"
+    else:
+        game_row = await game_repo.get_game_by_index(pool, league.id, league.current_season, game)
+        lookup_label = f"#{game}"
+
     if not game_row or game_row.get("status") != "simmed":
         await interaction.followup.send(
-            f"Game #{game} hasn't been simmed yet.", ephemeral=True
+            f"Game {lookup_label} hasn't been simmed yet (or doesn't exist).", ephemeral=True
         )
         return
 

@@ -179,6 +179,30 @@ def _team_to_sim_dict(team: team_repo.Team) -> dict:
     }
 
 
+async def _get_playoff_sim_date(pool, league_id: int, season: int) -> datetime.date:
+    """
+    Derive a sim-calendar date for the next playoff game.
+
+    Takes the latest scheduled_date already recorded for this league/season
+    (regular or playoff) and adds 2 days.  This keeps playoff game dates
+    consistent with the simulated calendar rather than real-world wall-clock dates,
+    so player game logs remain readable.
+    """
+    latest = await pool.fetchval(
+        "SELECT MAX(scheduled_date) FROM games WHERE league_id = $1 AND season = $2",
+        league_id,
+        season,
+    )
+    if latest is not None:
+        base: datetime.date = (
+            latest if isinstance(latest, datetime.date)
+            else datetime.date.fromisoformat(str(latest))
+        )
+        return base + datetime.timedelta(days=2)
+    # No games exist yet — should not happen in normal playoff flow.
+    return datetime.date.today()
+
+
 async def _run_one_game(
     pool,
     league_id: int,
@@ -197,6 +221,9 @@ async def _run_one_game(
 
     rng_seed = random.getrandbits(63)
 
+    # Use a sim-calendar date so player game logs stay coherent with regular-season dates.
+    sim_date = await _get_playoff_sim_date(pool, league_id, season)
+
     game_id = await game_repo.insert_game(pool, {
         "league_id": league_id,
         "season": season,
@@ -205,7 +232,7 @@ async def _run_one_game(
         "game_index": 0,
         "home_team_id": home_team.id,
         "away_team_id": away_team.id,
-        "scheduled_date": datetime.date.today(),
+        "scheduled_date": sim_date,
         "status": "scheduled",
         "is_user_matchup": False,
         "rng_seed": rng_seed,
@@ -321,6 +348,7 @@ async def sim_series_game(
                 home_box=result.get("home_box", []),
                 away_box=result.get("away_box", []),
                 game_number=game_number,
+                recap_embed=embed,
             )
             await channel.send(embed=embed, view=view)
 
@@ -343,13 +371,26 @@ async def sim_series_game(
 
             top_performer_dict = _extract_top_performer(result, home_team_code, away_team_code)
 
+            home_score = result.get("home_score", 0)
+            away_score = result.get("away_score", 0)
             playoff_context = {
                 "round": updated_series.round,
                 "series_record": f"{updated_series.wins_high}-{updated_series.wins_low}",
                 "is_series_over": is_clincher,
                 "high_seed_team": high_team_code,
                 "low_seed_team": low_team_code,
+                "home_team": home_team_code,
+                "away_team": away_team_code,
+                "home_score": home_score,
+                "away_score": away_score,
+                "actual_score": f"{away_team_code} {away_score} - {home_team_code} {home_score}",
                 "winner": winner_code,
+                "result_instruction": (
+                    f"IMPORTANT: The actual game result was {away_team_code} {away_score} - "
+                    f"{home_team_code} {home_score}. "
+                    f"Winner: {winner_code or 'see scores'}. "
+                    "Do NOT invent scores or results different from these."
+                ),
                 "top_performer": top_performer_dict,
                 "game_index_range": {"season_pct": 100},
             }

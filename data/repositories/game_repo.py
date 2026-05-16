@@ -539,6 +539,48 @@ async def get_game_by_index(
     return dict(row) if row else None
 
 
+async def get_game_by_id(
+    pool: asyncpg.Pool,
+    league_id: int,
+    game_id: int,
+) -> Optional[dict]:
+    """Return game row by primary key, enriched with home/away team codes and full names.
+
+    Used to look up playoff games that are inserted with game_index=0 and are
+    therefore not findable via get_game_by_index.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT
+            g.id,
+            g.game_index,
+            g.scheduled_date,
+            g.status,
+            g.home_score,
+            g.away_score,
+            g.home_team_id,
+            g.away_team_id,
+            g.q1_home, g.q1_away,
+            g.q2_home, g.q2_away,
+            g.q3_home, g.q3_away,
+            g.q4_home, g.q4_away,
+            g.ot_home, g.ot_away,
+            ht.nba_team_code  AS home_code,
+            ht.city || ' ' || ht.name AS home_full_name,
+            at.nba_team_code  AS away_code,
+            at.city || ' ' || at.name AS away_full_name
+        FROM games g
+        JOIN teams ht ON ht.id = g.home_team_id
+        JOIN teams at ON at.id = g.away_team_id
+        WHERE g.id = $1
+          AND g.league_id = $2
+        """,
+        game_id,
+        league_id,
+    )
+    return dict(row) if row else None
+
+
 async def get_box_scores_for_game(
     pool: asyncpg.Pool,
     game_id: int,

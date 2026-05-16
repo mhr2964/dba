@@ -754,7 +754,7 @@ async def _maybe_post_awards_races(
         if embed:
             await news_channel.send(embed=embed)
     except Exception as exc:
-        log.warning(f"_maybe_post_awards_races failed silently: {exc}")
+        log.warning(f"_maybe_post_awards_races failed: {exc}", exc_info=True)
 
 
 async def _maybe_post_potm(
@@ -778,16 +778,21 @@ async def _maybe_post_potm(
         log.info("_maybe_post_potm: no current_game_date, skipping")
         return
     try:
+        log.info(f"_maybe_post_potm: calling check_and_get_potm_awards for league={league_id}")
         awards = await potm_service.check_and_get_potm_awards(
             pool, league_id, season, current_game_date
         )
+        log.info(f"_maybe_post_potm: check_and_get_potm_awards returned {awards!r}")
         if not awards:
+            log.info("_maybe_post_potm: no awards to post (None=already awarded, []=no eligible players)")
             return
         pat = _PERSONAS.get("pat_chen")
         if not pat:
+            log.warning("_maybe_post_potm: pat_chen persona not found in _PERSONAS")
             return
         news_channel = await _get_news_channel(guild, pool, league_id)
         if not news_channel:
+            log.warning(f"_maybe_post_potm: no league-news channel configured for league {league_id}")
             return
 
         # Post month separator to #analysis before columnist articles.
@@ -834,7 +839,7 @@ async def _maybe_post_potm(
             current_game_index=current_game_index,
         )
     except Exception as exc:
-        log.warning(f"_maybe_post_potm failed: {exc}")
+        log.warning(f"_maybe_post_potm failed: {exc}", exc_info=True)
 
 
 _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
@@ -1343,7 +1348,7 @@ async def _maybe_post_playoff_columnist(
     guild: discord.Guild,
 ) -> None:
     """
-    Post a playoff recap article to #league-news, rotating through the three
+    Post a playoff recap article to #analysis, rotating through the three
     recap-capable personas (maya_chen, jordan_rivera, keisha_williams).
 
     Called from playoff_service.sim_series_game — always for clinching/elimination
@@ -1358,8 +1363,9 @@ async def _maybe_post_playoff_columnist(
     if not persona:
         return
 
-    news_channel = await _get_news_channel(guild, pool, league_id)
-    if not news_channel:
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
         return
 
     article = await columnist_service.generate(
@@ -1379,7 +1385,7 @@ async def _maybe_post_playoff_columnist(
     )
     embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
     try:
-        await news_channel.send(embed=embed)
+        await analysis_channel.send(embed=embed)
     except Exception as exc:
         log.warning(f"Playoff columnist post failed: {exc}")
 
@@ -1420,15 +1426,88 @@ async def _maybe_advance_trade_deadline(
         log.warning(f"_maybe_advance_trade_deadline failed: {exc}")
 
 
+async def _auto_run_awards(
+    pool,
+    league_id: int,
+    season: int,
+    news_channel: Optional[discord.TextChannel],
+) -> None:
+    """
+    Auto-open, CPU-vote, and close the four individual awards (MVP, DPOY, ROY, 6MOY)
+    immediately when the regular season ends.  Posts an announcement embed to
+    #league-news with all four winners.
+
+    This runs synchronously (awaited) inside _maybe_advance_season_complete so that
+    winners are recorded before the season-complete message goes out.
+    """
+    _AWARD_TYPES = ["mvp", "dpoy", "roy", "6moy"]
+    _AWARD_LABELS = {
+        "mvp":  "MVP",
+        "dpoy": "DPOY",
+        "roy":  "ROY",
+        "6moy": "6th Man",
+    }
+
+    winners: list[tuple[str, int]] = []  # (award_label, player_id)
+
+    for award_type in _AWARD_TYPES:
+        try:
+            voting_id = await awards_service.open_voting(league_id, season, award_type)
+            log.info(f"Auto-awards: opened {award_type} voting (id={voting_id}) for league {league_id}")
+
+            votes_cast = await awards_service.generate_cpu_votes(voting_id, league_id, season)
+            log.info(f"Auto-awards: {votes_cast} CPU votes cast for {award_type}")
+
+            results = await awards_service.close_voting(voting_id)
+            log.info(f"Auto-awards: closed {award_type} voting; winner player_id={results[0]['player_id'] if results else None}")
+
+            if results:
+                winners.append((_AWARD_LABELS[award_type], results[0]["player_id"]))
+        except Exception as exc:
+            log.warning(f"Auto-awards: {award_type} pipeline failed: {exc}", exc_info=True)
+
+    if not winners or not news_channel:
+        return
+
+    # Resolve player names.
+    player_ids = [pid for _, pid in winners]
+    try:
+        name_rows = await pool.fetch(
+            "SELECT id, first_name, last_name FROM players WHERE id = ANY($1)",
+            player_ids,
+        )
+        names: dict[int, str] = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in name_rows}
+    except Exception as exc:
+        log.warning(f"Auto-awards: name lookup failed: {exc}", exc_info=True)
+        names = {}
+
+    lines = [
+        f"**{label}:** {names.get(pid, f'Player #{pid}')}"
+        for label, pid in winners
+    ]
+    embed = discord.Embed(
+        title="Season Awards",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text=f"Season {season} — voted by CPU GMs")
+    try:
+        await news_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"Auto-awards: announcement post failed: {exc}", exc_info=True)
+
+
 async def _maybe_advance_season_complete(
     pool,
     league_id: int,
     season: int,
     news_channel: Optional[discord.TextChannel],
+    guild: Optional[discord.Guild] = None,
 ) -> bool:
     """
     If all regular season games are now simmed, advance the league phase to
-    REGULAR_SEASON_COMPLETE and post an announcement.
+    REGULAR_SEASON_COMPLETE, auto-run the four individual awards, and post
+    an announcement.
     Returns True when the phase was advanced.
     """
     if not await game_repo.all_regular_season_games_complete(pool, league_id, season):
@@ -1436,6 +1515,12 @@ async def _maybe_advance_season_complete(
 
     await league_service.advance_phase(league_id, Phase.REGULAR_SEASON_COMPLETE.value)
     log.info(f"League {league_id} season {season}: auto-advanced to REGULAR_SEASON_COMPLETE")
+
+    # Auto-run awards before the season-complete message so winners are ready.
+    try:
+        await _auto_run_awards(pool, league_id, season, news_channel)
+    except Exception as exc:
+        log.warning(f"_auto_run_awards failed: {exc}", exc_info=True)
 
     if news_channel:
         await news_channel.send(embed=sim_embeds.regular_season_complete_embed())
