@@ -144,6 +144,13 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             await interaction.followup.send("Count must be between 1 and 20.", ephemeral=True)
             return
 
+        # Immediately acknowledge so the user isn't staring at "DBA is thinking..."
+        # for the full duration of the sim (up to ~2 min for count=20).
+        await interaction.followup.send(
+            f"Simming up to {count} games per team — check #box-scores for live recaps.",
+            ephemeral=True,
+        )
+
         pool = await get_pool()
 
         # Guard: no schedule means no games to sim.  Without this check the runner

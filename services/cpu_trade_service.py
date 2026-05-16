@@ -85,9 +85,26 @@ async def maybe_initiate_round(
     if len(cpu_teams) < 2:
         return 0
 
+    # Exclude players already in any pending or approved trade this season so a
+    # player can't appear in multiple CPU trade proposals across batch rounds.
+    already_committed_rows = await pool.fetch(
+        """
+        SELECT DISTINCT ta.player_id
+        FROM trade_assets ta
+        JOIN trades t ON t.id = ta.trade_id
+        WHERE t.league_id = $1
+          AND t.season = $2
+          AND ta.asset_type = 'player'
+          AND t.status IN ('pending_commissioner', 'approved')
+          AND ta.player_id IS NOT NULL
+        """,
+        league_id,
+        season,
+    )
+
     proposed_count = 0
     used_pairs: set[tuple[int, int]] = set()
-    taken_player_ids: set[int] = set()
+    taken_player_ids: set[int] = {row["player_id"] for row in already_committed_rows}
 
     for _ in range(n_offers):
         try:

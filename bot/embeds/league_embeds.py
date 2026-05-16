@@ -4,6 +4,7 @@ import discord
 
 from data.repositories.league_repo import League
 from data.repositories.team_repo import Team
+from services.league_service import CHANNEL_ROLES
 
 
 def created(league: League) -> discord.Embed:
@@ -15,8 +16,8 @@ def created(league: League) -> discord.Embed:
     embed.add_field(name="Season", value=str(league.start_season_year), inline=True)
     embed.add_field(name="Teams Seeded", value="30", inline=True)
     embed.add_field(
-        name="Channels Created",
-        value="league-news, box-scores, standings, transactions, trade-block",
+        name=f"Channels Created ({len(CHANNEL_ROLES)})",
+        value=", ".join(CHANNEL_ROLES),
         inline=False,
     )
     embed.set_footer(text="Use /team assign to claim teams.")
