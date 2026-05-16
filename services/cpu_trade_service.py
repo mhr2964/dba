@@ -239,7 +239,26 @@ async def _attempt_one_offer(
     pair = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
     used_pairs.add(pair)
 
-    # Build A's return package to match target_player's value within 25%.
+    # Optionally request a second player from B alongside the primary target.
+    # Only attempted when the primary target is a star (OVR >= 75) and the 30%
+    # dice roll hits.  The secondary must be rated below the primary and not
+    # already committed elsewhere this round.  Falls back to single-player if
+    # no valid secondary exists — never errors.
+    secondary_target: Optional[player_repo.Player] = None
+    if target_player.overall >= 75 and random.random() < 0.3:
+        b_block_ids = block_by_team.get(target_team.id, [])
+        for pid in b_block_ids:
+            if pid == target_player.id:
+                continue
+            if pid in taken_player_ids:
+                continue
+            candidate = await player_repo.get_by_id(pool, pid)
+            if candidate and candidate.overall < target_player.overall:
+                secondary_target = candidate
+                break
+
+    # Build A's return package sized to match the combined value of all requested
+    # players (primary + optional secondary) within the usual 25% tolerance.
     target_contract = await player_repo.get_active_contract(pool, target_player.id)
     target_value = trade_evaluator.player_trade_value(
         {"overall": target_player.overall, "age": _player_age(target_player)},
@@ -249,6 +268,18 @@ async def _attempt_one_offer(
         },
         league.salary_cap,
     )
+
+    if secondary_target:
+        secondary_contract = await player_repo.get_active_contract(pool, secondary_target.id)
+        secondary_value = trade_evaluator.player_trade_value(
+            {"overall": secondary_target.overall, "age": _player_age(secondary_target)},
+            {
+                "salary": secondary_contract.salary if secondary_contract else 0,
+                "years_remaining": secondary_contract.years_remaining if secondary_contract else 1,
+            },
+            league.salary_cap,
+        )
+        target_value += secondary_value
 
     offer_player_ids, offer_pick_ids, package_value = await _build_return_package(
         pool,
@@ -266,11 +297,19 @@ async def _attempt_one_offer(
         )
         return 0
 
+    counterparty_player_ids = [target_player.id]
+    if secondary_target:
+        counterparty_player_ids.append(secondary_target.id)
+
     log.info(
         f"CPU trade: team {team_a.id} ({team_a.cpu_mode}) "
         f"proposes to team {target_team.id} for player {target_player.id} "
-        f"(OVR {target_player.overall}, value {target_value:.1f}, "
-        f"package value {package_value:.1f})"
+        f"(OVR {target_player.overall})"
+        + (
+            f" + player {secondary_target.id} (OVR {secondary_target.overall})"
+            if secondary_target else ""
+        )
+        + f" — combined value {target_value:.1f}, package value {package_value:.1f}"
     )
 
     trade = await trade_service.propose(
@@ -279,13 +318,15 @@ async def _attempt_one_offer(
         counterparty_team=target_team,
         proposer_player_ids=offer_player_ids,
         proposer_pick_ids=offer_pick_ids,
-        counterparty_player_ids=[target_player.id],
+        counterparty_player_ids=counterparty_player_ids,
         counterparty_pick_ids=[],
     )
 
     # Mark all players in this trade as taken so subsequent offers in this round
     # don't try to re-use them.
     taken_player_ids.add(target_player.id)
+    if secondary_target:
+        taken_player_ids.add(secondary_target.id)
     taken_player_ids.update(offer_player_ids)
 
     # trade_service.propose runs cpu_should_accept on target_team's side.
