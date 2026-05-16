@@ -25,6 +25,13 @@ def _fmt_box_row(row: dict, *, is_starter: bool) -> str:
     """Return a single monospace table row for one player."""
     first = row.get("first_name", "")
     last = row.get("last_name", "")
+    if not first and not last:
+        # Playoff box lines are enriched with player_name ("First Last") rather
+        # than separate first_name/last_name — split it so the display is correct.
+        full = row.get("player_name", "")
+        parts = full.split(" ", 1)
+        first = parts[0] if len(parts) > 1 else ""
+        last = parts[1] if len(parts) > 1 else full
     name_raw = f"{first[0]}. {last}" if first else last
     # 18 chars: position 0 is * or space, positions 1-18 are name
     prefix = "*" if is_starter else " "
@@ -104,6 +111,11 @@ def _top_performers(away_box: list[dict], home_box: list[dict]) -> list[str]:
         seen.add(pid)
         first = row.get("first_name", "")
         last = row.get("last_name", "")
+        if not first and not last:
+            full = row.get("player_name", "")
+            parts = full.split(" ", 1)
+            first = parts[0] if len(parts) > 1 else ""
+            last = parts[1] if len(parts) > 1 else full
         name = f"{first[0]}. {last}" if first else last
         team_code = row.get("team_code", "")
         pts = row.get("points", 0)

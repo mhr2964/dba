@@ -144,8 +144,8 @@ async def check_and_get_potm_awards(
             league_id, season, month_start, month_end, _MIN_GAMES,
         )
 
+        log.info(f"POTM {ym}: eligible players found: {len(rows)} for league {league_id}")
         if not rows:
-            log.info(f"POTM {ym}: no eligible players for league {league_id}")
             continue
 
         month_label = datetime.date(year_part, month_part, 1).strftime("%B %Y")
@@ -168,12 +168,20 @@ async def check_and_get_potm_awards(
                 "games_played": int(winner["games_played"]),
             })
 
-    # Advance the tracker to current_year_month.
-    await pool.execute(
-        "UPDATE leagues SET last_potm_year_month = $1 WHERE id = $2",
-        current_year_month,
-        league_id,
-    )
+    # Only advance the tracker when at least one award was actually produced.
+    # If every month in the window returned no eligible players we leave
+    # last_potm_year_month unchanged so the next sim batch can retry.
+    if awards:
+        await pool.execute(
+            "UPDATE leagues SET last_potm_year_month = $1 WHERE id = $2",
+            current_year_month,
+            league_id,
+        )
+    else:
+        log.info(
+            f"POTM check: no awards produced for league {league_id} — "
+            "leaving last_potm_year_month unchanged so retry is possible"
+        )
 
     return awards
 
