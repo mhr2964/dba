@@ -684,6 +684,9 @@ async def _maybe_post_awards_races(
     news_channel: Optional[discord.TextChannel],
     current_game_index: int = 0,
 ) -> None:
+    # Throttle: post at most once every 50 games to avoid flooding #league-news.
+    if current_game_index % 50 != 0:
+        return
     try:
         if not news_channel:
             return
@@ -1174,7 +1177,7 @@ async def _maybe_advance_trade_deadline(
                 title="🚨 Trade Deadline Is Open",
                 description=(
                     "The trade window is now open. Use `/trade propose` to negotiate deals.\n"
-                    "Run `/sim deadline` to close the deadline and resume the season."
+                    "When ready, run `/sim games count:5` (or `/sim season`) to close the window and resume."
                 ),
                 color=discord.Color.orange(),
             )
@@ -1219,6 +1222,24 @@ async def check_user_matchups_in_range(
     return [g for g in games if g.get("is_user_matchup") and g.get("status") == "scheduled"]
 
 
+async def _maybe_close_trade_window(pool, league_id: int, news_channel=None) -> None:
+    """If the league is in TRADE_DEADLINE_OPEN, advance to REGULAR_SEASON_POSTDEADLINE
+    so sim commands can run. Called at the start of any sim entry-point."""
+    row = await pool.fetchrow("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    if row and row["current_phase"] == Phase.TRADE_DEADLINE_OPEN.value:
+        await league_service.advance_phase(league_id, Phase.REGULAR_SEASON_POSTDEADLINE.value)
+        log.info(f"Trade window closed for league {league_id} — resuming regular season")
+        if news_channel:
+            try:
+                await news_channel.send(embed=discord.Embed(
+                    title="⏰ Trade Deadline Closed",
+                    description="The trade window has closed. The regular season resumes.",
+                    color=discord.Color.blurple(),
+                ))
+            except Exception:
+                pass
+
+
 async def sim_until_rival(
     league_id: int,
     guild: discord.Guild,
@@ -1234,6 +1255,7 @@ async def sim_until_rival(
         "SELECT current_phase FROM leagues WHERE id = $1", league_id
     )
     _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
+    await _maybe_close_trade_window(pool, league_id)
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
     next_user_game = await game_repo.get_user_matchup_ahead(pool, league_id, season, current_index)
@@ -1366,6 +1388,8 @@ async def sim_range(
         "SELECT current_phase FROM leagues WHERE id = $1", league_id
     )
     _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
+    news_channel = await _get_news_channel(guild, pool, league_id)
+    await _maybe_close_trade_window(pool, league_id, news_channel)
 
     current_index = await game_repo.get_current_index(pool, league_id, season)
 

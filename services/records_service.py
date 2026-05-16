@@ -290,7 +290,7 @@ async def _check_all_time_records(
             league_id, winner_team_id,
         )
         current_streak = streak_row["win_streak"] if streak_row else 0
-        if current_streak > 0:
+        if current_streak >= 5:  # suppress trivial 1-game "streaks" at season start
             current_at_streak = await all_time_records_repo.get_record(pool, league_id, "longest_active_win_streak")
             current_at_streak_val: float = current_at_streak["value"] if current_at_streak else 0.0
             if float(current_streak) > current_at_streak_val:

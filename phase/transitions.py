@@ -1,9 +1,12 @@
 from phase.states import Phase
 
 ALLOWED: dict[str, set[Phase]] = {
-    "sim_rivalry":         {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE},
-    "sim_games":           {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE},
-    "sim_season":          {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE},
+    "sim_rivalry":         {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE,
+                            Phase.TRADE_DEADLINE_OPEN},
+    "sim_games":           {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE,
+                            Phase.TRADE_DEADLINE_OPEN},
+    "sim_season":          {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE,
+                            Phase.TRADE_DEADLINE_OPEN},
     "sim_deadline":        {Phase.REGULAR_SEASON_ACTIVE},
     "playoffs_seed":       {Phase.REGULAR_SEASON_COMPLETE},
     "playoffs_bracket":    {Phase.PLAYIN_ACTIVE, Phase.PLAYOFFS_R1, Phase.PLAYOFFS_R2,
