@@ -307,12 +307,22 @@ async def sim_series_game(
     if box_channel_id:
         channel = guild.get_channel(box_channel_id)
         if channel:
+            from bot.ui.box_score_views import PlayoffBoxScoreView
             embed = sim_embeds.game_recap(
                 {"game_index": game_number, "scheduled_date": datetime.date.today(), "id": game_id},
                 home_team, away_team,
                 result["home_score"], result["away_score"],
             )
-            await channel.send(embed=embed)
+            view = PlayoffBoxScoreView(
+                home_team_name=home_team.full_name,
+                home_team_code=home_team.nba_team_code,
+                away_team_name=away_team.full_name,
+                away_team_code=away_team.nba_team_code,
+                home_box=result.get("home_box", []),
+                away_box=result.get("away_box", []),
+                game_number=game_number,
+            )
+            await channel.send(embed=embed, view=view)
 
     # Post a playoff recap article — always for clinchers, ~30% for regular games.
     is_clincher = updated_series.status == "complete"
