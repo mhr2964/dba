@@ -30,7 +30,6 @@ async def create(
     name: str,
     season_year: int,
 ) -> league_repo.League:
-    import asyncio
     pool = await get_pool()
 
     existing = await league_repo.get_by_guild(pool, guild.id)
@@ -64,27 +63,14 @@ async def create(
         await league_repo.add_channel(pool, league.id, role_name, channel_id)
     await league_repo.add_role(pool, league.id, "commissioner", None, commissioner_role.id)
 
-    # Create teams: interleaved Discord role + DB insert so Discord's per-guild
-    # rate limit bucket has natural breathing room between calls.
-    # On any failure, clean up everything created so far.
+    # Create all 30 teams in DB only — no Discord roles at create time.
+    # Team roles are created lazily when a manager is assigned via /team assign,
+    # avoiding the Discord per-guild rate limit that fires when creating 30 roles at once.
     nba_teams = _load_nba_teams()
-    team_roles: list[discord.Role] = []
     try:
         for i, team_data in enumerate(nba_teams):
-            team = await team_repo.create(pool, league.id, team_data)
-            # Timeout each role creation — discord.py can hang indefinitely on
-            # rate-limit backoff if the server's role bucket is exhausted.
-            discord_role = await asyncio.wait_for(
-                guild.create_role(
-                    name=f"{team_data['city']} {team_data['name']}",
-                    reason=f"DBA team role for {team.full_name}",
-                ),
-                timeout=20,
-            )
-            await league_repo.add_role(pool, league.id, "team", team.id, discord_role.id)
-            team_roles.append(discord_role)
-            log.info(f"League {league.id}: created team {i+1}/30 ({team_data['code']})")
-            await asyncio.sleep(0.5)  # 0.5s between roles — safer rate-limit margin
+            await team_repo.create(pool, league.id, team_data)
+            log.info(f"League {league.id}: seeded team {i+1}/30 ({team_data['code']})")
 
         team_count = await pool.fetchval(
             "SELECT COUNT(*) FROM teams WHERE league_id = $1", league.id
@@ -102,12 +88,7 @@ async def create(
             await pool.execute("DELETE FROM leagues WHERE id = $1", league.id)
         except Exception:
             pass
-        # Clean up Discord objects.
-        for role in team_roles:
-            try:
-                await role.delete()
-            except Exception:
-                pass
+        # Clean up Discord channels and roles created before the failure.
         for role_name, channel_id in channel_ids.items():
             ch = guild.get_channel(channel_id)
             if ch:
@@ -127,7 +108,7 @@ async def create(
             raise
         raise DBAError(
             f"League setup failed — server has been cleaned up. Please try `/league create` again. "
-            f"Error: {exc}"
+            f"Error: {type(exc).__name__}: {exc}"
         ) from exc
 
     # Place all DBA roles just below the bot's managed role so the bot can
@@ -227,11 +208,22 @@ async def assign_manager(
     await team_repo.set_manager(pool, team.id, user.id)
     await team_repo.log_manager_change(pool, team.id, user.id, assigned_by=user.id)
 
+    # Get or lazily create the team's Discord role (roles are deferred from /league create
+    # to avoid hitting Discord's per-guild rate limit during bulk creation).
     role_id = await league_repo.get_team_role(pool, league.id, team.id)
-    if role_id:
-        role = guild.get_role(role_id)
-        if role:
-            await user.add_roles(role, reason=f"DBA: assigned manager of {team.full_name}")
+    role = guild.get_role(role_id) if role_id else None
+    if not role:
+        try:
+            role = await guild.create_role(
+                name=team.full_name,
+                reason=f"DBA team role for {team.full_name} (lazy create on first assign)",
+            )
+            await league_repo.add_role(pool, league.id, "team", team.id, role.id)
+        except Exception as exc:
+            log.warning(f"Could not create team role for {team.full_name}: {exc}")
+            role = None
+    if role:
+        await user.add_roles(role, reason=f"DBA: assigned manager of {team.full_name}")
 
     team.manager_user_id = user.id
     return team
