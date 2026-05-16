@@ -517,6 +517,7 @@ async def _run_cpu_trades_inner(
     trades_proposed = await cpu_trade_service.maybe_initiate_round(
         pool, league_id, season,
         current_game_index, total_regular_games, deadline_game_index,
+        guild,
     )
     if not trades_proposed:
         return

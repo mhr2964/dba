@@ -3,6 +3,8 @@ from __future__ import annotations
 import random
 from typing import Optional
 
+import discord
+
 from core.logging import get_logger
 from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
 from services import trade_evaluator, trade_service
@@ -39,6 +41,7 @@ async def maybe_initiate_round(
     current_game_index: int,
     total_regular_games: int,
     deadline_game_index: int,
+    guild: Optional[discord.Guild] = None,
 ) -> int:
     """
     Possibly initiate 0-N CPU-to-CPU trades based on deadline pressure.
@@ -109,7 +112,7 @@ async def maybe_initiate_round(
     for _ in range(n_offers):
         try:
             count = await _attempt_one_offer(
-                pool, league, cpu_teams, block_by_team, used_pairs, taken_player_ids
+                pool, league, cpu_teams, block_by_team, used_pairs, taken_player_ids, guild
             )
             proposed_count += count
         except Exception as exc:
@@ -175,6 +178,7 @@ async def _attempt_one_offer(
     block_by_team: dict[int, list[int]],
     used_pairs: set[tuple[int, int]],
     taken_player_ids: set[int],
+    guild: Optional[discord.Guild] = None,
 ) -> int:
     """
     Pick a team A, find the best target from team B, build a return package,
@@ -287,15 +291,21 @@ async def _attempt_one_offer(
     # trade_service.propose runs cpu_should_accept on target_team's side.
     # If accepted it lands as 'pending_commissioner'.
     if trade.status == "pending_commissioner":
-        await _maybe_auto_approve(pool, league, trade)
+        await _maybe_auto_approve(pool, league, trade, guild)
 
     return 1
 
 
-async def _maybe_auto_approve(pool, league: league_repo.League, trade) -> None:
+async def _maybe_auto_approve(
+    pool,
+    league: league_repo.League,
+    trade,
+    guild: Optional[discord.Guild] = None,
+) -> None:
     """
     CPU-to-CPU trades: always auto-approve (no human is involved, no review needed).
     If either team has a human manager the trade stays pending_commissioner for human review.
+    After approval, each involved team posts a "looking to deal" embed to #trade-block.
     """
     # Confirm both sides are CPU teams.
     teams = await pool.fetch(
@@ -393,6 +403,57 @@ async def _maybe_auto_approve(pool, league: league_repo.League, trade) -> None:
         )
 
     log.info(f"CPU-to-CPU trade {trade.id} auto-approved")
+
+    # Post "looking to deal" embeds to #trade-block for each team involved.
+    if guild:
+        await _post_trade_block_ads(pool, league, trade, guild)
+
+
+async def _post_trade_block_ads(
+    pool,
+    league: league_repo.League,
+    trade,
+    guild: discord.Guild,
+) -> None:
+    """
+    After a CPU-to-CPU trade is approved, post one embed per involved team to
+    #trade-block advertising what they're looking to acquire next.
+    """
+    news_ch_id = await league_repo.get_channel(pool, league.id, "trade-block")
+    if not news_ch_id:
+        return
+    ch = guild.get_channel(news_ch_id)
+    if not ch:
+        return
+
+    team_rows = await pool.fetch(
+        "SELECT nba_team_code, cpu_mode FROM teams WHERE id = ANY($1)",
+        [trade.proposer_team_id, trade.counterparty_team_id],
+    )
+
+    _mode_descriptions = {
+        "rebuilding": "Rebuilding mode — looking for young assets (age ≤ 25) and future picks",
+        "contending": "Contending mode — looking for immediate impact role players (OVR 75+)",
+        "developing": "Developing mode — looking for veteran depth and expiring contracts",
+    }
+
+    for row in team_rows:
+        team_code = row["nba_team_code"]
+        cpu_mode = row["cpu_mode"] or "default"
+        description = _mode_descriptions.get(
+            cpu_mode,
+            "Open for business — looking to improve at the margins",
+        )
+        embed = discord.Embed(
+            title=f"📋 {team_code} — Looking to Deal",
+            description=description,
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="CPU-managed team")
+        try:
+            await ch.send(embed=embed)
+        except Exception as exc:
+            log.warning(f"Failed to post trade-block ad for {team_code}: {exc}")
 
 
 async def _build_return_package(
