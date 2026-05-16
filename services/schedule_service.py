@@ -93,16 +93,31 @@ def _assign_dates(
     """
     Assign scheduled dates. Starts {season}-10-01, spreads all games across a
     195-day regular-season window (Oct 1 → ~Apr 14) regardless of league size.
-    ±1 day jitter is applied per game.
+    ±1 day jitter is applied per game. After initial assignment, any team that
+    has two games on the same day gets its second game pushed to the next day.
     """
     base_date = datetime.date(season, _SEASON_START_MONTH, _SEASON_START_DAY)
-    # Compute divisor dynamically so all games fit within the regular-season window
     games_per_day = max(1.0, len(games) / 195.0)
     result = []
     for i, (home_id, away_id) in enumerate(games):
         offset_days = int(i / games_per_day) + rng.randint(-1, 1)
         game_date = base_date + datetime.timedelta(days=max(0, offset_days))
         result.append((home_id, away_id, game_date))
+
+    # Resolve same-team same-day conflicts by pushing the later game forward one day.
+    team_last_date: Dict[int, datetime.date] = {}
+    for i, (home_id, away_id, game_date) in enumerate(result):
+        bumped = game_date
+        while (
+            team_last_date.get(home_id) == bumped
+            or team_last_date.get(away_id) == bumped
+        ):
+            bumped = bumped + datetime.timedelta(days=1)
+        if bumped != game_date:
+            result[i] = (home_id, away_id, bumped)
+        team_last_date[home_id] = bumped
+        team_last_date[away_id] = bumped
+
     return result
 
 

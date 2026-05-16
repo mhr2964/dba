@@ -226,25 +226,41 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-        summary = await batch_sim_runner.sim_range(
-            league.id,
-            interaction.guild,
-            league.current_season,
-            10000,
-            force=force,
+        # Immediately acknowledge — sim takes 15-20+ min and the Discord webhook expires at 15min.
+        # Results post to #league-news when done rather than via followup.
+        pool = await get_pool()
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+        await interaction.followup.send(
+            "Season sim started — updates will appear in #box-scores as games complete, "
+            "and the final summary will post to #league-news when done. "
+            "This may take 15-20 minutes.",
+            ephemeral=True,
         )
 
-        if summary.get("warning"):
-            embed = sim_embeds.user_matchup_warning(summary["user_matchups"])
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
+        async def _run_sim_and_post() -> None:
+            summary = await batch_sim_runner.sim_range(
+                league.id,
+                interaction.guild,
+                league.current_season,
+                10000,
+                force=force,
+            )
+            if news_channel_id:
+                ch = interaction.guild.get_channel(news_channel_id)
+                if ch:
+                    if summary.get("warning"):
+                        em = sim_embeds.user_matchup_warning(summary["user_matchups"])
+                        await ch.send(embed=em)
+                    else:
+                        em = discord.Embed(
+                            title="✅ Regular Season Complete",
+                            description=f"Simmed {summary['games_simmed']} games. Use `/standings` to see the final standings, then `/playoffs seed` to start the playoffs.",
+                            color=discord.Color.green(),
+                        )
+                        await ch.send(embed=em)
 
-        embed = discord.Embed(
-            title="Regular Season Complete",
-            description=f"Simmed {summary['games_simmed']} games.",
-            color=discord.Color.green(),
-        )
-        await interaction.followup.send(embed=embed)
+        import asyncio as _asyncio
+        _asyncio.create_task(_run_sim_and_post())
 
     @app_commands.command(name="deadline", description="Sim to the trade deadline and open the trade window")
     @app_commands.describe(force="Skip past user matchups before the deadline without stopping")

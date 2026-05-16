@@ -174,22 +174,17 @@ async def _post_onboarding_guide(guild: discord.Guild, pool, league_id: int, nam
         color=discord.Color.orange(),
     )
     embed.add_field(
-        name="Step 1 — Import Players",
-        value="`/season import-players` — loads real NBA rosters (~2 min). Do this first.",
-        inline=False,
-    )
-    embed.add_field(
-        name="Step 2 — Claim Teams",
+        name="Step 1 — Claim Teams",
         value="`/team assign @user TEAMCODE` — assign managers (e.g., `/team assign @koby LAL`)\n`/team list` — see all 30 teams",
         inline=False,
     )
     embed.add_field(
-        name="Step 3 — Start the Season",
+        name="Step 2 — Start the Season",
         value="`/season start` — generates the 82-game schedule and begins play",
         inline=False,
     )
     embed.add_field(
-        name="Step 4 — Sim Games",
+        name="Step 3 — Sim Games",
         value="All managers `/ready` up, then commissioner runs `/sim rivalry` to advance to the first human matchup",
         inline=False,
     )

@@ -277,9 +277,21 @@ async def _attempt_one_offer(
 
 async def _maybe_auto_approve(pool, league: league_repo.League, trade) -> None:
     """
-    For balanced CPU-to-CPU trades: auto-approve.
-    For lopsided trades: leave as pending_commissioner for human review.
+    CPU-to-CPU trades: always auto-approve (no human is involved, no review needed).
+    If either team has a human manager the trade stays pending_commissioner for human review.
     """
+    # Confirm both sides are CPU teams.
+    teams = await pool.fetch(
+        "SELECT id, manager_user_id FROM teams WHERE id = ANY($1)",
+        [trade.proposer_team_id, trade.counterparty_team_id],
+    )
+    has_human = any(r["manager_user_id"] is not None for r in teams)
+    if has_human:
+        log.info(
+            f"Trade {trade.id} involves a human-managed team — leaving as pending_commissioner"
+        )
+        return
+
     assets = await trade_repo.get_assets(pool, trade.id)
 
     # Rebuild value scores for both sides.
@@ -321,12 +333,8 @@ async def _maybe_auto_approve(pool, league: league_repo.League, trade) -> None:
                 else:
                     counterparty_value += v
 
-    max_side = max(proposer_value, counterparty_value, 1.0)
-    differential_pct = abs(proposer_value - counterparty_value) / max_side
-
-    if differential_pct <= _LOPSIDED_THRESHOLD:
-        # Balanced — auto-approve by executing the asset transfers directly.
-        async with pool.acquire() as conn:
+    # Always auto-approve CPU-to-CPU (human guard above ensures no human is involved).
+    async with pool.acquire() as conn:
             async with conn.transaction():
                 for asset in assets:
                     if asset.asset_type == "player" and asset.player_id:
@@ -367,16 +375,7 @@ async def _maybe_auto_approve(pool, league: league_repo.League, trade) -> None:
                 pool, trade.league_id, traded_player_ids
             )
 
-        log.info(
-            f"CPU-to-CPU trade {trade.id} auto-approved "
-            f"(differential {differential_pct:.1%} <= {_LOPSIDED_THRESHOLD:.0%})"
-        )
-    else:
-        # Lopsided — leave as pending_commissioner for human review.
-        log.info(
-            f"CPU-to-CPU trade {trade.id} flagged for commissioner review "
-            f"(differential {differential_pct:.1%} > {_LOPSIDED_THRESHOLD:.0%})"
-        )
+        log.info(f"CPU-to-CPU trade {trade.id} auto-approved")
 
 
 async def _build_return_package(

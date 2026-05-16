@@ -154,6 +154,12 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             await interaction.followup.send("No active series to sim.", ephemeral=True)
             return
 
+        await interaction.followup.send(
+            f"Simming {len(pending)} series — game recaps will appear in #box-scores. "
+            "Full bracket posts when the round is complete.",
+            ephemeral=True,
+        )
+
         games_simmed = 0
         for series in pending:
             while True:
