@@ -1,6 +1,6 @@
-"""One-shot calibration fix for league 30 (and any league ID you specify).
+"""One-shot calibration fix for any league.
 
-Applies three stat calibration corrections to existing player rows:
+Applies four stat calibration corrections to existing player rows:
 
 1. Rebounding cap by position — guards were showing 7 RPG (Curry IRL = 4.5).
    Caps reb_tendency to position max: PG=45, SG=50, SF=65, PF=80, C=90.
@@ -12,6 +12,9 @@ Applies three stat calibration corrections to existing player rows:
 
 3. Updates stl_tendency and blk_tendency position caps so guards can't block at
    center rates: PG blk_tendency max=40, SG=45, SF=60, PF=80, C=90.
+
+4. usage_weight from BDL pts per game — stars get 80-95, role players 25-50,
+   bench 10-25. Without this fix all players default to 50 and scoring is flat.
 
 NOTE: DB external_ids use nba_api IDs (different space from BDL), so lookups
 are done by normalized player name — the same approach used by fix_salaries_and_usage.py.
@@ -140,7 +143,8 @@ async def main() -> None:
             """
             SELECT id, first_name, last_name, position,
                    reb_tendency, stl_tendency, blk_tendency,
-                   COALESCE(defense_tendency, 50) AS defense_tendency
+                   COALESCE(defense_tendency, 50) AS defense_tendency,
+                   usage_weight
             FROM players
             WHERE league_id = $1
             ORDER BY id
@@ -149,12 +153,18 @@ async def main() -> None:
         )
         print(f"Players fetched: {len(rows)}")
 
+        # Also load pts for usage_weight computation.
+        bdl_pts: dict[str, float] = {
+            k: float(v.get("pts") or 0.0) for k, v in bdl.items()
+        }
+
         updated = 0
         skipped_no_bdl = 0
         capped_reb = 0
         capped_stl = 0
         capped_blk = 0
         def_computed = 0
+        usage_updated = 0
 
         for row in rows:
             pid = row["id"]
@@ -170,6 +180,7 @@ async def main() -> None:
             old_stl = row["stl_tendency"]
             old_blk = row["blk_tendency"]
             old_def = row["defense_tendency"]
+            old_usage = row["usage_weight"]
 
             if stats is None:
                 # No BDL data — apply position hard-caps to current values only.
@@ -178,11 +189,13 @@ async def main() -> None:
                 new_stl = min(old_stl, _STL_CAP.get(full_pos, 65))
                 new_blk = min(old_blk, _BLK_CAP.get(full_pos, 60))
                 new_def = old_def  # can't improve without data
+                new_usage = old_usage
                 cap_only = True
             else:
                 reb_val = float(stats.get("reb") or 0.0)
                 stl_val = float(stats.get("stl") or 0.0)
                 blk_val = float(stats.get("blk") or 0.0)
+                pts_val = float(stats.get("pts") or 0.0)
 
                 raw_reb = _tend(reb_val, avgs["reb"])
                 raw_stl = _tend(stl_val, avgs["stl"])
@@ -198,12 +211,19 @@ async def main() -> None:
                     + (blk_val / max(avgs["blk"], 0.01)) * 0.40 * 50
                 )
                 new_def = max(5, min(85, defense_raw))
+
+                # usage_weight: pts/25 * 100, clamped 10–95.
+                new_usage = max(10, min(95, round(pts_val / 25.0 * 100)))
+
                 cap_only = False
                 def_computed += 1
+                if new_usage != old_usage:
+                    usage_updated += 1
 
             changed = (
                 new_reb != old_reb or new_stl != old_stl
                 or new_blk != old_blk or new_def != old_def
+                or new_usage != old_usage
             )
 
             if not changed:
@@ -226,6 +246,7 @@ async def main() -> None:
                     f"  stl {old_stl}->{new_stl}"
                     f"  blk {old_blk}->{new_blk}"
                     f"  def {old_def}->{new_def}"
+                    f"  usage {old_usage}->{new_usage}"
                 )
             else:
                 await conn.execute(
@@ -233,19 +254,21 @@ async def main() -> None:
                        SET reb_tendency     = $1,
                            stl_tendency     = $2,
                            blk_tendency     = $3,
-                           defense_tendency = $4
-                       WHERE id = $5""",
-                    new_reb, new_stl, new_blk, new_def, pid,
+                           defense_tendency = $4,
+                           usage_weight     = $5
+                       WHERE id = $6""",
+                    new_reb, new_stl, new_blk, new_def, new_usage, pid,
                 )
                 updated += 1
 
         print()
-        print(f"Players updated:           {updated}")
+        print(f"Players updated:             {updated}")
         print(f"Skipped (no BDL name match): {skipped_no_bdl}")
-        print(f"defense_tendency computed:  {def_computed}")
-        print(f"reb_tendency changed:       {capped_reb}")
-        print(f"stl_tendency changed:       {capped_stl}")
-        print(f"blk_tendency changed:       {capped_blk}")
+        print(f"defense_tendency computed:   {def_computed}")
+        print(f"usage_weight updated:        {usage_updated}")
+        print(f"reb_tendency changed:        {capped_reb}")
+        print(f"stl_tendency changed:        {capped_stl}")
+        print(f"blk_tendency changed:        {capped_blk}")
 
         if args.dry_run:
             print()
