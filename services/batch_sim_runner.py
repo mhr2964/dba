@@ -652,12 +652,45 @@ async def _run_cpu_trades_inner(
         # Only fire for blockbuster trades that actually executed (not pending review).
         mc_article = None
         if status == "approved" and _is_blockbuster_trade(assets, _player_ovrs):
+            # Build roster-fit context: for each traded player, look up who they'll
+            # play alongside on their new team and what that team's build mode is.
+            roster_fits: list[str] = []
+            try:
+                all_teams = await team_repo.get_all(pool, league_id)
+                _team_by_id = {t.id: t for t in all_teams}
+                for _asset in assets:
+                    if _asset.asset_type != "player" or not _asset.player_id:
+                        continue
+                    p_name = _player_names.get(_asset.player_id, f"Player #{_asset.player_id}")
+                    new_team_code = team_codes.get(_asset.to_team_id) or (
+                        _team_by_id[_asset.to_team_id].nba_team_code
+                        if _asset.to_team_id in _team_by_id else "???"
+                    )
+                    teammates = await pool.fetch(
+                        """SELECT first_name || ' ' || last_name AS name, overall, position
+                           FROM players
+                           WHERE league_id = $1 AND team_id = $2 AND id != $3
+                           ORDER BY overall DESC LIMIT 3""",
+                        league_id, _asset.to_team_id, _asset.player_id,
+                    )
+                    teammate_str = ", ".join(
+                        f"{r['name']} ({r['position']}, {r['overall']} OVR)" for r in teammates
+                    ) or "no teammates found"
+                    new_team_obj = _team_by_id.get(_asset.to_team_id)
+                    team_mode = (getattr(new_team_obj, "cpu_mode", None) or "default") if new_team_obj else "default"
+                    roster_fits.append(
+                        f"{p_name} → {new_team_code} (top teammates: {teammate_str}; team mode: {team_mode})"
+                    )
+            except Exception as _rf_exc:
+                log.warning(f"Marcus Cole roster-fit enrichment failed: {_rf_exc}")
+
             trade_context = {
                 "proposer_team": proposer_code,
                 "counterparty_team": counterparty_code,
                 "proposer_sends": _asset_lines(proposer_id),
                 "counterparty_sends": _asset_lines(counterparty_id),
                 "trade_status": status,
+                "roster_fits": roster_fits,
             }
             mc_article = await columnist_service.generate(
                 pool, league_id, season,
