@@ -10,6 +10,8 @@ ALLOWED: dict[str, set[Phase]] = {
                             Phase.CONFERENCE_FINALS, Phase.NBA_FINALS},
     "playoffs_sim_game":   {Phase.PLAYOFFS_R1, Phase.PLAYOFFS_R2,
                             Phase.CONFERENCE_FINALS, Phase.NBA_FINALS},
+    "playoffs_sim_round":  {Phase.PLAYOFFS_R1, Phase.PLAYOFFS_R2,
+                            Phase.CONFERENCE_FINALS, Phase.NBA_FINALS},
     "playoffs_sim_playin": {Phase.PLAYIN_ACTIVE},
     "sim_playin":          {Phase.PLAYIN_ACTIVE},
     "ready":               {Phase.REGULAR_SEASON_ACTIVE, Phase.REGULAR_SEASON_POSTDEADLINE,

@@ -136,6 +136,48 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
                         await channel.send(embed=bracket_em)
                 await interaction.followup.send(embed=bracket_em)
 
+    @app_commands.command(name="sim-round", description="Sim all remaining games in the current playoff round")
+    async def sim_round(self, interaction: discord.Interaction) -> None:
+        league = await _require_commissioner(interaction)
+        await interaction.response.defer()
+
+        pool = await get_pool()
+        teams = await team_repo.get_all(pool, league.id)
+        teams_by_id = {t.id: t for t in teams}
+
+        all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
+        pending = [s for s in all_series if s.status == "active"]
+        if not pending:
+            await interaction.followup.send("No active series to sim.", ephemeral=True)
+            return
+
+        games_simmed = 0
+        for series in pending:
+            while True:
+                try:
+                    outcome = await playoff_service.sim_series_game(
+                        league.id, series.id, interaction.guild, league.current_season
+                    )
+                except ValueError:
+                    break
+                games_simmed += 1
+                if outcome["series_over"]:
+                    break
+
+        all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
+        bracket_em = playoff_embeds.bracket_embed(all_series, teams_by_id)
+        bracket_em.title = f"Round Complete — {games_simmed} games simmed"
+
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+        if news_channel_id:
+            channel = interaction.guild.get_channel(news_channel_id)
+            if channel:
+                try:
+                    await channel.send(embed=bracket_em)
+                except Exception:
+                    pass
+        await interaction.followup.send(embed=bracket_em)
+
     @app_commands.command(name="sim-playin", description="Sim the entire play-in tournament")
     async def sim_playin(self, interaction: discord.Interaction) -> None:
         league = await _require_commissioner(interaction)

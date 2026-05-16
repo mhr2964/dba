@@ -119,7 +119,9 @@ def bracket_embed(series_list: List[Series], teams_by_id: Dict[int, Team]) -> di
 
     if series_list:
         bracket_text = _render_bracket_text(series_list, teams_by_id)
-        embed.add_field(name="Bracket", value=bracket_text, inline=False)
+        # Use description (4096 limit) instead of a field (1024 limit) to prevent
+        # overflow crashes when all rounds are shown simultaneously.
+        embed.description = bracket_text
 
     return embed
 
