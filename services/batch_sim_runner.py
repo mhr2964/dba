@@ -603,7 +603,23 @@ async def _run_cpu_trades_inner(
                 inline=False,
             )
         embed.set_footer(text=f"CPU-initiated · Trade #{trade_id}")
-        await transactions_channel.send(embed=embed)
+        trade_msg = await transactions_channel.send(embed=embed)
+
+        # Open a thread on the lead message so all follow-up activity stays grouped.
+        try:
+            thread_name = f"Trade #{trade_id} — {proposer_code} / {counterparty_code}"
+            trade_thread = await trade_msg.create_thread(name=thread_name, auto_archive_duration=1440)
+            status_label = "Executed" if status == "approved" else "Pending commissioner review"
+            detail_lines = [
+                f"**Trade #{trade_id}**",
+                f"Status: {status_label}",
+                "",
+                f"**{counterparty_code} receives:** {', '.join(_asset_lines(proposer_id))}",
+                f"**{proposer_code} receives:** {', '.join(_asset_lines(counterparty_id))}",
+            ]
+            await trade_thread.send("\n".join(detail_lines))
+        except Exception as _thread_exc:
+            log.warning(f"Failed to create trade thread for trade #{trade_id}: {_thread_exc}")
 
         # Marcus Cole — insider trade report to #analysis.
         # Only fire for blockbuster trades that actually executed (not pending review).
