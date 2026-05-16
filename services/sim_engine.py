@@ -272,7 +272,10 @@ def _build_box_for_team(
     scoring_weights = []
     for i, p in enumerate(players):
         pos_w = _POSITION_SCORING_WEIGHT.get(p.get("position", "SF"), 1.0)
-        usage_w = p.get("usage_weight", 50) / 50.0  # 1.0 at default, up to 2.0 for 100
+        # Compressed range: usage 0→0.5x, usage 50→1.0x, usage 100→1.5x.
+        # Narrower than the old /50 formula (0–2x) so bench-player scoring floor
+        # stays realistic and stars don't overshadow the rest by 3–4× on their own.
+        usage_w = 0.5 + (p.get("usage_weight", 50) / 100.0) * 1.0
         composite = p.get("finishing", 50) + p.get("shooting_2pt", 50) + p.get("shooting_3pt", 50)
         rating_adj = composite / max(team_avg_composite, 1)
         base = (minutes_list[i] / 48.0) * pos_w * rating_adj * usage_w

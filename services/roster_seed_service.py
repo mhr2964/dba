@@ -52,7 +52,7 @@ _bdl_base_cache: dict[int, dict[int, dict]] = {}
 
 _BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
 _TENDENCY_STATS = ("ast", "reb", "stl", "blk")
-_DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50}
+_DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50, "usage_weight": 50}
 
 
 def _load_bdl_base(season: int) -> dict[int, dict]:
@@ -138,10 +138,15 @@ def _compute_stat_tendencies(
     season: int,
     position: str,
 ) -> dict[str, int]:
-    """Return {blk_tendency, stl_tendency, ast_tendency, reb_tendency} scaled 5–95.
+    """Return tendency + usage fields derived from BDL per-game stats.
 
-    Scale: clamp(round((player_avg / position_avg) * 50), 5, 95)
-    so 50 = exactly position-average, >50 = above-average for that position.
+    Returns:
+        blk_tendency, stl_tendency, ast_tendency, reb_tendency — scaled 5–95
+            (50 = position-average, >50 = above-average).
+        usage_weight — scored as clamp(round(pts / 35.0 * 100), 10, 90).
+            35 PPG → 100 (max), 0 PPG → 0 (floored to 10).
+            This is what the sim engine reads to weight scoring allocation;
+            keeping it at the default 50 causes stars to underscore significantly.
 
     Falls back to all-50 defaults if the player is not found or the cache
     file is missing — existing rows without BDL data are unaffected.
@@ -176,11 +181,15 @@ def _compute_stat_tendencies(
         raw = round((player_val / denom) * 50)
         return max(5, min(95, raw))
 
+    pts = float(stats.get("pts") or 0.0)
+    usage_weight = max(10, min(90, round(pts / 35.0 * 100)))
+
     return {
         "blk_tendency": _tend("blk"),
         "stl_tendency": _tend("stl"),
         "ast_tendency": _tend("ast"),
         "reb_tendency": _tend("reb"),
+        "usage_weight": usage_weight,
     }
 
 
@@ -516,13 +525,15 @@ async def apply_reseed(
                 SET blk_tendency = $1,
                     stl_tendency = $2,
                     ast_tendency = $3,
-                    reb_tendency = $4
-                WHERE id = $5
+                    reb_tendency = $4,
+                    usage_weight  = $5
+                WHERE id = $6
                 """,
                 tendencies["blk_tendency"],
                 tendencies["stl_tendency"],
                 tendencies["ast_tendency"],
                 tendencies["reb_tendency"],
+                tendencies["usage_weight"],
                 player_id,
             )
 
@@ -579,13 +590,15 @@ async def apply_reseed(
                 SET blk_tendency = $1,
                     stl_tendency = $2,
                     ast_tendency = $3,
-                    reb_tendency = $4
-                WHERE id = $5
+                    reb_tendency = $4,
+                    usage_weight  = $5
+                WHERE id = $6
                 """,
                 tendencies["blk_tendency"],
                 tendencies["stl_tendency"],
                 tendencies["ast_tendency"],
                 tendencies["reb_tendency"],
+                tendencies["usage_weight"],
                 player_id,
             )
 

@@ -436,13 +436,29 @@ def _market_pref() -> str:
 
 
 def _contract_salary(overall: int, exp: int, salary_cap: int) -> tuple[int, str, int]:
-    max_salary = salary_cap // 4
+    """Return (salary, contract_type, years) scaled to real-NBA proportions.
+
+    Piecewise tiers (anchored to $140M cap):
+        OVR 90+  : 25% + (ovr-90)*1.5% of cap  → ~35–54M range
+        OVR 80-89: 8%  + (ovr-80)*1.7% of cap  → ~11–30M range
+        OVR 68-79: 2%  + (ovr-68)*0.5% of cap  → ~3–10M range
+        OVR <68  : league minimum ($1.1M)
+
+    Hard ceiling: 40% of salary_cap.
+    """
     min_salary = 1_100_000
+    if overall >= 90:
+        raw = salary_cap * (0.25 + (overall - 90) * 0.015)
+    elif overall >= 80:
+        raw = salary_cap * (0.08 + (overall - 80) * 0.017)
+    elif overall >= 68:
+        raw = salary_cap * (0.02 + (overall - 68) * 0.005)
+    else:
+        raw = min_salary
 
-    raw = (overall - 60) * 800_000
-    salary = _clamp(raw, min_salary, max_salary)
+    salary = _clamp(int(raw), min_salary, int(salary_cap * 0.40))
 
-    if salary >= salary_cap * 0.25:
+    if salary >= int(salary_cap * 0.25):
         ctype = "max"
     elif salary <= min_salary:
         ctype = "minimum"
