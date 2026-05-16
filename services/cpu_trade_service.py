@@ -98,7 +98,7 @@ async def maybe_initiate_round(
         WHERE t.league_id = $1
           AND t.season = $2
           AND ta.asset_type = 'player'
-          AND t.status IN ('pending_commissioner', 'approved')
+          AND t.status NOT IN ('approved', 'rejected', 'declined', 'expired')
           AND ta.player_id IS NOT NULL
         """,
         league_id,
@@ -112,7 +112,7 @@ async def maybe_initiate_round(
     for _ in range(n_offers):
         try:
             count = await _attempt_one_offer(
-                pool, league, cpu_teams, block_by_team, used_pairs, taken_player_ids, guild
+                pool, league, season, cpu_teams, block_by_team, used_pairs, taken_player_ids, guild
             )
             proposed_count += count
         except Exception as exc:
@@ -174,6 +174,7 @@ async def _build_cpu_trade_block(
 async def _attempt_one_offer(
     pool,
     league: league_repo.League,
+    season: int,
     cpu_teams: list[team_repo.Team],
     block_by_team: dict[int, list[int]],
     used_pairs: set[tuple[int, int]],
@@ -202,6 +203,21 @@ async def _attempt_one_offer(
         for b in b_candidates:
             pair = (min(a.id, b.id), max(a.id, b.id))
             if pair in used_pairs:
+                continue
+
+            # Skip this team pair if they already have an active trade proposal
+            # this season (any non-resolved status), preventing duplicate proposals
+            # across batch rounds.
+            active_pair_rows = await pool.fetch(
+                """SELECT 1 FROM trades
+                   WHERE league_id = $1 AND season = $2
+                     AND ((proposer_team_id = $3 AND counterparty_team_id = $4)
+                          OR (proposer_team_id = $4 AND counterparty_team_id = $3))
+                     AND status NOT IN ('approved', 'rejected', 'declined', 'expired')
+                   LIMIT 1""",
+                league.id, season, a.id, b.id,
+            )
+            if active_pair_rows:
                 continue
 
             b_block_ids = block_by_team.get(b.id, [])
@@ -294,6 +310,19 @@ async def _attempt_one_offer(
         log.debug(
             f"CPU trade skipped: team {team_a.id} has no assets to offer "
             f"for player {target_player.id} (value {target_value:.1f})"
+        )
+        return 0
+
+    # Sanity check: only propose if the return package value is reasonably close
+    # to the target value.  A package worth less than 50% or more than 200% of
+    # the target is too lopsided to submit — this prevents absurd offers like
+    # SGA for Zubac from ever reaching trade_service.propose.
+    if target_value > 0 and (
+        package_value < target_value * 0.50 or package_value > target_value * 2.0
+    ):
+        log.debug(
+            f"CPU trade aborted (lopsided): team {team_a.id} package value "
+            f"{package_value:.1f} vs target value {target_value:.1f}"
         )
         return 0
 
@@ -645,8 +674,9 @@ async def _build_return_package(
             pick["season"], pick["round"], league.current_season,
             team_win_pct=win_pct,
         )
-        offer_pick_ids.append(pick["id"])
-        accumulated += pv
+        if pick["id"] not in offer_pick_ids:  # prevent duplicates
+            offer_pick_ids.append(pick["id"])
+            accumulated += pv
 
     return offer_player_ids, offer_pick_ids, accumulated
 
