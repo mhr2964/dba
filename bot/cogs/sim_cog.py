@@ -246,8 +246,9 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         await interaction.followup.send(
             "Season sim started — updates will appear in #box-scores as games complete, "
-            "and the final summary will post to #league-news when done. "
-            "This may take 15-20 minutes.",
+            "and the final summary will post to #league-news when done.\n\n"
+            "**Note:** the sim will auto-pause at the trade deadline and post a 🚨 notification "
+            "to #league-news. Run `/sim season force:True` again after making any trades to complete the season.",
             ephemeral=True,
         )
 

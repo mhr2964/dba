@@ -19,7 +19,7 @@ PHASE_SUGGESTIONS: dict[str, str] = {
     "PLAYOFFS_R1": "First round of playoffs is active. Use `/sim round` to advance.",
     "PLAYOFFS_R2": "Second round of playoffs is active. Use `/sim round` to advance.",
     "CONFERENCE_FINALS": "Conference finals are active. Use `/sim round` to advance.",
-    "NBA_FINALS": "The NBA Finals are happening! Use `/sim round` to crown a champion.",
+    "NBA_FINALS": "The DBA Finals are happening! Use `/sim round` to crown a champion.",
     "OFFSEASON_AWARDS_OPEN": "Awards voting is open. Use `/awards vote` to cast your ballot.",
     "OFFSEASON_AWARDS_CLOSED": "Use `/awards open` to begin voting or advance to draft prep.",
     "DRAFT_LOTTERY_DONE": "Lottery complete. Commissioner should advance to DRAFT_IN_PROGRESS.",

@@ -235,11 +235,12 @@ async def _check_all_time_records(
             f"\U0001f3db️ ALL-TIME RECORD: {_team_code} dropped {high_score} points — highest team score in league history!"
         )
 
-    # Biggest blowout (all-time)
+    # Biggest blowout (all-time) — only announce at or above the 20-point floor to
+    # suppress trivial early-season blowout records from small margins.
     margin = abs(home_score - away_score)
     current_at_blowout = await all_time_records_repo.get_record(pool, league_id, "biggest_blowout")
     current_at_blowout_val: float = current_at_blowout["value"] if current_at_blowout else 0.0
-    if float(margin) > current_at_blowout_val:
+    if float(margin) > current_at_blowout_val and margin >= 20:
         winner_team_id = result.get("winner_team_id")
         await all_time_records_repo.set_record(
             pool, league_id, "biggest_blowout",
@@ -282,7 +283,9 @@ async def _check_all_time_records(
             )
 
     # Longest active win streak tracked via standings_cache (all-time)
-    # We compare the current win_streak for the winning team against the all-time record.
+    # We silently update the all-time record in the DB but do NOT emit an announcement here.
+    # batch_sim_runner already posts a milestone "Win Streak" embed (via game_repo notable_streak
+    # at {5, 10, 15} games) — emitting a second message here causes every milestone to post twice.
     winner_team_id = result.get("winner_team_id")
     if winner_team_id:
         streak_row = await pool.fetchrow(
@@ -290,7 +293,7 @@ async def _check_all_time_records(
             league_id, winner_team_id,
         )
         current_streak = streak_row["win_streak"] if streak_row else 0
-        if current_streak >= 5:  # suppress trivial 1-game "streaks" at season start
+        if current_streak >= 5:
             current_at_streak = await all_time_records_repo.get_record(pool, league_id, "longest_active_win_streak")
             current_at_streak_val: float = current_at_streak["value"] if current_at_streak else 0.0
             if float(current_streak) > current_at_streak_val:
@@ -301,10 +304,6 @@ async def _check_all_time_records(
                     game_id=game_id,
                     season_set=season,
                 )
-                _team_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", winner_team_id)
-                _team_code = _team_row["nba_team_code"] if _team_row else "???"
-                at_announcements.append(
-                    f"\U0001f3db️ ALL-TIME RECORD: {_team_code} now on a {current_streak}-game win streak — longest in league history!"
-                )
+                # No announcement — batch_sim_runner handles the user-facing milestone post.
 
     return at_announcements

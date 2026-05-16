@@ -143,10 +143,11 @@ def _compute_stat_tendencies(
     Returns:
         blk_tendency, stl_tendency, ast_tendency, reb_tendency — scaled 5–95
             (50 = position-average, >50 = above-average).
-        usage_weight — scored as clamp(round(pts / 35.0 * 100), 10, 90).
-            35 PPG → 100 (max), 0 PPG → 0 (floored to 10).
+        usage_weight — scored as clamp(round((pts / 25.0) * 100), 10, 95).
+            25 PPG → 100 (clamps to 95), 20 PPG → 80, 10 PPG → 40, 0 PPG → floored to 10.
             This is what the sim engine reads to weight scoring allocation;
             keeping it at the default 50 causes stars to underscore significantly.
+            The /25 divisor (vs old /35) widens the gap between stars and role players.
 
     Falls back to all-50 defaults if the player is not found or the cache
     file is missing — existing rows without BDL data are unaffected.
@@ -182,7 +183,7 @@ def _compute_stat_tendencies(
         return max(5, min(95, raw))
 
     pts = float(stats.get("pts") or 0.0)
-    usage_weight = max(10, min(90, round(pts / 35.0 * 100)))
+    usage_weight = max(10, min(95, round((pts / 25.0) * 100)))
 
     return {
         "blk_tendency": _tend("blk"),
