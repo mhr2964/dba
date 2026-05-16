@@ -1,20 +1,19 @@
 """One-shot calibration fix for any league.
 
-Applies four stat calibration corrections to existing player rows:
+Applies stat calibration corrections to existing player rows using pure
+BDL position-relative formulas — no hard position caps.
 
-1. Rebounding cap by position — guards were showing 7 RPG (Curry IRL = 4.5).
-   Caps reb_tendency to position max: PG=45, SG=50, SF=65, PF=80, C=90.
+For each of reb/stl/blk: tendency = clamp(round((player_avg / position_avg) * 50), 5, 95)
+where position_avg is computed from all BDL players at the same position group (G/F/C).
+50 = position-average player; the position-relative denominator naturally produces lower
+values for guards (e.g. Curry ~4.5 RPG vs G avg ~3.5 RPG → reb_tendency ≈ 64) without
+needing an arbitrary cap.
 
-2. Defense tendency from BDL stl+blk data — players like Luka with low stl/blk
-   per game get a low defense_tendency (35-50) rather than inheriting their high
-   OVR-based defense attribute. The sim engine now uses defense_tendency for
-   stl/blk weight instead of the raw defense attribute.
-
-3. Updates stl_tendency and blk_tendency position caps so guards can't block at
-   center rates: PG blk_tendency max=40, SG=45, SF=60, PF=80, C=90.
-
-4. usage_weight from BDL pts per game — stars get 80-95, role players 25-50,
-   bench 10-25. Without this fix all players default to 50 and scoring is flat.
+1. reb_tendency — from BDL reb per game, position-relative.
+2. stl_tendency — from BDL stl per game, position-relative.
+3. blk_tendency — from BDL blk per game, position-relative.
+4. defense_tendency — stl 60% + blk 40% weighted composite, position-relative. Capped at 85.
+5. usage_weight — from BDL pts per game: clamp(round((pts/25)*100), 10, 95).
 
 NOTE: DB external_ids use nba_api IDs (different space from BDL), so lookups
 are done by normalized player name — the same approach used by fix_salaries_and_usage.py.
@@ -40,11 +39,6 @@ load_dotenv()
 
 _BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
 
-# Position-based hard caps (must match roster_seed_service.py).
-_REB_CAP = {"PG": 45, "SG": 50, "SF": 65, "PF": 80, "C": 90}
-_STL_CAP = {"PG": 70, "SG": 70, "SF": 65, "PF": 60, "C": 55}
-_BLK_CAP = {"PG": 40, "SG": 45, "SF": 60, "PF": 80, "C": 90}
-
 
 def _norm(name: str) -> str:
     return (
@@ -57,7 +51,12 @@ def _norm(name: str) -> str:
 
 
 def _load_bdl_by_name(season: int) -> dict[str, dict]:
-    """Return {normalized_name: stats_dict} from season_{season}_base.json."""
+    """Return {normalized_name: {stats, pos_group}} from season_{season}_base.json.
+
+    Each value has keys:
+        stats     — raw BDL stats dict
+        pos_group — 'G', 'F', or 'C' derived from BDL position string
+    """
     path = _BDL_CACHE_DIR / f"season_{season}_base.json"
     if not path.exists():
         print(f"[WARN] BDL cache not found: {path}")
@@ -73,7 +72,9 @@ def _load_bdl_by_name(season: int) -> dict[str, dict]:
             gp = int(stats.get("gp", 0) or 0)
             if gp < 5:
                 continue  # skip injury-shortened seasons
-            lookup[_norm(full)] = stats
+            raw_pos = (p.get("position") or "G").upper()
+            pos_group = raw_pos[-1] if raw_pos[-1] in ("G", "F", "C") else "G"
+            lookup[_norm(full)] = {"stats": stats, "pos_group": pos_group}
         return lookup
     except (json.JSONDecodeError, KeyError, OSError) as exc:
         print(f"[WARN] Failed to load BDL cache: {exc}")
@@ -82,21 +83,33 @@ def _load_bdl_by_name(season: int) -> dict[str, dict]:
 
 def _compute_position_avgs(bdl_by_name: dict[str, dict]) -> dict[str, dict[str, float]]:
     """Compute per position-group (G/F/C) averages for reb/stl/blk."""
-    # We don't have position in the name-keyed lookup so use overall averages
-    # as denominator — good enough for the relative scaling.
-    totals: dict[str, list[float]] = {"reb": [], "stl": [], "blk": []}
-    for stats in bdl_by_name.values():
-        for stat in totals:
+    _STATS = ("reb", "stl", "blk")
+    buckets: dict[str, dict[str, list[float]]] = {
+        "G": {s: [] for s in _STATS},
+        "F": {s: [] for s in _STATS},
+        "C": {s: [] for s in _STATS},
+    }
+    all_vals: dict[str, list[float]] = {s: [] for s in _STATS}
+    for entry in bdl_by_name.values():
+        stats = entry["stats"]
+        pg = entry["pos_group"]
+        bucket = buckets.get(pg, buckets["G"])
+        for stat in _STATS:
             v = stats.get(stat)
             if v is not None:
-                totals[stat].append(float(v))
-    avgs: dict[str, float] = {
+                fv = float(v)
+                bucket[stat].append(fv)
+                all_vals[stat].append(fv)
+    overall_avgs = {
         stat: sum(vs) / len(vs) if vs else 1.0
-        for stat, vs in totals.items()
+        for stat, vs in all_vals.items()
     }
-    # Return same avg for all position groups since we can't segment by position
-    # with a name-keyed lookup (no position in BDL stats record).
-    return {"G": avgs, "F": avgs, "C": avgs}
+    avgs: dict[str, dict[str, float]] = {}
+    for pos, stat_lists in buckets.items():
+        avgs[pos] = {}
+        for stat, vs in stat_lists.items():
+            avgs[pos][stat] = sum(vs) / len(vs) if vs else overall_avgs[stat]
+    return avgs
 
 
 def _tend(player_val: float, pos_avg: float) -> int:
@@ -120,7 +133,6 @@ async def main() -> None:
     bdl = _load_bdl_by_name(args.season)
     print(f"BDL records loaded: {len(bdl)}")
     pos_avgs = _compute_position_avgs(bdl)
-    avgs = pos_avgs["G"]  # same for all groups in our name-keyed approach
 
     conn = await asyncpg.connect(db_url)
     try:
@@ -153,28 +165,21 @@ async def main() -> None:
         )
         print(f"Players fetched: {len(rows)}")
 
-        # Also load pts for usage_weight computation.
-        bdl_pts: dict[str, float] = {
-            k: float(v.get("pts") or 0.0) for k, v in bdl.items()
-        }
-
         updated = 0
         skipped_no_bdl = 0
-        capped_reb = 0
-        capped_stl = 0
-        capped_blk = 0
+        reb_changed = 0
+        stl_changed = 0
+        blk_changed = 0
         def_computed = 0
         usage_updated = 0
 
         for row in rows:
             pid = row["id"]
-            full_pos = (row["position"] or "SF").upper()
-            if full_pos not in _REB_CAP:
-                full_pos = "SF"
+            db_pos = (row["position"] or "SF").upper()
 
             name = f"{row['first_name']} {row['last_name']}".strip()
             norm_name = _norm(name)
-            stats = bdl.get(norm_name)
+            entry = bdl.get(norm_name)
 
             old_reb = row["reb_tendency"]
             old_stl = row["stl_tendency"]
@@ -182,43 +187,39 @@ async def main() -> None:
             old_def = row["defense_tendency"]
             old_usage = row["usage_weight"]
 
-            if stats is None:
-                # No BDL data — apply position hard-caps to current values only.
+            if entry is None:
+                # No BDL data — leave existing values unchanged.
                 skipped_no_bdl += 1
-                new_reb = min(old_reb, _REB_CAP.get(full_pos, 65))
-                new_stl = min(old_stl, _STL_CAP.get(full_pos, 65))
-                new_blk = min(old_blk, _BLK_CAP.get(full_pos, 60))
-                new_def = old_def  # can't improve without data
-                new_usage = old_usage
-                cap_only = True
-            else:
-                reb_val = float(stats.get("reb") or 0.0)
-                stl_val = float(stats.get("stl") or 0.0)
-                blk_val = float(stats.get("blk") or 0.0)
-                pts_val = float(stats.get("pts") or 0.0)
+                continue
 
-                raw_reb = _tend(reb_val, avgs["reb"])
-                raw_stl = _tend(stl_val, avgs["stl"])
-                raw_blk = _tend(blk_val, avgs["blk"])
+            stats = entry["stats"]
+            # Use BDL position group for denominator; fall back to last char of DB position.
+            pos_group = entry["pos_group"]
 
-                new_reb = min(raw_reb, _REB_CAP.get(full_pos, 65))
-                new_stl = min(raw_stl, _STL_CAP.get(full_pos, 65))
-                new_blk = min(raw_blk, _BLK_CAP.get(full_pos, 60))
+            avgs = pos_avgs.get(pos_group, pos_avgs.get("G", {"reb": 1.0, "stl": 1.0, "blk": 1.0}))
 
-                # defense_tendency: stl 60% weight, blk 40%.
-                defense_raw = round(
-                    (stl_val / max(avgs["stl"], 0.01)) * 0.60 * 50
-                    + (blk_val / max(avgs["blk"], 0.01)) * 0.40 * 50
-                )
-                new_def = max(5, min(85, defense_raw))
+            reb_val = float(stats.get("reb") or 0.0)
+            stl_val = float(stats.get("stl") or 0.0)
+            blk_val = float(stats.get("blk") or 0.0)
+            pts_val = float(stats.get("pts") or 0.0)
 
-                # usage_weight: pts/25 * 100, clamped 10–95.
-                new_usage = max(10, min(95, round(pts_val / 25.0 * 100)))
+            new_reb = _tend(reb_val, avgs["reb"])
+            new_stl = _tend(stl_val, avgs["stl"])
+            new_blk = _tend(blk_val, avgs["blk"])
 
-                cap_only = False
-                def_computed += 1
-                if new_usage != old_usage:
-                    usage_updated += 1
+            # defense_tendency: stl 60% weight, blk 40%. Capped at 85.
+            defense_raw = round(
+                (stl_val / max(avgs["stl"], 0.01)) * 0.60 * 50
+                + (blk_val / max(avgs["blk"], 0.01)) * 0.40 * 50
+            )
+            new_def = max(5, min(85, defense_raw))
+
+            # usage_weight: pts/25 * 100, clamped 10–95.
+            new_usage = max(10, min(95, round(pts_val / 25.0 * 100)))
+
+            def_computed += 1
+            if new_usage != old_usage:
+                usage_updated += 1
 
             changed = (
                 new_reb != old_reb or new_stl != old_stl
@@ -230,18 +231,17 @@ async def main() -> None:
                 continue
 
             if old_reb != new_reb:
-                capped_reb += 1
+                reb_changed += 1
             if old_stl != new_stl:
-                capped_stl += 1
+                stl_changed += 1
             if old_blk != new_blk:
-                capped_blk += 1
+                blk_changed += 1
 
             safe_name = name.encode("ascii", "replace").decode("ascii")
 
             if args.dry_run:
-                tag = "[cap-only]" if cap_only else ""
                 print(
-                    f"  {safe_name:<32} [{full_pos}] {tag}"
+                    f"  {safe_name:<32} [{db_pos}/{pos_group}]"
                     f"  reb {old_reb}->{new_reb}"
                     f"  stl {old_stl}->{new_stl}"
                     f"  blk {old_blk}->{new_blk}"
@@ -266,9 +266,9 @@ async def main() -> None:
         print(f"Skipped (no BDL name match): {skipped_no_bdl}")
         print(f"defense_tendency computed:   {def_computed}")
         print(f"usage_weight updated:        {usage_updated}")
-        print(f"reb_tendency changed:        {capped_reb}")
-        print(f"stl_tendency changed:        {capped_stl}")
-        print(f"blk_tendency changed:        {capped_blk}")
+        print(f"reb_tendency changed:        {reb_changed}")
+        print(f"stl_tendency changed:        {stl_changed}")
+        print(f"blk_tendency changed:        {blk_changed}")
 
         if args.dry_run:
             print()

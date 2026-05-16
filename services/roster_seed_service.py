@@ -54,30 +54,6 @@ _BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
 _TENDENCY_STATS = ("ast", "reb", "stl", "blk")
 _DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50, "usage_weight": 50}
 
-# Position-based hard caps on tendency values.
-# Guards can't rebound like bigs; bad-defender wings can't block like centers.
-_REB_TENDENCY_CAP: dict[str, int] = {
-    "PG": 45,
-    "SG": 50,
-    "SF": 65,
-    "PF": 80,
-    "C":  90,
-}
-_STL_TENDENCY_CAP: dict[str, int] = {
-    "PG": 70,
-    "SG": 70,
-    "SF": 65,
-    "PF": 60,
-    "C":  55,
-}
-_BLK_TENDENCY_CAP: dict[str, int] = {
-    "PG": 40,
-    "SG": 45,
-    "SF": 60,
-    "PF": 80,
-    "C":  90,
-}
-
 
 def _load_bdl_base(season: int) -> dict[int, dict]:
     """Load season_{season}_base.json and return {bdl_player_id: record}.
@@ -166,10 +142,13 @@ def _compute_stat_tendencies(
 
     Returns:
         blk_tendency, stl_tendency, ast_tendency, reb_tendency — scaled 5–95
-            (50 = position-average, >50 = above-average).
-            Position-based hard caps are applied after scaling so that guards
-            cannot rebound or block at big-man rates regardless of relative rank.
-        defense_tendency — derived from actual stl+blk per game relative to
+            using clamp(round((player_avg / position_avg) * 50), 5, 95).
+            50 = position-average, >50 = above-average.  No hard position caps
+            are applied — the position-relative denominator already produces
+            naturally lower values for guards (e.g. Curry ~4.5 RPG vs G avg
+            ~3.5 RPG → reb_tendency ≈ 64, well below a center's value derived
+            from their ~12 RPG against a C avg of ~9 RPG).
+        defense_tendency — weighted composite (stl 60%, blk 40%) relative to
             position average.  Players with low stl/blk (e.g. Luka) receive a
             low defense_tendency (35-50) even if their overall OVR is high.
             Scaled 5–85; cap keeps even elite defenders from dominating.
@@ -196,13 +175,9 @@ def _compute_stat_tendencies(
     rec = by_id[bdl_id]
     stats = rec.get("stats", {})
 
-    # Keep full position string (PG/SG/SF/PF/C) for cap lookups; normalize to
-    # G/F/C only for position-average bucket access.
-    full_pos = (position or rec["player"].get("position") or "PG").upper()
-    if full_pos not in _REB_TENDENCY_CAP:
-        full_pos = "SF"  # safe fallback for unrecognised position strings
-
-    pos = full_pos[-1]  # 'G', 'F', or 'C' for bucket lookup
+    # Normalize position string to G/F/C bucket for position-average lookup.
+    raw_pos = (position or rec["player"].get("position") or "PG").upper()
+    pos = raw_pos[-1]  # last char: 'G', 'F', or 'C'
     if pos not in ("G", "F", "C"):
         pos = "G"
 
@@ -218,9 +193,9 @@ def _compute_stat_tendencies(
     pts = float(stats.get("pts") or 0.0)
     usage_weight = max(10, min(95, round((pts / 25.0) * 100)))
 
-    reb_tendency = min(_tend("reb"), _REB_TENDENCY_CAP.get(full_pos, 65))
-    stl_tendency = min(_tend("stl"), _STL_TENDENCY_CAP.get(full_pos, 65))
-    blk_tendency = min(_tend("blk"), _BLK_TENDENCY_CAP.get(full_pos, 60))
+    reb_tendency = _tend("reb")
+    stl_tendency = _tend("stl")
+    blk_tendency = _tend("blk")
 
     # defense_tendency: weighted composite of stl+blk relative to position average.
     # Stl contributes 60%, blk 40% (steals are a better proxy for active defense).
