@@ -27,15 +27,22 @@ async def _target_index_for_n_more_per_team(pool, league_id: int, n_more: int) -
     Walks upcoming unplayed games in game_index order, tracking per-team played counts.
     Safety cap: at most current max game_index + (n_more * 15 + 10) to prevent runaway.
     """
-    # Current per-team played counts.
+    # Current per-team played counts from standings cache.
     sc_rows = await pool.fetch(
         "SELECT team_id, wins + losses AS played FROM standings_cache WHERE league_id = $1",
         league_id,
     )
     base_played: dict[int, int] = {r["team_id"]: r["played"] for r in sc_rows}
+
+    # At season start standings_cache is empty — seed from the teams table so the
+    # walk below tracks correctly instead of using the n_more*15 approximation.
+    if not base_played:
+        team_rows = await pool.fetch(
+            "SELECT id FROM teams WHERE league_id = $1", league_id
+        )
+        base_played = {r["id"]: 0 for r in team_rows}
+
     target_played: dict[int, int] = {tid: v + n_more for tid, v in base_played.items()}
-    if not target_played:
-        return n_more * 15  # fallback for empty standings
 
     # Pending games in order.
     pending = await pool.fetch(
