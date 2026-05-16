@@ -116,7 +116,7 @@ async def maybe_initiate_round(
             )
             proposed_count += count
         except Exception as exc:
-            log.warning(f"CPU trade offer attempt failed: {exc}")
+            log.warning(f"CPU trade offer attempt failed: {exc}", exc_info=True)
             continue
 
     return proposed_count
@@ -330,9 +330,17 @@ async def _attempt_one_offer(
     taken_player_ids.update(offer_player_ids)
 
     # trade_service.propose runs cpu_should_accept on target_team's side.
-    # If accepted it lands as 'pending_commissioner'.
+    # If accepted it lands as 'pending_commissioner'; auto-approve immediately for
+    # CPU-CPU trades so they never pile up in the commissioner queue.
     if trade.status == "pending_commissioner":
-        await _maybe_auto_approve(pool, league, trade, guild)
+        try:
+            await _maybe_auto_approve(pool, league, trade, guild)
+        except Exception as exc:
+            log.error(
+                f"CPU-CPU trade {trade.id} auto-approve failed — "
+                f"trade remains pending_commissioner: {exc}",
+                exc_info=True,
+            )
 
     return 1
 
@@ -390,11 +398,23 @@ async def _maybe_auto_approve(
                     counterparty_value += v
         elif asset.asset_type == "pick" and asset.pick_id:
             pk_row = await pool.fetchrow(
-                "SELECT season, round FROM draft_picks WHERE id = $1", asset.pick_id
+                """SELECT dp.season, dp.round,
+                          CASE WHEN (sc.wins + sc.losses) > 0
+                               THEN sc.wins::float / (sc.wins + sc.losses)
+                               ELSE NULL END AS win_pct
+                   FROM draft_picks dp
+                   LEFT JOIN standings_cache sc
+                          ON sc.team_id = dp.original_team_id
+                         AND sc.league_id = dp.league_id
+                         AND sc.season = $2
+                   WHERE dp.id = $1""",
+                asset.pick_id,
+                league.current_season,
             )
             if pk_row:
                 v = trade_evaluator.pick_trade_value(
-                    pk_row["season"], pk_row["round"], league.current_season
+                    pk_row["season"], pk_row["round"], league.current_season,
+                    team_win_pct=pk_row["win_pct"],
                 )
                 if asset.from_team_id == trade.proposer_team_id:
                     proposer_value += v
@@ -415,6 +435,30 @@ async def _maybe_auto_approve(
                         "UPDATE contracts SET team_id = $1 "
                         "WHERE player_id = $2 AND is_active = TRUE",
                         asset.to_team_id,
+                        asset.player_id,
+                    )
+                    # Remove from old team's lineup so the sim engine stops
+                    # using them for the wrong team.
+                    await conn.execute(
+                        "DELETE FROM lineups WHERE league_id = $1 AND player_id = $2",
+                        trade.league_id,
+                        asset.player_id,
+                    )
+                    # Insert into new team's lineup at the next available slot.
+                    next_slot = await conn.fetchval(
+                        "SELECT COALESCE(MAX(slot), 0) + 1 FROM lineups "
+                        "WHERE league_id = $1 AND team_id = $2",
+                        trade.league_id,
+                        asset.to_team_id,
+                    )
+                    await conn.execute(
+                        """INSERT INTO lineups
+                               (league_id, team_id, is_starter, slot, player_id, set_by)
+                           VALUES ($1, $2, FALSE, $3, $4, NULL)
+                           ON CONFLICT (league_id, team_id, slot) DO NOTHING""",
+                        trade.league_id,
+                        asset.to_team_id,
+                        next_slot,
                         asset.player_id,
                     )
                 elif asset.asset_type == "pick" and asset.pick_id:
@@ -549,9 +593,41 @@ async def _build_return_package(
     # Nearest season picks first (most concrete value).
     r2_picks.sort(key=lambda p: p["season"])
     r1_picks.sort(key=lambda p: p["season"])
-    sorted_picks = r2_picks + r1_picks
 
-    # Greedy fill: players first, then picks.
+    # Hard cap of 3 picks per trade (1st + 2nd combined).
+    # cpu_mode governs willingness to include picks:
+    #   rebuilding  — picks are their future; offer at most 1, prefer 2nds over 1sts.
+    #   contending  — willing to deal picks for immediate help; up to 3.
+    #   developing / default — balanced; up to 2 picks.
+    mode = team_a.cpu_mode or "default"
+    if mode == "rebuilding":
+        max_picks = 1
+        # Offer 2nd-rounders first; only expose 1sts as a last resort.
+        sorted_picks = r2_picks + r1_picks
+    elif mode == "contending":
+        max_picks = 3
+        sorted_picks = r2_picks + r1_picks
+    else:
+        # developing / default
+        max_picks = 2
+        sorted_picks = r2_picks + r1_picks
+
+    # Pre-fetch win% for all original team IDs so pick_trade_value can discount by record.
+    orig_team_ids = list({p["original_team_id"] for p in sorted_picks if p.get("original_team_id")})
+    _orig_win_pct: dict[int, float | None] = {}
+    if orig_team_ids:
+        _wp_rows = await pool.fetch(
+            """SELECT team_id,
+                      CASE WHEN (wins + losses) > 0
+                           THEN wins::float / (wins + losses)
+                           ELSE NULL END AS win_pct
+               FROM standings_cache
+               WHERE league_id = $1 AND season = $2 AND team_id = ANY($3)""",
+            league.id, league.current_season, orig_team_ids,
+        )
+        _orig_win_pct = {r["team_id"]: r["win_pct"] for r in _wp_rows}
+
+    # Greedy fill: players first, then picks (up to the mode cap).
     for v, pid in scored_players:
         if accumulated >= target_value - tolerance:
             break
@@ -559,10 +635,15 @@ async def _build_return_package(
         accumulated += v
 
     for pick in sorted_picks:
+        if len(offer_pick_ids) >= max_picks:
+            break
         if accumulated >= target_value - tolerance:
             break
+        orig_tid = pick.get("original_team_id")
+        win_pct = _orig_win_pct.get(orig_tid) if orig_tid else None
         pv = trade_evaluator.pick_trade_value(
-            pick["season"], pick["round"], league.current_season
+            pick["season"], pick["round"], league.current_season,
+            team_win_pct=win_pct,
         )
         offer_pick_ids.append(pick["id"])
         accumulated += pv

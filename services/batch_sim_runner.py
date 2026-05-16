@@ -569,6 +569,27 @@ async def _run_cpu_trades_inner(
             _player_names = {}
             _player_ovrs = {}
 
+        # Load pick metadata so embeds show "2026 LAL 1st Round Pick" instead of "Pick #ID".
+        _pick_ids = [a.pick_id for a in assets if a.asset_type == "pick" and a.pick_id]
+        if _pick_ids:
+            _pick_rows = await pool.fetch(
+                """SELECT dp.id, dp.season, dp.round, t.nba_team_code AS original_team
+                   FROM draft_picks dp
+                   JOIN teams t ON t.id = dp.original_team_id
+                   WHERE dp.id = ANY($1)""",
+                _pick_ids,
+            )
+            _pick_info: dict[int, dict] = {r["id"]: r for r in _pick_rows}
+        else:
+            _pick_info = {}
+
+        def _format_pick(pick_id: int) -> str:
+            r = _pick_info.get(pick_id)
+            if r:
+                round_label = "1st Round" if r["round"] == 1 else "2nd Round"
+                return f"{r['season']} {r['original_team']} {round_label} Pick"
+            return f"Pick #{pick_id}"
+
         def _asset_lines(from_team_id: int) -> list[str]:
             lines = []
             for a in assets:
@@ -577,7 +598,7 @@ async def _run_cpu_trades_inner(
                 if a.asset_type == "player" and a.player_id:
                     lines.append(_player_names.get(a.player_id) or f"Player #{a.player_id}")
                 elif a.asset_type == "pick" and a.pick_id:
-                    lines.append(f"Pick #{a.pick_id}")
+                    lines.append(_format_pick(a.pick_id))
             return lines or ["(nothing)"]
 
         proposer_code = team_codes.get(proposer_id, f"Team {proposer_id}")
@@ -684,9 +705,7 @@ async def _maybe_post_awards_races(
     news_channel: Optional[discord.TextChannel],
     current_game_index: int = 0,
 ) -> None:
-    # Throttle: post at most once every 50 games to avoid flooding #league-news.
-    if current_game_index % 50 != 0:
-        return
+    """Post award race odds. Called from _maybe_post_potm so it fires once per simulated month."""
     try:
         if not news_channel:
             return
@@ -706,8 +725,13 @@ async def _maybe_post_potm(
     league_id: int,
     season: int,
     current_game_date: Optional[str],
+    current_game_index: int = 0,
 ) -> None:
-    """Post Player of the Month awards if a new month has elapsed since the last award."""
+    """Post Player of the Month awards if a new month has elapsed since the last award.
+
+    When a new month is detected, also posts a visual month separator to #analysis
+    and fires the award race odds (once per simulated month, tied to this cycle).
+    """
     log.info(
         f"_maybe_post_potm called: league={league_id} season={season} "
         f"current_game_date={current_game_date!r}"
@@ -727,6 +751,19 @@ async def _maybe_post_potm(
         news_channel = await _get_news_channel(guild, pool, league_id)
         if not news_channel:
             return
+
+        # Post month separator to #analysis before columnist articles.
+        analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+        analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+        if analysis_channel:
+            # Derive month label from first award (all awards share same month block).
+            _sep_label = awards[0]["month_label"] if awards else current_game_date[:7]
+            _sep_text = f"━" * 22 + f"\n\U0001f4c5  {_sep_label}\n" + "━" * 22
+            try:
+                await analysis_channel.send(_sep_text)
+            except Exception as exc:
+                log.warning(f"Month separator post failed: {exc}")
+
         # Group awards by month so we generate one article per month (East+West together).
         from collections import defaultdict as _defaultdict
         by_month: dict[str, list[dict]] = _defaultdict(list)
@@ -752,6 +789,12 @@ async def _maybe_post_potm(
                     await news_channel.send(embed=embed)
                 except Exception as exc:
                     log.warning(f"POTM post failed: {exc}")
+
+        # Award races fire once per month, right after POTM announcements.
+        await _maybe_post_awards_races(
+            pool, league_id, season, news_channel,
+            current_game_index=current_game_index,
+        )
     except Exception as exc:
         log.warning(f"_maybe_post_potm failed: {exc}")
 
@@ -970,10 +1013,92 @@ async def _maybe_post_columnist(
                 )
 
         batch_context["narrative_hooks"] = narrative_hooks[:6]
+
+        # 1b-2: Standings leaders (East + West top 3) for columnist topic variety.
+        batch_context["standings_leaders"] = {
+            "east": [
+                {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"]}
+                for r in east_rows[:3]
+            ],
+            "west": [
+                {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"]}
+                for r in west_rows[:3]
+            ],
+        }
     except Exception as _standings_exc:
         log.warning(f"_maybe_post_columnist: standings/hooks enrichment failed: {_standings_exc}")
 
-    # 1d: Add game_index_range.
+    # 1c-2: Recent executed trades (last 2-3 approved trades within 50 games).
+    try:
+        trade_rows = await pool.fetch(
+            """
+            SELECT tr.id, tr.proposer_team_id, tr.counterparty_team_id,
+                   t1.nba_team_code AS proposer_code, t2.nba_team_code AS counterparty_code
+            FROM trades tr
+            JOIN teams t1 ON t1.id = tr.proposer_team_id
+            JOIN teams t2 ON t2.id = tr.counterparty_team_id
+            WHERE tr.league_id = $1
+              AND tr.status = 'approved'
+            ORDER BY tr.id DESC
+            LIMIT 3
+            """,
+            league_id,
+        )
+        if trade_rows:
+            recent_trades = []
+            for tr in trade_rows:
+                # Fetch player names on each side.
+                asset_rows = await pool.fetch(
+                    """
+                    SELECT ta.from_team_id, ta.asset_type,
+                           p.first_name || ' ' || p.last_name AS player_name
+                    FROM trade_assets ta
+                    LEFT JOIN players p ON p.id = ta.player_id
+                    WHERE ta.trade_id = $1
+                    """,
+                    tr["id"],
+                )
+                prop_assets = [
+                    a["player_name"] for a in asset_rows
+                    if a["from_team_id"] == tr["proposer_team_id"] and a["player_name"]
+                ]
+                counter_assets = [
+                    a["player_name"] for a in asset_rows
+                    if a["from_team_id"] == tr["counterparty_team_id"] and a["player_name"]
+                ]
+                recent_trades.append({
+                    "teams": f"{tr['proposer_code']} / {tr['counterparty_code']}",
+                    f"{tr['counterparty_code']}_receives": prop_assets or ["picks"],
+                    f"{tr['proposer_code']}_receives": counter_assets or ["picks"],
+                })
+            batch_context["recent_trades"] = recent_trades
+    except Exception as _trade_exc:
+        log.warning(f"_maybe_post_columnist: trade enrichment failed: {_trade_exc}")
+
+    # 1d: Add award race leaders for topic variety.
+    try:
+        from services import awards_service as _awards_svc
+        _race_leaders = await _awards_svc.get_race_leaders(pool, league_id, season, top_n=3)
+        _race_player_ids = [
+            p["player_id"]
+            for candidates in _race_leaders.values()
+            for p in candidates[:1]  # only top candidate per award
+        ]
+        if _race_player_ids:
+            _race_name_rows = await pool.fetch(
+                "SELECT id, first_name, last_name FROM players WHERE id = ANY($1)",
+                _race_player_ids,
+            )
+            _race_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in _race_name_rows}
+            batch_context["award_race_leaders"] = {
+                award: _race_names.get(candidates[0]["player_id"], "Unknown")
+                for award, candidates in _race_leaders.items()
+                if candidates
+            }
+    except Exception as _award_exc:
+        log.warning(f"_maybe_post_columnist: award race enrichment failed: {_award_exc}")
+
+    # 1e: Add game_index_range.
     if batch_end_index > 0 and total_regular_games > 0:
         batch_context["game_index_range"] = {
             "first": batch_start_index,
@@ -1312,7 +1437,6 @@ async def sim_until_rival(
                     await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
                 except (discord.HTTPException, Exception) as exc:
                     log.warning(f"channel send failed: {exc}")
-            await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
             await _maybe_post_columnist(
                 pool, league_id, season, batch_results, guild,
                 batch_start_index=first_game_idx,
@@ -1321,7 +1445,7 @@ async def sim_until_rival(
             )
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
-            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
+            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
             await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
@@ -1341,7 +1465,6 @@ async def sim_until_rival(
                 await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
-        await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
         await _maybe_post_columnist(
             pool, league_id, season, batch_results, guild,
             batch_start_index=first_game_idx,
@@ -1350,7 +1473,7 @@ async def sim_until_rival(
         )
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
-        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
+        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
         await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
@@ -1444,7 +1567,6 @@ async def sim_range(
                     await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
                 except (discord.HTTPException, Exception) as exc:
                     log.warning(f"channel send failed: {exc}")
-            await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
             await _maybe_post_columnist(
                 pool, league_id, season, batch_results, guild,
                 batch_start_index=first_game_idx,
@@ -1453,7 +1575,7 @@ async def sim_range(
             )
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
-            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
+            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
             last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
             await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
             await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
@@ -1473,7 +1595,6 @@ async def sim_range(
                 await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
-        await _maybe_post_awards_races(pool, league_id, season, news_channel, current_game_index=last_game_idx)
         await _maybe_post_columnist(
             pool, league_id, season, batch_results, guild,
             batch_start_index=first_game_idx,
@@ -1482,7 +1603,7 @@ async def sim_range(
         )
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
-        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str)
+        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
         last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
         await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
         await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)

@@ -70,12 +70,22 @@ def player_trade_value(player: dict, contract: dict, salary_cap: int) -> float:
     return round(value, 2)
 
 
-def pick_trade_value(season: int, round_num: int, current_season: int) -> float:
+def pick_trade_value(
+    season: int,
+    round_num: int,
+    current_season: int,
+    team_win_pct: float | None = None,
+) -> float:
     """
     Score a draft pick's value.
     - Round 1 future: base 40.0. Decreases slightly the further out: -5 per season gap.
     - Round 2: base 10.0, same decay.
     - Current season pick: multiply by 1.5 (known lottery position).
+    - team_win_pct: win% of the team that originally owns the pick (0.0–1.0).
+      A lottery team's pick (win_pct ~0.25) is worth ~50% more than a contender's
+      pick (win_pct ~0.70), because lottery picks land higher in the draft.
+      Only applies to 1st-round picks; 2nd-round picks are less sensitive to record.
+      Pass None to skip this adjustment (unknown team or pre-season).
     Returns a float score.
     """
     base = 40.0 if round_num == 1 else 10.0
@@ -84,6 +94,17 @@ def pick_trade_value(season: int, round_num: int, current_season: int) -> float:
     value = max(0.0, value)
     if season_gap == 0:
         value *= 1.5
+
+    # Apply team-quality discount/premium for 1st-round picks when record is known.
+    # win_pct 0.25  → multiplier ~1.35  (lottery team, high pick)
+    # win_pct 0.50  → multiplier ~1.0   (average, neutral)
+    # win_pct 0.70  → multiplier ~0.73  (contender, low pick)
+    if round_num == 1 and team_win_pct is not None:
+        # Linear: 1.0 + (0.5 - win_pct) * 0.70, clamped [0.50, 1.60]
+        record_mult = 1.0 + (0.5 - team_win_pct) * 0.70
+        record_mult = max(0.50, min(1.60, record_mult))
+        value *= record_mult
+
     return round(value, 2)
 
 
