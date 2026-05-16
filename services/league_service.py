@@ -70,15 +70,21 @@ async def create(
     nba_teams = _load_nba_teams()
     team_roles: list[discord.Role] = []
     try:
-        for team_data in nba_teams:
+        for i, team_data in enumerate(nba_teams):
             team = await team_repo.create(pool, league.id, team_data)
-            discord_role = await guild.create_role(
-                name=f"{team_data['city']} {team_data['name']}",
-                reason=f"DBA team role for {team.full_name}",
+            # Timeout each role creation — discord.py can hang indefinitely on
+            # rate-limit backoff if the server's role bucket is exhausted.
+            discord_role = await asyncio.wait_for(
+                guild.create_role(
+                    name=f"{team_data['city']} {team_data['name']}",
+                    reason=f"DBA team role for {team.full_name}",
+                ),
+                timeout=20,
             )
             await league_repo.add_role(pool, league.id, "team", team.id, discord_role.id)
             team_roles.append(discord_role)
-            await asyncio.sleep(0.3)  # pace role creations to stay within rate limits
+            log.info(f"League {league.id}: created team {i+1}/30 ({team_data['code']})")
+            await asyncio.sleep(0.5)  # 0.5s between roles — safer rate-limit margin
 
         team_count = await pool.fetchval(
             "SELECT COUNT(*) FROM teams WHERE league_id = $1", league.id
