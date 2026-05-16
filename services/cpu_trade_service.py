@@ -335,47 +335,47 @@ async def _maybe_auto_approve(pool, league: league_repo.League, trade) -> None:
 
     # Always auto-approve CPU-to-CPU (human guard above ensures no human is involved).
     async with pool.acquire() as conn:
-            async with conn.transaction():
-                for asset in assets:
-                    if asset.asset_type == "player" and asset.player_id:
-                        await conn.execute(
-                            "UPDATE players SET team_id = $1 WHERE id = $2",
-                            asset.to_team_id,
-                            asset.player_id,
-                        )
-                        await conn.execute(
-                            "UPDATE contracts SET team_id = $1 "
-                            "WHERE player_id = $2 AND is_active = TRUE",
-                            asset.to_team_id,
-                            asset.player_id,
-                        )
-                    elif asset.asset_type == "pick" and asset.pick_id:
-                        await conn.execute(
-                            "UPDATE draft_picks SET current_team_id = $1 WHERE id = $2",
-                            asset.to_team_id,
-                            asset.pick_id,
-                        )
+        async with conn.transaction():
+            for asset in assets:
+                if asset.asset_type == "player" and asset.player_id:
+                    await conn.execute(
+                        "UPDATE players SET team_id = $1 WHERE id = $2",
+                        asset.to_team_id,
+                        asset.player_id,
+                    )
+                    await conn.execute(
+                        "UPDATE contracts SET team_id = $1 "
+                        "WHERE player_id = $2 AND is_active = TRUE",
+                        asset.to_team_id,
+                        asset.player_id,
+                    )
+                elif asset.asset_type == "pick" and asset.pick_id:
+                    await conn.execute(
+                        "UPDATE draft_picks SET current_team_id = $1 WHERE id = $2",
+                        asset.to_team_id,
+                        asset.pick_id,
+                    )
 
-                await conn.execute(
-                    """
-                    UPDATE trades
-                    SET status = 'approved',
-                        resolved_at = NOW()
-                    WHERE id = $1
-                    """,
-                    trade.id,
-                )
-
-        traded_player_ids = [
-            a.player_id for a in assets if a.asset_type == "player" and a.player_id
-        ]
-        if traded_player_ids:
-            from data.repositories import trade_block_repo
-            await trade_block_repo.remove_players_from_block(
-                pool, trade.league_id, traded_player_ids
+            await conn.execute(
+                """
+                UPDATE trades
+                SET status = 'approved',
+                    resolved_at = NOW()
+                WHERE id = $1
+                """,
+                trade.id,
             )
 
-        log.info(f"CPU-to-CPU trade {trade.id} auto-approved")
+    traded_player_ids = [
+        a.player_id for a in assets if a.asset_type == "player" and a.player_id
+    ]
+    if traded_player_ids:
+        from data.repositories import trade_block_repo
+        await trade_block_repo.remove_players_from_block(
+            pool, trade.league_id, traded_player_ids
+        )
+
+    log.info(f"CPU-to-CPU trade {trade.id} auto-approved")
 
 
 async def _build_return_package(
