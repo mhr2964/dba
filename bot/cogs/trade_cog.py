@@ -156,11 +156,26 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         players_by_id, picks_by_id = await _build_asset_lookup(pool, assets)
         card = trade_embeds.trade_card(trade, assets, proposer_team, counterparty_team, players_by_id, picks_by_id)
 
-        if trade.status == "declined":
+        if trade.status in ("declined", "rejected"):
             await interaction.followup.send(
                 f"The CPU **{counterparty_team.full_name}** declined the trade.\n"
                 f"Reason: {trade.cpu_rationale or 'No reason given.'}",
                 ephemeral=True,
+            )
+            return
+
+        if trade.status == "counter_offered":
+            # CPU sent back a counter-offer — load its assets and display them.
+            counter_assets = await trade_repo.get_assets(pool, trade.id)
+            counter_players_by_id, counter_picks_by_id = await _build_asset_lookup(pool, counter_assets)
+            counter_card = trade_embeds.trade_card(
+                trade, counter_assets, counterparty_team, proposer_team,
+                counter_players_by_id, counter_picks_by_id,
+            )
+            await interaction.followup.send(
+                f"The CPU **{counterparty_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
+                f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond.",
+                embed=counter_card,
             )
             return
 
@@ -277,11 +292,25 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         players_by_id, picks_by_id = await _build_asset_lookup(pool, assets)
         card = trade_embeds.trade_card(trade, assets, proposer_team, cpu_team, players_by_id, picks_by_id)
 
-        if trade.status == "declined":
+        if trade.status in ("declined", "rejected"):
             await interaction.followup.send(
                 f"The CPU **{cpu_team.full_name}** declined the trade.\n"
                 f"Reason: {trade.cpu_rationale or 'No reason given.'}",
                 ephemeral=True,
+            )
+            return
+
+        if trade.status == "counter_offered":
+            counter_assets = await trade_repo.get_assets(pool, trade.id)
+            counter_players_by_id, counter_picks_by_id = await _build_asset_lookup(pool, counter_assets)
+            counter_card = trade_embeds.trade_card(
+                trade, counter_assets, cpu_team, proposer_team,
+                counter_players_by_id, counter_picks_by_id,
+            )
+            await interaction.followup.send(
+                f"The CPU **{cpu_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
+                f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond.",
+                embed=counter_card,
             )
             return
 

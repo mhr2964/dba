@@ -162,7 +162,7 @@ async def update_status(
     commissioner_by: Optional[int] = None,
     reason: Optional[str] = None,
 ) -> None:
-    resolved_statuses = {"approved", "vetoed", "declined", "expired"}
+    resolved_statuses = {"approved", "vetoed", "declined", "rejected", "expired"}
     if status in resolved_statuses:
         await pool.execute(
             """

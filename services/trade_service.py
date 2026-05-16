@@ -186,20 +186,218 @@ async def _cpu_evaluate(
     if accept:
         await trade_repo.update_status(pool, trade.id, "pending_commissioner")
         log.info(f"CPU auto-accepted trade {trade.id}: {reason}")
-    else:
-        await trade_repo.update_status(pool, trade.id, "declined")
-        log.info(f"CPU auto-declined trade {trade.id}: {reason}")
+        updated = await trade_repo.get_trade(pool, trade.id)
+        return updated
 
+    # CPU declined — determine whether to counter-offer or reject outright.
+    # "Close" = differential is within 20% of the larger side's value.
+    # Way off (>20%) → reject immediately so it never lands in commissioner queue.
+    score_a = evaluation["score_a"]
+    score_b = evaluation["score_b"]
+    max_side = max(score_a, score_b, 1.0)
+    differential = evaluation["differential"]
+    closeness_pct = differential / max_side
+
+    # Only attempt a counter when the CPU is the losing side (giving more than receiving).
+    # If the CPU is already winning the trade but still declined (e.g. franchise cornerstone
+    # rule), just reject — there's no rational counter that makes it worse for the CPU.
+    cpu_is_losing = score_b > score_a  # CPU gives score_b, receives score_a
+
+    if cpu_is_losing and closeness_pct <= 0.20:
+        # Close enough — try to build a counter-offer by stripping one asset from the
+        # CPU's side and/or asking for an extra player/pick from the proposer.
+        # Strategy: remove the lowest-value player from CPU's giving side, or add a
+        # round-2 pick demand to the proposer's side.  Keep it simple — one adjustment.
+        counter_trade = await _attempt_counter_offer(
+            pool,
+            trade,
+            league,
+            proposer_team,
+            counterparty_team,
+            proposer_players,
+            proposer_picks,
+            counterparty_players,
+            counterparty_picks,
+        )
+        if counter_trade is not None:
+            # Mark the original trade as declined so it doesn't clutter the queue.
+            await trade_repo.update_status(pool, trade.id, "declined")
+            log.info(
+                f"CPU counter-offered trade {trade.id} with new trade {counter_trade.id}: {reason}"
+            )
+            return counter_trade
+
+    # Outright rejection — use 'rejected' (resolved) rather than 'declined' so callers
+    # can distinguish CPU hard-refusal from a counter that didn't materialise.
+    await trade_repo.update_status(pool, trade.id, "rejected")
+    log.info(f"CPU rejected trade {trade.id}: {reason}")
     updated = await trade_repo.get_trade(pool, trade.id)
     return updated
 
 
+async def _attempt_counter_offer(
+    pool,
+    original_trade: trade_repo.Trade,
+    league: league_repo.League,
+    proposer_team,
+    counterparty_team,
+    proposer_players,
+    proposer_picks: list[dict],
+    counterparty_players,
+    counterparty_picks: list[dict],
+) -> "trade_repo.Trade | None":
+    """
+    Build a counter-offer when the CPU team's valuation is close but not quite there.
+    Strategy: remove the lowest-value player from the CPU's giving side, then re-propose
+    the adjusted package (CPU gives less, asking same from proposer).  If the CPU's
+    giving side only has one player we add a round-2 pick demand to the proposer's
+    side instead.  Returns the new Trade if successfully created, else None.
+    """
+    def _player_age(player: player_repo.Player) -> int:
+        if player.birth_date:
+            today = datetime.date.today()
+            age = today.year - player.birth_date.year
+            if (today.month, today.day) < (player.birth_date.month, player.birth_date.day):
+                age -= 1
+            return age
+        return 28
+
+    try:
+        # Score each player the CPU is giving up and find the cheapest one to drop.
+        scored_cpu_players: list[tuple[float, int]] = []
+        for p in counterparty_players:
+            contract = await player_repo.get_active_contract(pool, p.id)
+            v = trade_evaluator.player_trade_value(
+                {"overall": p.overall, "age": _player_age(p)},
+                {
+                    "salary": contract.salary if contract else 0,
+                    "years_remaining": contract.years_remaining if contract else 1,
+                },
+                league.salary_cap,
+            )
+            scored_cpu_players.append((v, p.id))
+
+        scored_cpu_players.sort()  # ascending — cheapest first
+
+        if len(scored_cpu_players) > 1:
+            # Drop the cheapest player from the CPU's side.
+            drop_id = scored_cpu_players[0][1]
+            new_counterparty_players = [p for p in counterparty_players if p.id != drop_id]
+            new_counterparty_picks = counterparty_picks
+            new_proposer_players = proposer_players
+            new_proposer_picks = proposer_picks
+        else:
+            # CPU is only giving one player — instead, ask proposer to add a pick.
+            # Find a round-2 pick owned by the proposer to request.
+            available_picks = await trade_repo.get_team_picks(pool, league.id, proposer_team.id)
+            r2_picks = [pk for pk in available_picks if pk["round"] == 2]
+            if not r2_picks:
+                # Nothing to add — can't build a useful counter.
+                return None
+            extra_pick_id = r2_picks[0]["id"]
+            # Re-validate that the pick still belongs to the proposer.
+            pk_row = await pool.fetchrow("SELECT * FROM draft_picks WHERE id = $1", extra_pick_id)
+            if not pk_row or pk_row["current_team_id"] != proposer_team.id:
+                return None
+            new_counterparty_players = counterparty_players
+            new_counterparty_picks = counterparty_picks
+            new_proposer_players = proposer_players
+            new_proposer_picks = list(proposer_picks) + [dict(pk_row)]
+
+        if not new_counterparty_players and not new_counterparty_picks:
+            return None
+
+        counter_trade = await create_trade_record(
+            pool,
+            league=league,
+            proposer_team=counterparty_team,   # CPU is now the proposer
+            counterparty_team=proposer_team,   # original proposer receives the counter
+            proposer_player_ids=[p.id for p in new_counterparty_players],
+            proposer_pick_ids=[pk["id"] for pk in new_counterparty_picks],
+            counterparty_player_ids=[p.id for p in new_proposer_players],
+            counterparty_pick_ids=[pk["id"] for pk in new_proposer_picks],
+            initial_status="counter_offered",
+        )
+        log.info(
+            f"CPU built counter-offer trade {counter_trade.id} "
+            f"in response to original trade {original_trade.id}"
+        )
+        return counter_trade
+    except Exception as exc:
+        log.warning(f"Counter-offer construction failed for trade {original_trade.id}: {exc}")
+        return None
+
+
+async def create_trade_record(
+    pool,
+    league: league_repo.League,
+    proposer_team,
+    counterparty_team,
+    proposer_player_ids: list[int],
+    proposer_pick_ids: list[int],
+    counterparty_player_ids: list[int],
+    counterparty_pick_ids: list[int],
+    initial_status: str = "pending_counterparty",
+) -> trade_repo.Trade:
+    """
+    Create a trade record and its assets without running any validation or CPU evaluation.
+    Used internally (e.g. counter-offer generation).  Callers are responsible for ensuring
+    all asset ownership is correct before calling this.
+    """
+    trade = await trade_repo.create_trade(
+        pool,
+        league_id=league.id,
+        season=league.current_season,
+        proposer_id=proposer_team.id,
+        counterparty_id=counterparty_team.id,
+    )
+    if initial_status != "pending_counterparty":
+        await trade_repo.update_status(pool, trade.id, initial_status)
+
+    for pid in proposer_player_ids:
+        await trade_repo.add_asset(
+            pool, trade.id,
+            from_team_id=proposer_team.id,
+            to_team_id=counterparty_team.id,
+            asset_type="player",
+            player_id=pid,
+        )
+    for pick_id in proposer_pick_ids:
+        await trade_repo.add_asset(
+            pool, trade.id,
+            from_team_id=proposer_team.id,
+            to_team_id=counterparty_team.id,
+            asset_type="pick",
+            pick_id=pick_id,
+        )
+    for pid in counterparty_player_ids:
+        await trade_repo.add_asset(
+            pool, trade.id,
+            from_team_id=counterparty_team.id,
+            to_team_id=proposer_team.id,
+            asset_type="player",
+            player_id=pid,
+        )
+    for pick_id in counterparty_pick_ids:
+        await trade_repo.add_asset(
+            pool, trade.id,
+            from_team_id=counterparty_team.id,
+            to_team_id=proposer_team.id,
+            asset_type="pick",
+            pick_id=pick_id,
+        )
+
+    return await trade_repo.get_trade(pool, trade.id)
+
+
 async def accept(pool, trade_id: int, user_team_id: int) -> trade_repo.Trade:
-    """Human counterparty accepts -> status becomes 'pending_commissioner'."""
+    """Human counterparty accepts -> status becomes 'pending_commissioner'.
+    Also handles counter_offered trades (CPU proposed a counter the human can accept).
+    """
     trade = await trade_repo.get_trade(pool, trade_id)
     if not trade:
         raise DBAError(f"Trade #{trade_id} not found.")
-    if trade.status != "pending_counterparty":
+    if trade.status not in ("pending_counterparty", "counter_offered"):
         raise DBAError(f"Trade #{trade_id} is not awaiting your response (status: {trade.status}).")
     if trade.counterparty_team_id != user_team_id:
         raise DBAError("You are not the counterparty on this trade.")
@@ -210,11 +408,13 @@ async def accept(pool, trade_id: int, user_team_id: int) -> trade_repo.Trade:
 
 
 async def decline(pool, trade_id: int, user_team_id: int) -> trade_repo.Trade:
-    """Human counterparty declines -> status becomes 'declined'."""
+    """Human counterparty declines -> status becomes 'declined'.
+    Also handles counter_offered trades.
+    """
     trade = await trade_repo.get_trade(pool, trade_id)
     if not trade:
         raise DBAError(f"Trade #{trade_id} not found.")
-    if trade.status != "pending_counterparty":
+    if trade.status not in ("pending_counterparty", "counter_offered"):
         raise DBAError(f"Trade #{trade_id} is not awaiting your response (status: {trade.status}).")
     if trade.counterparty_team_id != user_team_id:
         raise DBAError("You are not the counterparty on this trade.")
@@ -332,6 +532,30 @@ async def approve(
                     await conn.execute(
                         "UPDATE contracts SET team_id = $1 WHERE player_id = $2 AND is_active = TRUE",
                         asset.to_team_id,
+                        asset.player_id,
+                    )
+                    # Remove from old team's lineup so the sim engine doesn't keep
+                    # playing them for the wrong team after the trade clears.
+                    await conn.execute(
+                        "DELETE FROM lineups WHERE league_id = $1 AND player_id = $2",
+                        trade.league_id,
+                        asset.player_id,
+                    )
+                    # Insert into new team's lineup at the next open slot.
+                    next_slot = await conn.fetchval(
+                        "SELECT COALESCE(MAX(slot), 0) + 1 FROM lineups "
+                        "WHERE league_id = $1 AND team_id = $2",
+                        trade.league_id,
+                        asset.to_team_id,
+                    )
+                    await conn.execute(
+                        """INSERT INTO lineups
+                               (league_id, team_id, is_starter, slot, player_id, set_by)
+                           VALUES ($1, $2, FALSE, $3, $4, NULL)
+                           ON CONFLICT (league_id, team_id, slot) DO NOTHING""",
+                        trade.league_id,
+                        asset.to_team_id,
+                        next_slot,
                         asset.player_id,
                     )
                 elif asset.asset_type == "pick" and asset.pick_id:
