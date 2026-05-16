@@ -14,6 +14,40 @@ _SEASON_START_MONTH = 10
 _SEASON_START_DAY = 1
 
 
+def _balance_pairs(pairs: List[Tuple[int, int]], rng: Random) -> List[Tuple[int, int]]:
+    """
+    Reorder pairs so each team's games are distributed evenly across the list.
+    Uses a greedy approach: always next schedule the pair where the most-behind
+    team (fewest games scheduled so far) gets a game.
+
+    After this pass, team N's 82 appearances are spread roughly every
+    len(pairs)/82 ≈ 14.8 positions. With 195 days in the window, each team
+    plays roughly every 195/82 ≈ 2.4 days — about 12-13 games per month.
+
+    list.pop(best_idx) is O(n) per call, O(n²) total. For n=1214 that is
+    ~1.5 M operations, well under 1 second.
+    """
+    from collections import defaultdict
+    team_count: dict[int, int] = defaultdict(int)
+    pool = list(pairs)
+    rng.shuffle(pool)  # initial shuffle for variety
+    result: list[tuple[int, int]] = []
+
+    while pool:
+        # Score each candidate game by the maximum games-so-far of either team.
+        # Lower score → both teams are more behind → pick this game next.
+        best_idx = min(
+            range(len(pool)),
+            key=lambda i: max(team_count[pool[i][0]], team_count[pool[i][1]]),
+        )
+        game = pool.pop(best_idx)
+        result.append(game)
+        team_count[game[0]] += 1
+        team_count[game[1]] += 1
+
+    return result
+
+
 def _build_pairs(teams: List[team_repo.Team]) -> List[Tuple[int, int, int]]:
     """
     Return list of (home_id, away_id, game_number_within_series) for all 82-game matchups.
@@ -166,7 +200,7 @@ async def generate_season(league_id: int, season: int) -> int:
     rng = Random(rng_seed)
 
     pairs = _build_pairs(teams)
-    rng.shuffle(pairs)
+    pairs = _balance_pairs(pairs, rng)
 
     scheduled = _assign_dates(rng, pairs, season)
     scheduled.sort(key=lambda x: x[2])

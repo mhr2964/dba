@@ -18,9 +18,11 @@ from core.logging import get_logger
 log = get_logger(__name__)
 
 # Minimum games played within the month to be eligible.
-# ~10 games is roughly half a month of NBA games; below this the sample is
-# too small to be meaningful (e.g. a player who played 4 games mid-month).
-_MIN_GAMES = 10
+# 3 games is a low bar intentionally: eligibility is determined by the
+# schedule spreading games evenly, not by an artificial floor.  The real
+# NBA uses ~10 games but our sim awards are commissioner-facing and the
+# schedule guarantees ~12-13 games per team per month.
+_MIN_GAMES = 3
 
 
 def _prev_month(year_month: str) -> str:
