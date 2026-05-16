@@ -54,6 +54,30 @@ _BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
 _TENDENCY_STATS = ("ast", "reb", "stl", "blk")
 _DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50, "usage_weight": 50}
 
+# Position-based hard caps on tendency values.
+# Guards can't rebound like bigs; bad-defender wings can't block like centers.
+_REB_TENDENCY_CAP: dict[str, int] = {
+    "PG": 45,
+    "SG": 50,
+    "SF": 65,
+    "PF": 80,
+    "C":  90,
+}
+_STL_TENDENCY_CAP: dict[str, int] = {
+    "PG": 70,
+    "SG": 70,
+    "SF": 65,
+    "PF": 60,
+    "C":  55,
+}
+_BLK_TENDENCY_CAP: dict[str, int] = {
+    "PG": 40,
+    "SG": 45,
+    "SF": 60,
+    "PF": 80,
+    "C":  90,
+}
+
 
 def _load_bdl_base(season: int) -> dict[int, dict]:
     """Load season_{season}_base.json and return {bdl_player_id: record}.
@@ -143,6 +167,12 @@ def _compute_stat_tendencies(
     Returns:
         blk_tendency, stl_tendency, ast_tendency, reb_tendency — scaled 5–95
             (50 = position-average, >50 = above-average).
+            Position-based hard caps are applied after scaling so that guards
+            cannot rebound or block at big-man rates regardless of relative rank.
+        defense_tendency — derived from actual stl+blk per game relative to
+            position average.  Players with low stl/blk (e.g. Luka) receive a
+            low defense_tendency (35-50) even if their overall OVR is high.
+            Scaled 5–85; cap keeps even elite defenders from dominating.
         usage_weight — scored as clamp(round((pts / 25.0) * 100), 10, 95).
             25 PPG → 100 (clamps to 95), 20 PPG → 80, 10 PPG → 40, 0 PPG → floored to 10.
             This is what the sim engine reads to weight scoring allocation;
@@ -166,10 +196,13 @@ def _compute_stat_tendencies(
     rec = by_id[bdl_id]
     stats = rec.get("stats", {})
 
-    # Normalize position to G/F/C
-    pos = position or rec["player"].get("position") or "G"
-    if len(pos) > 1:
-        pos = pos[-1]
+    # Keep full position string (PG/SG/SF/PF/C) for cap lookups; normalize to
+    # G/F/C only for position-average bucket access.
+    full_pos = (position or rec["player"].get("position") or "PG").upper()
+    if full_pos not in _REB_TENDENCY_CAP:
+        full_pos = "SF"  # safe fallback for unrecognised position strings
+
+    pos = full_pos[-1]  # 'G', 'F', or 'C' for bucket lookup
     if pos not in ("G", "F", "C"):
         pos = "G"
 
@@ -185,11 +218,28 @@ def _compute_stat_tendencies(
     pts = float(stats.get("pts") or 0.0)
     usage_weight = max(10, min(95, round((pts / 25.0) * 100)))
 
+    reb_tendency = min(_tend("reb"), _REB_TENDENCY_CAP.get(full_pos, 65))
+    stl_tendency = min(_tend("stl"), _STL_TENDENCY_CAP.get(full_pos, 65))
+    blk_tendency = min(_tend("blk"), _BLK_TENDENCY_CAP.get(full_pos, 60))
+
+    # defense_tendency: weighted composite of stl+blk relative to position average.
+    # Stl contributes 60%, blk 40% (steals are a better proxy for active defense).
+    # Capped at 85 so no player is a lockdown god in the sim.
+    stl_val = float(stats.get("stl") or 0.0)
+    blk_val = float(stats.get("blk") or 0.0)
+    stl_avg = p_avgs.get("stl") or 1.0
+    blk_avg = p_avgs.get("blk") or 1.0
+    defense_raw = round(
+        ((stl_val / stl_avg) * 0.60 + (blk_val / blk_avg) * 0.40) * 50
+    )
+    defense_tendency = max(5, min(85, defense_raw))
+
     return {
-        "blk_tendency": _tend("blk"),
-        "stl_tendency": _tend("stl"),
+        "blk_tendency": blk_tendency,
+        "stl_tendency": stl_tendency,
         "ast_tendency": _tend("ast"),
-        "reb_tendency": _tend("reb"),
+        "reb_tendency": reb_tendency,
+        "defense_tendency": defense_tendency,
         "usage_weight": usage_weight,
     }
 
@@ -523,18 +573,20 @@ async def apply_reseed(
             await pool.execute(
                 """
                 UPDATE players
-                SET blk_tendency = $1,
-                    stl_tendency = $2,
-                    ast_tendency = $3,
-                    reb_tendency = $4,
-                    usage_weight  = $5
-                WHERE id = $6
+                SET blk_tendency      = $1,
+                    stl_tendency      = $2,
+                    ast_tendency      = $3,
+                    reb_tendency      = $4,
+                    usage_weight      = $5,
+                    defense_tendency  = $6
+                WHERE id = $7
                 """,
                 tendencies["blk_tendency"],
                 tendencies["stl_tendency"],
                 tendencies["ast_tendency"],
                 tendencies["reb_tendency"],
                 tendencies["usage_weight"],
+                tendencies.get("defense_tendency", 50),
                 player_id,
             )
 
@@ -588,18 +640,20 @@ async def apply_reseed(
             await pool.execute(
                 """
                 UPDATE players
-                SET blk_tendency = $1,
-                    stl_tendency = $2,
-                    ast_tendency = $3,
-                    reb_tendency = $4,
-                    usage_weight  = $5
-                WHERE id = $6
+                SET blk_tendency      = $1,
+                    stl_tendency      = $2,
+                    ast_tendency      = $3,
+                    reb_tendency      = $4,
+                    usage_weight      = $5,
+                    defense_tendency  = $6
+                WHERE id = $7
                 """,
                 tendencies["blk_tendency"],
                 tendencies["stl_tendency"],
                 tendencies["ast_tendency"],
                 tendencies["reb_tendency"],
                 tendencies["usage_weight"],
+                tendencies.get("defense_tendency", 50),
                 player_id,
             )
 

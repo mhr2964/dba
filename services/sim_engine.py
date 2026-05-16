@@ -182,7 +182,10 @@ def _assign_team_stats(
 
     stl_total = rng.randint(6, 10)
     stl_weights = [
-        players[i].get("defense", 50)
+        # defense_tendency is derived from actual stl+blk per game (not raw OVR),
+        # so bad-defender stars like Luka don't steal at an elite rate.
+        # Fall back to defense attribute if defense_tendency is absent (old rows).
+        players[i].get("defense_tendency", players[i].get("defense", 50))
         * (players[i].get("stl_tendency", 50) / 50.0)
         * (players[i].get("defensive_effort", 50) / 50.0)
         * minutes_list[i]
@@ -192,9 +195,10 @@ def _assign_team_stats(
 
     blk_total = rng.randint(4, 8)
     blk_weights = [
-        players[i].get("defense", 50)
+        players[i].get("defense_tendency", players[i].get("defense", 50))
         * (players[i].get("blk_tendency", 50) / 50.0)
         * (players[i].get("defensive_effort", 50) / 50.0)
+        * _POSITION_BLOCK_WEIGHT.get(players[i].get("position", "SF"), 1.0)
         * minutes_list[i]
         for i in range(n)
     ]
@@ -430,7 +434,9 @@ def sim_game(
     away_def = away_team.get("defense_rating") or 75
 
     def _ppp(off: float, opp_def: float) -> float:
-        base = 1.08 + (off - 60) / (95 - 60) * 0.22
+        # Base raised from 1.08 → 1.11 to add ~2.5 PPG league-wide.
+        # Each 0.01 increase in base yields ~0.8 PPG (80 possessions × 0.01).
+        base = 1.11 + (off - 60) / (95 - 60) * 0.22
         base *= 1 - (opp_def - 60) / (95 - 60) * 0.10
         base *= rng.gauss(1.0, 0.05)
         return base
