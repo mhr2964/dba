@@ -111,20 +111,16 @@ async def create(
             f"Error: {type(exc).__name__}: {exc}"
         ) from exc
 
-    # Place all DBA roles just below the bot's managed role so the bot can
-    # always manage (and later delete) them regardless of future reordering.
+    # Place the commissioner role just below the bot's managed role.
+    # Team roles are created lazily on /team assign, so only the commissioner role exists now.
     bot_top_role = guild.me.top_role if guild.me else None
     if bot_top_role and bot_top_role.position > 1:
-        base_pos = bot_top_role.position - 1
-        all_dba_roles = [commissioner_role] + team_roles
-        position_map = {
-            role: max(1, base_pos - i)
-            for i, role in enumerate(all_dba_roles)
-        }
         try:
-            await guild.edit_role_positions(positions=position_map)
+            await guild.edit_role_positions(positions={
+                commissioner_role: max(1, bot_top_role.position - 1)
+            })
         except discord.HTTPException as exc:
-            log.warning(f"Could not reorder DBA roles: {exc}")
+            log.warning(f"Could not reorder commissioner role: {exc}")
 
     await trade_repo.seed_picks_for_league(pool, league.id, season_year)
 

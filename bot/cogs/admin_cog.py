@@ -636,7 +636,28 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             inline=True,
         )
         embed.set_footer(text="Server is clean. Use /league create to start fresh.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        # Send result to a channel that still exists — the DBA channels were just deleted,
+        # so posting to the interaction channel (which may be #league-news) would 404.
+        # Try the guild's system channel, then DM the user, as fallbacks.
+        sent = False
+        if guild.system_channel:
+            try:
+                await guild.system_channel.send(embed=embed)
+                sent = True
+            except discord.HTTPException:
+                pass
+        if not sent:
+            try:
+                await interaction.user.send(embed=embed)
+                sent = True
+            except discord.HTTPException:
+                pass
+        if not sent:
+            # Last resort — try the followup (may 404 if issued from a deleted channel)
+            try:
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except discord.HTTPException:
+                pass
 
 
     @app_commands.command(
