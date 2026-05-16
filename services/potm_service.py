@@ -18,7 +18,9 @@ from core.logging import get_logger
 log = get_logger(__name__)
 
 # Minimum games played within the month to be eligible.
-_MIN_GAMES = 3
+# ~10 games is roughly half a month of NBA games; below this the sample is
+# too small to be meaningful (e.g. a player who played 4 games mid-month).
+_MIN_GAMES = 10
 
 
 def _prev_month(year_month: str) -> str:

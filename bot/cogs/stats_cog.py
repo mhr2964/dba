@@ -60,7 +60,12 @@ async def _season_stats_for_player(pool, player_id: int) -> dict | None:
 
 
 async def _recent_games_for_player(pool, player_id: int, n: int = 5) -> list[dict]:
-    """Return last N game lines for a player, newest first."""
+    """Return last N game lines for a player, newest first.
+
+    Orders by game_id (insertion order) rather than scheduled_date so that
+    playoff games — which used to receive real-world wall-clock dates — don't
+    sort above earlier regular-season games incorrectly.
+    """
     rows = await pool.fetch(
         """
         SELECT
@@ -73,7 +78,7 @@ async def _recent_games_for_player(pool, player_id: int, n: int = 5) -> list[dic
         FROM game_box_scores b
         JOIN games g ON g.id = b.game_id
         WHERE b.player_id = $1
-        ORDER BY g.scheduled_date DESC
+        ORDER BY g.id DESC
         LIMIT $2
         """,
         player_id,
