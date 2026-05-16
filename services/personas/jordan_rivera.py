@@ -16,5 +16,5 @@ jordan_rivera = Persona(
         "Be specific: call out the performance, call out the player, say what it means. "
         "Return ONLY valid JSON: {\"headline\": \"...\", \"body\": \"...\"}. No markdown, no code fences."
     ),
-    categories=("headline", "hot_take"),
+    categories=("headline", "hot_take", "playoff_recap"),
 )

@@ -91,13 +91,16 @@ def _assign_dates(
     season: int,
 ) -> List[Tuple[int, int, datetime.date]]:
     """
-    Assign scheduled dates. Starts {season}-10-01, advances ~1 day per 1.2 games on average
-    with ±1 day jitter. Returns (home_id, away_id, date).
+    Assign scheduled dates. Starts {season}-10-01, spreads all games across a
+    195-day regular-season window (Oct 1 → ~Apr 14) regardless of league size.
+    ±1 day jitter is applied per game.
     """
     base_date = datetime.date(season, _SEASON_START_MONTH, _SEASON_START_DAY)
+    # Compute divisor dynamically so all games fit within the regular-season window
+    games_per_day = max(1.0, len(games) / 195.0)
     result = []
     for i, (home_id, away_id) in enumerate(games):
-        offset_days = int(i / 1.2) + rng.randint(-1, 1)
+        offset_days = int(i / games_per_day) + rng.randint(-1, 1)
         game_date = base_date + datetime.timedelta(days=max(0, offset_days))
         result.append((home_id, away_id, game_date))
     return result

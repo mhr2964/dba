@@ -41,6 +41,148 @@ _SEEDS_DIR = os.path.normpath(
 
 _stats_ratings_cache: dict[int, dict[str, int]] = {}
 
+# ---------------------------------------------------------------------------
+# Stat-tendency computation from BDL base cache
+# ---------------------------------------------------------------------------
+
+# Keyed by season int -> {"G": {ast: avg, reb: avg, stl: avg, blk: avg}, "F": ..., "C": ...}
+_position_avgs_cache: dict[int, dict[str, dict[str, float]]] = {}
+# Keyed by season int -> {bdl_player_id: record}
+_bdl_base_cache: dict[int, dict[int, dict]] = {}
+
+_BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
+_TENDENCY_STATS = ("ast", "reb", "stl", "blk")
+_DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50}
+
+
+def _load_bdl_base(season: int) -> dict[int, dict]:
+    """Load season_{season}_base.json and return {bdl_player_id: record}.
+    Results are cached at module level (one load per season per process).
+    """
+    if season in _bdl_base_cache:
+        return _bdl_base_cache[season]
+    path = _BDL_CACHE_DIR / f"season_{season}_base.json"
+    if not path.exists():
+        _bdl_base_cache[season] = {}
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            records = json.load(f)
+        by_id = {rec["player"]["id"]: rec for rec in records}
+        _bdl_base_cache[season] = by_id
+        return by_id
+    except (json.JSONDecodeError, KeyError, OSError):
+        _bdl_base_cache[season] = {}
+        return {}
+
+
+def _get_position_avgs(season: int, by_id: dict[int, dict]) -> dict[str, dict[str, float]]:
+    """Compute per-position averages for ast/reb/stl/blk for a given season.
+    Uses only players with gp >= 10 to filter out noise from injury-shortened
+    seasons.  Cached so it runs once per season per process.
+    """
+    if season in _position_avgs_cache:
+        return _position_avgs_cache[season]
+
+    buckets: dict[str, dict[str, list[float]]] = {}
+    for rec in by_id.values():
+        stats = rec.get("stats", {})
+        gp = int(stats.get("gp", 0) or 0)
+        if gp < 10:
+            continue
+        pos = rec["player"].get("position") or "G"
+        # Normalize multi-char positions (e.g. "PG", "SG" -> "G"; "PF", "SF" -> "F")
+        if len(pos) > 1:
+            pos = pos[-1]  # last char: 'G', 'F', or 'C'
+        if pos not in ("G", "F", "C"):
+            pos = "G"
+        bucket = buckets.setdefault(pos, {s: [] for s in _TENDENCY_STATS})
+        for stat in _TENDENCY_STATS:
+            val = stats.get(stat)
+            if val is not None:
+                bucket[stat].append(float(val))
+
+    avgs: dict[str, dict[str, float]] = {}
+    for pos, stat_lists in buckets.items():
+        avgs[pos] = {}
+        for stat, vals in stat_lists.items():
+            avgs[pos][stat] = sum(vals) / len(vals) if vals else 1.0
+
+    # Fallback: if any position bucket is missing, use overall average
+    all_avgs: dict[str, float] = {}
+    for stat in _TENDENCY_STATS:
+        all_vals: list[float] = []
+        for rec in by_id.values():
+            stats = rec.get("stats", {})
+            if int(stats.get("gp", 0) or 0) < 10:
+                continue
+            v = stats.get(stat)
+            if v is not None:
+                all_vals.append(float(v))
+        all_avgs[stat] = sum(all_vals) / len(all_vals) if all_vals else 1.0
+
+    for pos in ("G", "F", "C"):
+        if pos not in avgs:
+            avgs[pos] = dict(all_avgs)
+        else:
+            for stat in _TENDENCY_STATS:
+                if stat not in avgs[pos] or avgs[pos][stat] == 0.0:
+                    avgs[pos][stat] = all_avgs.get(stat, 1.0)
+
+    _position_avgs_cache[season] = avgs
+    return avgs
+
+
+def _compute_stat_tendencies(
+    external_id: "int | str | None",
+    season: int,
+    position: str,
+) -> dict[str, int]:
+    """Return {blk_tendency, stl_tendency, ast_tendency, reb_tendency} scaled 5–95.
+
+    Scale: clamp(round((player_avg / position_avg) * 50), 5, 95)
+    so 50 = exactly position-average, >50 = above-average for that position.
+
+    Falls back to all-50 defaults if the player is not found or the cache
+    file is missing — existing rows without BDL data are unaffected.
+    """
+    if external_id is None:
+        return dict(_DEFAULT_TENDENCIES)
+
+    by_id = _load_bdl_base(season)
+    if not by_id:
+        return dict(_DEFAULT_TENDENCIES)
+
+    bdl_id = int(external_id) if str(external_id).isdigit() else None
+    if bdl_id is None or bdl_id not in by_id:
+        return dict(_DEFAULT_TENDENCIES)
+
+    rec = by_id[bdl_id]
+    stats = rec.get("stats", {})
+
+    # Normalize position to G/F/C
+    pos = position or rec["player"].get("position") or "G"
+    if len(pos) > 1:
+        pos = pos[-1]
+    if pos not in ("G", "F", "C"):
+        pos = "G"
+
+    pos_avgs = _get_position_avgs(season, by_id)
+    p_avgs = pos_avgs.get(pos, {s: 1.0 for s in _TENDENCY_STATS})
+
+    def _tend(stat: str) -> int:
+        player_val = float(stats.get(stat) or 0.0)
+        denom = p_avgs.get(stat) or 1.0
+        raw = round((player_val / denom) * 50)
+        return max(5, min(95, raw))
+
+    return {
+        "blk_tendency": _tend("blk"),
+        "stl_tendency": _tend("stl"),
+        "ast_tendency": _tend("ast"),
+        "reb_tendency": _tend("reb"),
+    }
+
 
 def _load_stats_ratings(season: int) -> dict[str, int]:
     """Load data/stats_ratings/{season}.json. Returns empty dict on any IO/parse error."""
@@ -365,6 +507,25 @@ async def apply_reseed(
             )
             await mark_players_seeded(pool, [player_id], season)
 
+            tendencies = _compute_stat_tendencies(
+                seed_row.get("external_id"), season, position
+            )
+            await pool.execute(
+                """
+                UPDATE players
+                SET blk_tendency = $1,
+                    stl_tendency = $2,
+                    ast_tendency = $3,
+                    reb_tendency = $4
+                WHERE id = $5
+                """,
+                tendencies["blk_tendency"],
+                tendencies["stl_tendency"],
+                tendencies["ast_tendency"],
+                tendencies["reb_tendency"],
+                player_id,
+            )
+
             affected_team_ids.add(team_id)
             inserted += 1
             log.debug(f"reseed insert: {full_name} -> {target_code} (player_id={player_id})")
@@ -408,6 +569,25 @@ async def apply_reseed(
                 salary, contract_type, years, current_season,
             )
             await mark_players_seeded(pool, [player_id], season)
+
+            move_position = db_player.get("position", "")
+            move_ext_id = db_player.get("external_id") or seed_row.get("external_id")
+            tendencies = _compute_stat_tendencies(move_ext_id, season, move_position)
+            await pool.execute(
+                """
+                UPDATE players
+                SET blk_tendency = $1,
+                    stl_tendency = $2,
+                    ast_tendency = $3,
+                    reb_tendency = $4
+                WHERE id = $5
+                """,
+                tendencies["blk_tendency"],
+                tendencies["stl_tendency"],
+                tendencies["ast_tendency"],
+                tendencies["reb_tendency"],
+                player_id,
+            )
 
             if entry.get("from_team_code"):
                 old_team_id = await _get_team_id_by_code(

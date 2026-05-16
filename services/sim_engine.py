@@ -161,7 +161,9 @@ def _assign_team_stats(
     reb_def_total = total_reb - reb_off_total
 
     reb_weights = [
-        players[i].get("rebounding", 50) * minutes_list[i]
+        players[i].get("rebounding", 50)
+        * (players[i].get("reb_tendency", 50) / 50.0)
+        * minutes_list[i]
         for i in range(n)
     ]
     reb_offs = _distribute_proportional(rng, reb_off_total, reb_weights)
@@ -172,24 +174,26 @@ def _assign_team_stats(
         players[i].get("playmaking", 50)
         * _POSITION_PLAYMAKING_WEIGHT.get(players[i].get("position", "SF"), 1.0)
         * (players[i].get("tendency_pass", 50) / 50.0)
+        * (players[i].get("ast_tendency", 50) / 50.0)
         * minutes_list[i]
         for i in range(n)
     ]
     asts = _distribute_proportional(rng, ast_total, ast_weights)
 
-    stl_total = rng.randint(5, 10)
+    stl_total = rng.randint(6, 10)
     stl_weights = [
         players[i].get("defense", 50)
+        * (players[i].get("stl_tendency", 50) / 50.0)
         * (players[i].get("defensive_effort", 50) / 50.0)
         * minutes_list[i]
         for i in range(n)
     ]
     stls = _distribute_proportional(rng, stl_total, stl_weights)
 
-    blk_total = rng.randint(3, 7)
+    blk_total = rng.randint(4, 8)
     blk_weights = [
         players[i].get("defense", 50)
-        * _POSITION_BLOCK_WEIGHT.get(players[i].get("position", "SF"), 1.0)
+        * (players[i].get("blk_tendency", 50) / 50.0)
         * (players[i].get("defensive_effort", 50) / 50.0)
         * minutes_list[i]
         for i in range(n)

@@ -116,7 +116,7 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
                 if channel:
                     await channel.send(embed=series_em)
 
-            next_round = await playoff_service.advance_playoff_round(league.id, league.current_season)
+            next_round = await playoff_service.advance_playoff_round(league.id, league.current_season, guild=interaction.guild)
 
             if next_round == "champion":
                 champ_embed = playoff_embeds.champion_embed(winner)

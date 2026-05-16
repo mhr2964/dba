@@ -87,11 +87,12 @@ async def maybe_initiate_round(
 
     proposed_count = 0
     used_pairs: set[tuple[int, int]] = set()
+    taken_player_ids: set[int] = set()
 
     for _ in range(n_offers):
         try:
             count = await _attempt_one_offer(
-                pool, league, cpu_teams, block_by_team, used_pairs
+                pool, league, cpu_teams, block_by_team, used_pairs, taken_player_ids
             )
             proposed_count += count
         except Exception as exc:
@@ -156,6 +157,7 @@ async def _attempt_one_offer(
     cpu_teams: list[team_repo.Team],
     block_by_team: dict[int, list[int]],
     used_pairs: set[tuple[int, int]],
+    taken_player_ids: set[int],
 ) -> int:
     """
     Pick a team A, find the best target from team B, build a return package,
@@ -187,6 +189,10 @@ async def _attempt_one_offer(
 
             # Load and score B's trade block players.
             for pid in b_block_ids:
+                # Skip players already committed to another offer this round.
+                if pid in taken_player_ids:
+                    continue
+
                 p = await player_repo.get_by_id(pool, pid)
                 if not p:
                     continue
@@ -229,6 +235,7 @@ async def _attempt_one_offer(
         team_a,
         block_by_team.get(team_a.id, []),
         target_value,
+        taken_player_ids,
     )
 
     if not offer_player_ids and not offer_pick_ids:
@@ -254,6 +261,11 @@ async def _attempt_one_offer(
         counterparty_player_ids=[target_player.id],
         counterparty_pick_ids=[],
     )
+
+    # Mark all players in this trade as taken so subsequent offers in this round
+    # don't try to re-use them.
+    taken_player_ids.add(target_player.id)
+    taken_player_ids.update(offer_player_ids)
 
     # trade_service.propose runs cpu_should_accept on target_team's side.
     # If accepted it lands as 'pending_commissioner'.
@@ -373,6 +385,7 @@ async def _build_return_package(
     team_a: team_repo.Team,
     block_player_ids: list[int],
     target_value: float,
+    taken_player_ids: set[int],
 ) -> tuple[list[int], list[int], float]:
     """
     Build a return package from team A's trade block players and picks that
@@ -380,6 +393,8 @@ async def _build_return_package(
 
     Returns (player_ids, pick_ids, total_value).
     Prefer picks over players when possible to keep rosters intact.
+    taken_player_ids prevents double-offering players committed to another offer
+    in the same round.
     """
     offer_player_ids: list[int] = []
     offer_pick_ids: list[int] = []
@@ -389,9 +404,12 @@ async def _build_return_package(
     # Load and score A's own trade block players.
     scored_players: list[tuple[float, int]] = []
     for pid in block_player_ids:
-        p = await player_repo.get_by_id(pool, pid)
-        if not p:
+        # Skip players already committed to another offer this round.
+        if pid in taken_player_ids:
             continue
+        p = await player_repo.get_by_id(pool, pid)
+        if not p or p.team_id != team_a.id:
+            continue  # player was already traded away or belongs to another team
         contract = await player_repo.get_active_contract(pool, p.id)
         v = trade_evaluator.player_trade_value(
             {"overall": p.overall, "age": _player_age(p)},

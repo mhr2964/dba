@@ -17,5 +17,5 @@ keisha_williams = Persona(
         "When context includes rebound, assist, steal, or block data, cite at least one non-scoring stat. Analytics without defensive or playmaking context is incomplete. "
         "Return ONLY valid JSON: {\"headline\": \"...\", \"body\": \"...\"}. No markdown, no code fences."
     ),
-    categories=("analysis", "game_recap"),
+    categories=("analysis", "game_recap", "playoff_recap"),
 )

@@ -78,6 +78,11 @@ class Player:
     usage_weight: int = 50
     clutch_rating: int = 50
     defensive_effort: int = 50
+    # Per-stat tendencies derived from BDL actuals; 50 = position-average baseline
+    blk_tendency: int = 50
+    stl_tendency: int = 50
+    ast_tendency: int = 50
+    reb_tendency: int = 50
 
     @property
     def full_name(self) -> str:
@@ -141,6 +146,10 @@ def _player_from_record(r: asyncpg.Record) -> Player:
         usage_weight=r["usage_weight"] if "usage_weight" in keys else 50,
         clutch_rating=r["clutch_rating"] if "clutch_rating" in keys else 50,
         defensive_effort=r["defensive_effort"] if "defensive_effort" in keys else 50,
+        blk_tendency=r["blk_tendency"] if "blk_tendency" in keys else 50,
+        stl_tendency=r["stl_tendency"] if "stl_tendency" in keys else 50,
+        ast_tendency=r["ast_tendency"] if "ast_tendency" in keys else 50,
+        reb_tendency=r["reb_tendency"] if "reb_tendency" in keys else 50,
     )
 
 

@@ -41,6 +41,10 @@ _marcus_game_counter: int = 0
 _COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen"]
 _columnist_rotation_index: int = 0
 
+# Playoff columnist rotation — cycles through recap-capable personas for post-game coverage.
+_PLAYOFF_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams"]
+_playoff_rotation_index: int = 0
+
 
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
     """Auto-populate lineups for a team that has none, using top players by OVR."""
@@ -550,16 +554,19 @@ async def _run_cpu_trades_inner(
         )
         team_codes = {r["id"]: r["nba_team_code"] for r in team_rows}
 
-        # Look up real player names so embeds and Marcus Cole AI context use them.
+        # Look up real player names and OVR so embeds, Marcus Cole context, and
+        # the blockbuster-importance check all have accurate data.
         _player_ids = [a.player_id for a in assets if a.asset_type == "player" and a.player_id]
         if _player_ids:
             _name_rows = await pool.fetch(
-                "SELECT id, first_name, last_name FROM players WHERE id = ANY($1)",
+                "SELECT id, first_name, last_name, overall FROM players WHERE id = ANY($1)",
                 _player_ids,
             )
             _player_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in _name_rows}
+            _player_ovrs: dict[int, int] = {r["id"]: r["overall"] for r in _name_rows}
         else:
             _player_names = {}
+            _player_ovrs = {}
 
         def _asset_lines(from_team_id: int) -> list[str]:
             lines = []
@@ -599,19 +606,23 @@ async def _run_cpu_trades_inner(
         await transactions_channel.send(embed=embed)
 
         # Marcus Cole — insider trade report to #analysis.
-        trade_context = {
-            "proposer_team": proposer_code,
-            "counterparty_team": counterparty_code,
-            "proposer_sends": _asset_lines(proposer_id),
-            "counterparty_sends": _asset_lines(counterparty_id),
-            "trade_status": status,
-        }
-        mc_article = await columnist_service.generate(
-            pool, league_id, season,
-            persona_id="marcus_cole",
-            category="trade_report",
-            context=trade_context,
-        )
+        # Only fire for blockbuster trades (star OVR>=80 or a pick involved)
+        # to avoid spamming the channel with low-value CPU swaps.
+        mc_article = None
+        if _is_blockbuster_trade(assets, _player_ovrs):
+            trade_context = {
+                "proposer_team": proposer_code,
+                "counterparty_team": counterparty_code,
+                "proposer_sends": _asset_lines(proposer_id),
+                "counterparty_sends": _asset_lines(counterparty_id),
+                "trade_status": status,
+            }
+            mc_article = await columnist_service.generate(
+                pool, league_id, season,
+                persona_id="marcus_cole",
+                category="trade_report",
+                context=trade_context,
+            )
         if mc_article:
             analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
             analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
@@ -636,6 +647,18 @@ def _interest_score_from_batch_result(br: dict) -> float:
     clutch = max(0.0, 10.0 - margin)
     blowout = max(0.0, margin - 20.0)
     return clutch + blowout + float(top_pts)
+
+
+def _is_blockbuster_trade(assets: list, player_ovrs: dict[int, int]) -> bool:
+    """Return True if the trade involves a star (OVR>=80) or a R1 pick."""
+    for a in assets:
+        if a.asset_type == "player" and a.player_id:
+            if player_ovrs.get(a.player_id, 0) >= 80:
+                return True
+        if a.asset_type == "pick":
+            # Any pick included in a trade is notable enough
+            return True
+    return False
 
 
 async def _maybe_post_awards_races(
@@ -1060,6 +1083,55 @@ async def _maybe_post_columnist(
             if mb_persona:
                 embed.set_footer(text=f"by {mb_persona.display_name} · {mb_persona.byline}")
             await analysis_channel.send(embed=embed)
+
+
+async def _maybe_post_playoff_columnist(
+    pool,
+    league_id: int,
+    season: int,
+    context: dict,
+    guild: discord.Guild,
+) -> None:
+    """
+    Post a playoff recap article to #league-news, rotating through the three
+    recap-capable personas (maya_chen, jordan_rivera, keisha_williams).
+
+    Called from playoff_service.sim_series_game — always for clinching/elimination
+    games, ~30% of the time for regular playoff games.
+    """
+    global _playoff_rotation_index
+
+    persona_id = _PLAYOFF_COLUMNIST_ROTATION[_playoff_rotation_index % len(_PLAYOFF_COLUMNIST_ROTATION)]
+    _playoff_rotation_index += 1
+
+    persona = _PERSONAS.get(persona_id)
+    if not persona:
+        return
+
+    news_channel = await _get_news_channel(guild, pool, league_id)
+    if not news_channel:
+        return
+
+    article = await columnist_service.generate(
+        pool, league_id, season,
+        persona_id=persona_id,
+        category="playoff_recap",
+        context=context,
+    )
+    if not article:
+        return
+
+    rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
+    embed = discord.Embed(
+        title=article["headline"],
+        description=article["body"][:2000],
+        color=discord.Color.from_rgb(*rgb),
+    )
+    embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+    try:
+        await news_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"Playoff columnist post failed: {exc}")
 
 
 async def _maybe_advance_trade_deadline(

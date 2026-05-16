@@ -15,6 +15,44 @@ from bot.embeds import sim_embeds
 
 log = get_logger(__name__)
 
+
+def _extract_top_performer(
+    result: dict,
+    home_team_code: str,
+    away_team_code: str,
+) -> dict | None:
+    """Return a top-performer dict (same shape batch_sim_runner uses) from a single game result."""
+    best_line: dict | None = None
+    best_pts = -1
+    best_team_code = ""
+
+    for box_lines, team_code in [
+        (result.get("home_box", []), home_team_code),
+        (result.get("away_box", []), away_team_code),
+    ]:
+        for line in box_lines:
+            if line.get("points", 0) > best_pts:
+                best_pts = line.get("points", 0)
+                best_line = line
+                best_team_code = team_code
+
+    if not best_line:
+        return None
+
+    return {
+        "name": best_line.get("player_name") or f"Player #{best_line.get('player_id')}",
+        "team": best_team_code,
+        "pts": best_line.get("points", 0),
+        "reb": best_line.get("rebounds_off", 0) + best_line.get("rebounds_def", 0),
+        "ast": best_line.get("assists", 0),
+        "stl": best_line.get("steals", 0),
+        "blk": best_line.get("blocks", 0),
+        "tpm": best_line.get("tpm", 0),
+        "tpa": best_line.get("tpa", 0),
+        "fgm": best_line.get("fgm", 0),
+        "fga": best_line.get("fga", 0),
+    }
+
 # Round constants — order defines bracket progression
 _PLAYIN_ROUNDS = {"play_in_east", "play_in_west"}
 
@@ -265,6 +303,39 @@ async def sim_series_game(
             )
             await channel.send(embed=embed)
 
+    # Post a playoff recap article — always for clinchers, ~30% for regular games.
+    is_clincher = updated_series.status == "complete"
+    if is_clincher or random.random() < 0.3:
+        try:
+            from services import batch_sim_runner as _bsr
+
+            high_team_code = high_team.nba_team_code if hasattr(high_team, "nba_team_code") else str(high_team.id)
+            low_team_code = low_team.nba_team_code if hasattr(low_team, "nba_team_code") else str(low_team.id)
+            home_team_code = high_team_code if home_team.id == high_team.id else low_team_code
+            away_team_code = low_team_code if home_team.id == high_team.id else high_team_code
+
+            winner_code: str | None = None
+            if is_clincher and updated_series.winner_team_id:
+                winner_code = (
+                    high_team_code if updated_series.winner_team_id == high_team.id else low_team_code
+                )
+
+            top_performer_dict = _extract_top_performer(result, home_team_code, away_team_code)
+
+            playoff_context = {
+                "round": updated_series.round,
+                "series_record": f"{updated_series.wins_high}-{updated_series.wins_low}",
+                "is_series_over": is_clincher,
+                "high_seed_team": high_team_code,
+                "low_seed_team": low_team_code,
+                "winner": winner_code,
+                "top_performer": top_performer_dict,
+                "game_index_range": {"season_pct": 100},
+            }
+            await _bsr._maybe_post_playoff_columnist(pool, league_id, season, playoff_context, guild)
+        except Exception as exc:
+            log.warning(f"Playoff columnist failed: {exc}")
+
     return {
         "game_result": result,
         "series": updated_series,
@@ -273,11 +344,97 @@ async def sim_series_game(
     }
 
 
-async def advance_playoff_round(league_id: int, season: int) -> str:
+async def _compute_series_mvp(
+    pool,
+    league_id: int,
+    season: int,
+    series_id: int,
+    winning_team_id: int,
+) -> Optional[dict]:
+    """Find the best performer from the winning team across all games in this series."""
+    rows = await pool.fetch(
+        """
+        SELECT b.player_id,
+               p.first_name || ' ' || p.last_name AS player_name,
+               SUM(b.points) + SUM(b.assists)*1.5 + SUM(b.rebounds_off + b.rebounds_def)*1.2 +
+               SUM(b.steals)*2 + SUM(b.blocks)*2 AS mvp_score
+        FROM game_box_scores b
+        JOIN games g ON g.id = b.game_id
+        JOIN players p ON p.id = b.player_id
+        WHERE g.league_id = $1 AND g.season = $2
+          AND b.team_id = $3
+          AND EXISTS (
+              SELECT 1 FROM series ps
+              WHERE ps.id = $4
+                AND (g.home_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
+                AND (g.away_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
+          )
+        GROUP BY b.player_id, p.first_name, p.last_name
+        ORDER BY mvp_score DESC
+        LIMIT 1
+        """,
+        league_id, season, winning_team_id, series_id,
+    )
+    if not rows:
+        return None
+    return {"player_id": rows[0]["player_id"], "player_name": rows[0]["player_name"]}
+
+
+async def _announce_series_mvp(
+    pool,
+    league_id: int,
+    season: int,
+    mvp: dict,
+    award_label: str,
+    award_type: str,
+    guild: Optional[discord.Guild],
+) -> None:
+    """Post a series MVP announcement to #league-news and persist to player_awards."""
+    from data.repositories import player_awards_repo
+
+    try:
+        await player_awards_repo.insert_award(
+            pool,
+            player_id=mvp["player_id"],
+            league_id=league_id,
+            season=season,
+            award_type=award_type,
+        )
+    except Exception as exc:
+        log.warning(f"Failed to insert {award_type} player award: {exc}")
+
+    if not guild:
+        return
+
+    news_channel_id = await league_repo.get_channel(pool, league_id, "league-news")
+    if not news_channel_id:
+        return
+    channel = guild.get_channel(news_channel_id)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title=f"🏆 {award_label}: {mvp['player_name']}",
+        color=discord.Color.gold(),
+    )
+    try:
+        await channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"Failed to post {award_type} announcement: {exc}")
+
+
+async def advance_playoff_round(
+    league_id: int,
+    season: int,
+    guild: Optional[discord.Guild] = None,
+) -> str:
     """
     Checks whether all series in the current active round are complete. If so,
     creates next-round matchups and returns the round name. Returns 'champion'
     when the Finals are decided. Returns 'pending' when games are still active.
+
+    Computes and announces Conference Finals MVP and Finals MVP when those series
+    conclude, writing them to player_awards and history_seasons.
 
     Round order per conference:
       play_in → r1 → r2 → conference_finals → nba_finals
@@ -299,18 +456,100 @@ async def advance_playoff_round(league_id: int, season: int) -> str:
         )
         return {i: s.winner_team_id for i, s in enumerate(completed)}
 
-    # Finals complete → champion
+    def _series_of(round_name: str) -> List[series_repo.Series]:
+        return sorted(
+            [s for s in all_series if s.round == round_name],
+            key=lambda s: s.id,
+        )
+
+    # Finals complete → champion + Finals MVP
     finals = [s for s in all_series if s.round == "nba_finals"]
     if finals and _all_complete("nba_finals"):
+        finals_series = finals[0]
+        if finals_series.winner_team_id:
+            mvp = await _compute_series_mvp(
+                pool, league_id, season, finals_series.id, finals_series.winner_team_id
+            )
+            if mvp:
+                await _announce_series_mvp(
+                    pool, league_id, season, mvp,
+                    award_label="Finals MVP",
+                    award_type="finals_mvp",
+                    guild=guild,
+                )
+                # Persist to history_seasons if the row exists.
+                try:
+                    await pool.execute(
+                        """
+                        UPDATE history_seasons
+                        SET finals_mvp_player_id = $3
+                        WHERE league_id = $1 AND season = $2
+                        """,
+                        league_id, season, mvp["player_id"],
+                    )
+                except Exception as exc:
+                    log.warning(f"Failed to update history_seasons finals_mvp: {exc}")
         return "champion"
 
-    # Conference finals complete → create Finals
+    # Conference finals complete → create Finals + CF MVPs
     east_cf_done = "conference_finals_east" in round_names and _all_complete("conference_finals_east")
     west_cf_done = "conference_finals_west" in round_names and _all_complete("conference_finals_west")
     if east_cf_done and west_cf_done and not finals:
-        east_winner = _winners_of("conference_finals_east")[0]
-        west_winner = _winners_of("conference_finals_west")[0]
-        # Higher win total gets home court; treat East winner as high seed for simplicity
+        east_series_list = _series_of("conference_finals_east")
+        west_series_list = _series_of("conference_finals_west")
+        east_winner = east_series_list[0].winner_team_id
+        west_winner = west_series_list[0].winner_team_id
+
+        # Compute and announce CF MVPs before creating the Finals series.
+        if east_winner:
+            cf_east_mvp = await _compute_series_mvp(
+                pool, league_id, season, east_series_list[0].id, east_winner
+            )
+            if cf_east_mvp:
+                await _announce_series_mvp(
+                    pool, league_id, season, cf_east_mvp,
+                    award_label="Eastern Conference Finals MVP",
+                    award_type="cf_east_mvp",
+                    guild=guild,
+                )
+                try:
+                    await pool.execute(
+                        """
+                        INSERT INTO history_seasons (league_id, season, cfmvp_east_player_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (league_id, season) DO UPDATE
+                        SET cfmvp_east_player_id = EXCLUDED.cfmvp_east_player_id
+                        """,
+                        league_id, season, cf_east_mvp["player_id"],
+                    )
+                except Exception as exc:
+                    log.warning(f"Failed to upsert cfmvp_east into history_seasons: {exc}")
+
+        if west_winner:
+            cf_west_mvp = await _compute_series_mvp(
+                pool, league_id, season, west_series_list[0].id, west_winner
+            )
+            if cf_west_mvp:
+                await _announce_series_mvp(
+                    pool, league_id, season, cf_west_mvp,
+                    award_label="Western Conference Finals MVP",
+                    award_type="cf_west_mvp",
+                    guild=guild,
+                )
+                try:
+                    await pool.execute(
+                        """
+                        INSERT INTO history_seasons (league_id, season, cfmvp_west_player_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (league_id, season) DO UPDATE
+                        SET cfmvp_west_player_id = EXCLUDED.cfmvp_west_player_id
+                        """,
+                        league_id, season, cf_west_mvp["player_id"],
+                    )
+                except Exception as exc:
+                    log.warning(f"Failed to upsert cfmvp_west into history_seasons: {exc}")
+
+        # Higher win total gets home court; treat East winner as high seed for simplicity.
         await series_repo.create_series(
             pool, league_id, season, "nba_finals",
             high_seed_id=east_winner,

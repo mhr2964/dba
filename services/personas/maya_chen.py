@@ -15,5 +15,5 @@ maya_chen = Persona(
         "Write like a TV highlight reel in prose form. Never make predictions about future games. "
         "Be specific: name the moment, the score, the player. No filler."
     ),
-    categories=("headline", "game_recap"),
+    categories=("headline", "game_recap", "playoff_recap"),
 )

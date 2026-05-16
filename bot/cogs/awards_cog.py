@@ -16,7 +16,7 @@ from services import awards_service
 
 log = get_logger(__name__)
 
-_SINGLE_AWARDS = ["mvp", "dpoy", "roy", "6moy"]
+_SINGLE_AWARDS = ["mvp", "dpoy", "roy", "6moy", "finals_mvp"]
 _ALL_AWARD_CHOICES = [
     app_commands.Choice(name="MVP", value="mvp"),
     app_commands.Choice(name="DPOY", value="dpoy"),
@@ -24,6 +24,7 @@ _ALL_AWARD_CHOICES = [
     app_commands.Choice(name="6MOY", value="6moy"),
     app_commands.Choice(name="All-NBA", value="all_nba"),
     app_commands.Choice(name="All-Star", value="all_star"),
+    app_commands.Choice(name="Finals MVP", value="finals_mvp"),
 ]
 
 
