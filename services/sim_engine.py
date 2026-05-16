@@ -312,17 +312,18 @@ def _build_box_for_team(
 
     # Star scoring bump: top-2 players by weight get an extra allocation multiplier
     # applied BEFORE normalization so the effect is additive against the rest of the roster.
-    # Cap: no single player can exceed 40% of total team scoring weight.
+    # Cap: no single player can exceed 30% of total team scoring weight.
     if n >= 2:
         indexed_weights = sorted(enumerate(scoring_weights), key=lambda x: x[1], reverse=True)
         top_idx = indexed_weights[0][0]
         second_idx = indexed_weights[1][0]
         scoring_weights[top_idx] *= 1.08
         scoring_weights[second_idx] *= 1.03
-        # Enforce 34% cap on the top player (post-bump total, iterated once to converge).
+        # Enforce 30% cap on the top player (post-bump total, iterated once to converge).
+        # At a ~107-pt team average, 30% ≈ 32 PPG — consistent with the Luka 30-32 target.
         total_w_star = sum(scoring_weights)
-        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.34:
-            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.34 / 0.66
+        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.30:
+            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.30 / 0.70
 
     # Clutch adjustment: in close games, high-clutch players get more late-game usage.
     if abs(score_diff) < 12:
