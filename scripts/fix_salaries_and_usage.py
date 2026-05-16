@@ -3,14 +3,16 @@ in an existing league using the updated piecewise salary formula and BDL pts-bas
 usage derivation.
 
 Usage:
-    python scripts/fix_salaries_and_usage.py --league-id 1 --season 2024
-    python scripts/fix_salaries_and_usage.py --league-id 1 --season 2024 --dry-run
+    python scripts/fix_salaries_and_usage.py --league-id 29 --season 2024
+    python scripts/fix_salaries_and_usage.py --league-id 29 --season 2024 --dry-run
 
 What it does:
     1. For every active player in the league, recalculate contract salary using
        the piecewise formula (replaces old linear (ovr-60)*800k formula).
     2. Sets usage_weight from BDL pts: clamp(round(pts / 35.0 * 100), 10, 90).
-       Players not found in the BDL cache keep their existing usage_weight.
+       Lookup is by normalized player name since external_id in the DB is from
+       nba_api (different ID space than BDL).  Players not found in BDL cache
+       keep their existing usage_weight.
     3. Updates both the contracts.salary column and the players.usage_weight column.
     4. Prints a summary of old vs new salaries.
 """
@@ -21,7 +23,7 @@ import asyncio
 import json
 import os
 import pathlib
-import sys
+import unicodedata
 
 import asyncpg
 from dotenv import load_dotenv
@@ -31,8 +33,19 @@ load_dotenv()
 _BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
 
 
-def _load_bdl_pts(season: int) -> dict[int, float]:
-    """Return {bdl_player_id: pts_per_game} from season_{season}_base.json."""
+def _norm_name(name: str) -> str:
+    """Lowercase, strip accents, strip whitespace."""
+    return (
+        unicodedata.normalize("NFKD", name)
+        .encode("ascii", "ignore")
+        .decode()
+        .lower()
+        .strip()
+    )
+
+
+def _load_bdl_pts_by_name(season: int) -> dict[str, float]:
+    """Return {normalized_full_name: pts_per_game} from season_{season}_base.json."""
     path = _BDL_CACHE_DIR / f"season_{season}_base.json"
     if not path.exists():
         print(f"[WARN] BDL cache not found: {path} — usage_weight will not be updated")
@@ -40,11 +53,14 @@ def _load_bdl_pts(season: int) -> dict[int, float]:
     try:
         with open(path, encoding="utf-8") as f:
             records = json.load(f)
-        return {
-            rec["player"]["id"]: float(rec["stats"].get("pts") or 0.0)
-            for rec in records
-            if rec.get("stats")
-        }
+        lookup: dict[str, float] = {}
+        for rec in records:
+            p = rec.get("player", {})
+            full = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+            norm = _norm_name(full)
+            pts = float(rec.get("stats", {}).get("pts") or 0.0)
+            lookup[norm] = pts
+        return lookup
     except (json.JSONDecodeError, KeyError, OSError) as exc:
         print(f"[WARN] Failed to load BDL cache: {exc}")
         return {}
@@ -86,7 +102,7 @@ async def main() -> None:
     if not db_url:
         raise SystemExit("DATABASE_URL not set")
 
-    bdl_pts = _load_bdl_pts(args.season)
+    bdl_pts = _load_bdl_pts_by_name(args.season)
     print(f"BDL pts loaded for {len(bdl_pts)} players (season {args.season})")
 
     conn = await asyncpg.connect(db_url)
@@ -108,9 +124,10 @@ async def main() -> None:
         rows = await conn.fetch(
             """
             SELECT p.id AS player_id,
+                   p.first_name,
+                   p.last_name,
                    p.overall,
-                   p.external_id,
-                   p.usage_weight,
+                   p.usage_weight AS old_usage,
                    c.id AS contract_id,
                    c.salary AS old_salary,
                    c.contract_type AS old_type
@@ -127,14 +144,16 @@ async def main() -> None:
         updated_contracts = 0
         updated_usage = 0
         skipped_no_contract = 0
-        salary_changes: list[tuple[int, int, int]] = []  # (ovr, old, new)
+        salary_changes: list[tuple[int, int, int, str]] = []  # (ovr, old, new, name)
 
         for row in rows:
             ovr = row["overall"]
             pid = row["player_id"]
             cid = row["contract_id"]
-            old_salary = row["old_salary"]
-            ext_id = row["external_id"]
+            old_salary = row["old_salary"] or 0
+            fname = row["first_name"] or ""
+            lname = row["last_name"] or ""
+            full_name = f"{fname} {lname}".strip()
 
             # --- Salary update ---
             if cid is None:
@@ -143,7 +162,7 @@ async def main() -> None:
 
             new_sal = _new_salary(ovr, salary_cap)
             new_type = _contract_type(new_sal, salary_cap)
-            salary_changes.append((ovr, old_salary or 0, new_sal))
+            salary_changes.append((ovr, old_salary, new_sal, full_name))
 
             if not args.dry_run:
                 await conn.execute(
@@ -152,37 +171,39 @@ async def main() -> None:
                 )
             updated_contracts += 1
 
-            # --- Usage weight update ---
-            if ext_id and str(ext_id).isdigit():
-                bdl_id = int(ext_id)
-                pts = bdl_pts.get(bdl_id)
-                if pts is not None:
-                    new_usage = max(10, min(90, round(pts / 35.0 * 100)))
-                    if not args.dry_run:
-                        await conn.execute(
-                            "UPDATE players SET usage_weight = $1 WHERE id = $2",
-                            new_usage, pid,
-                        )
-                    updated_usage += 1
+            # --- Usage weight update (name-based BDL lookup) ---
+            norm = _norm_name(full_name)
+            pts = bdl_pts.get(norm)
+            if pts is not None:
+                new_usage = max(10, min(90, round(pts / 35.0 * 100)))
+                if not args.dry_run:
+                    await conn.execute(
+                        "UPDATE players SET usage_weight = $1 WHERE id = $2",
+                        new_usage, pid,
+                    )
+                updated_usage += 1
 
         # Summary
         print(f"Contracts updated: {updated_contracts}")
-        print(f"Usage weights updated: {updated_usage}")
+        print(f"Usage weights updated from BDL: {updated_usage}")
+        print(f"  (Remaining {updated_contracts - updated_usage} players keep existing usage_weight)")
         print(f"Skipped (no active contract): {skipped_no_contract}")
         print()
 
         # Show sample of biggest changes
         salary_changes.sort(key=lambda x: x[0], reverse=True)
-        print("Sample salary changes (top 20 by OVR):")
-        print(f"  {'OVR':>4}  {'Old Salary':>12}  {'New Salary':>12}  {'Delta':>12}")
-        print(f"  {'-'*4}  {'-'*12}  {'-'*12}  {'-'*12}")
-        for ovr, old_s, new_s in salary_changes[:20]:
+        print("Sample salary changes (top 25 by OVR):")
+        print(f"  {'OVR':>4}  {'Name':<28}  {'Old Salary':>12}  {'New Salary':>12}  {'Delta':>12}")
+        print(f"  {'-'*4}  {'-'*28}  {'-'*12}  {'-'*12}  {'-'*12}")
+        for ovr, old_s, new_s, name in salary_changes[:25]:
             delta = new_s - old_s
             sign = "+" if delta >= 0 else ""
-            print(f"  {ovr:>4}  ${old_s:>11,}  ${new_s:>11,}  {sign}${delta:>11,}")
+            # Strip non-ASCII for safe terminal output on Windows
+            safe_name = name.encode("ascii", "replace").decode("ascii")[:27]
+            print(f"  {ovr:>4}  {safe_name:<28}  ${old_s:>11,}  ${new_s:>11,}  {sign}${delta:>11,}")
 
         if salary_changes:
-            all_new = [s for _, _, s in salary_changes]
+            all_new = [s for _, _, s, _ in salary_changes]
             print()
             print(f"  Average new salary: ${sum(all_new)//len(all_new):,}")
             print(f"  Min new salary:     ${min(all_new):,}")
