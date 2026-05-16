@@ -41,6 +41,11 @@ _marcus_game_counter: int = 0
 _COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen"]
 _columnist_rotation_index: int = 0
 
+# Hot Take Hour season-long running narratives.  Seeded on first HTH article of the
+# season and then injected into every subsequent HTH context so Dave and Tony keep
+# their multi-episode storylines alive.  Keyed by league_id so multi-league bots work.
+_HTH_NARRATIVES: dict[int, dict] = {}
+
 # Playoff columnist rotation — cycles through recap-capable personas for post-game coverage.
 _PLAYOFF_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams"]
 _playoff_rotation_index: int = 0
@@ -1098,7 +1103,7 @@ async def _maybe_post_columnist(
     except Exception as _award_exc:
         log.warning(f"_maybe_post_columnist: award race enrichment failed: {_award_exc}")
 
-    # 1e: Add game_index_range.
+    # 1f: Add game_index_range.
     if batch_end_index > 0 and total_regular_games > 0:
         batch_context["game_index_range"] = {
             "first": batch_start_index,
@@ -1106,7 +1111,7 @@ async def _maybe_post_columnist(
             "season_pct": round(batch_end_index / total_regular_games * 100, 1),
         }
 
-    # 1e: Compute subject_team_ids from the two most common teams in this batch.
+    # 1g: Compute subject_team_ids from the two most common teams in this batch.
     from collections import Counter as _Counter
     _team_id_counter: _Counter = _Counter()
     for br in batch_results:
@@ -1129,9 +1134,77 @@ async def _maybe_post_columnist(
     # Build a copy so we don't mutate the shared batch_context used by other callers.
     columnist_context = batch_context
     if persona_id == "hot_take_hour":
-        # Fix 2: inject format_variant so the four Hot Take Hour variants cycle.
+        # Inject format_variant so the four Hot Take Hour variants cycle.
         columnist_context = dict(batch_context)
         columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index - 1) % len(_FORMAT_VARIANTS)]
+
+        # Seed season-long HTH narratives on first use per league, then inject every time.
+        global _HTH_NARRATIVES
+        if league_id not in _HTH_NARRATIVES:
+            try:
+                # Seed: top scorer = "sleeper" Dave has been high on; best team = "fraud"
+                # Tony doubts; two closest-stat players on different teams = "rivalry."
+                _seed_rows = await pool.fetch(
+                    """
+                    SELECT p.id, p.first_name || ' ' || p.last_name AS player_name,
+                           t.nba_team_code AS team_code, t.conference,
+                           AVG(b.points) AS ppg,
+                           AVG(b.rebounds_off + b.rebounds_def) AS rpg,
+                           AVG(b.assists) AS apg,
+                           COUNT(b.id) AS gp
+                    FROM players p
+                    JOIN game_box_scores b ON b.player_id = p.id
+                    JOIN games g ON g.id = b.game_id
+                    JOIN teams t ON t.id = p.team_id
+                    WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
+                    GROUP BY p.id, t.nba_team_code, t.conference
+                    HAVING COUNT(b.id) >= 10
+                    ORDER BY AVG(b.points) DESC
+                    LIMIT 20
+                    """,
+                    league_id, season,
+                )
+                _std_rows = await pool.fetch(
+                    """
+                    SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
+                    FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
+                    WHERE sc.league_id = $1 AND sc.season = $2
+                    ORDER BY sc.wins DESC LIMIT 1
+                    """,
+                    league_id, season,
+                )
+                _top_team = _std_rows[0]["nba_team_code"] if _std_rows else "the league leader"
+                _sleeper = _seed_rows[0]["player_name"] if _seed_rows else "the top scorer"
+                # Rivalry: two players from different teams with similar scoring (top 5)
+                _rivalry_a = _seed_rows[1]["player_name"] if len(_seed_rows) > 1 else None
+                _rivalry_b = _seed_rows[2]["player_name"] if len(_seed_rows) > 2 else None
+                _rivalry_teams = (
+                    f"{_seed_rows[1]['team_code']} vs {_seed_rows[2]['team_code']}"
+                    if len(_seed_rows) > 2 else ""
+                )
+                _HTH_NARRATIVES[league_id] = {
+                    "sleeper_pick": (
+                        f"Dave has been insisting all season that {_sleeper} is criminally underrated "
+                        f"and deserves more recognition."
+                    ),
+                    "fraud_call": (
+                        f"Tony has been calling {_top_team} a 'paper tiger' since day one — "
+                        f"great record, no real test, waiting to collapse."
+                    ),
+                    "rivalry": (
+                        f"Dave and Tony have been tracking the {_rivalry_teams} rivalry — "
+                        f"{_rivalry_a} vs {_rivalry_b} — all season, arguing who's the better player."
+                    ) if _rivalry_a and _rivalry_b else None,
+                }
+                log.info(f"HTH narratives seeded for league {league_id}: {_HTH_NARRATIVES[league_id]}")
+            except Exception as _hth_exc:
+                log.warning(f"HTH narrative seeding failed: {_hth_exc}")
+                _HTH_NARRATIVES[league_id] = {}
+
+        # Inject non-None narratives into context.
+        _active_narratives = {k: v for k, v in _HTH_NARRATIVES.get(league_id, {}).items() if v}
+        if _active_narratives:
+            columnist_context["hth_season_narratives"] = _active_narratives
     if persona_id == "pat_chen":
         try:
             team_ids_in_batch = list({

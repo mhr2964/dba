@@ -64,8 +64,22 @@ async def generate(
     else:
         memory_block = ""
 
+    # When a game_recap is requested, give the columnist freedom to choose the
+    # most interesting angle — they don't have to write a pure box-score recap.
+    # The context may include recent_trades, standings_leaders, award_race_leaders,
+    # and narrative_hooks; the persona should use whatever is most compelling.
+    if category == "game_recap":
+        task_line = (
+            "Write one article for the DBA NBA simulation league. "
+            "Choose the most interesting angle from the context below — it can be a game recap, "
+            "trade analysis, standings narrative, award race drama, or a personality-driven take. "
+            "Pick whatever best fits your voice and the most compelling story in the data."
+        )
+    else:
+        task_line = f"Write one {category} article for the DBA NBA simulation league."
+
     user_content_parts = [
-        f"Write one {category} article for the DBA NBA simulation league.",
+        task_line,
         "",
         "Context:",
         json.dumps(context, indent=2),

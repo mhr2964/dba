@@ -261,6 +261,56 @@ async def generate_awards_race_odds(
     )
     team_record = {r["team_id"]: f"{r['nba_team_code']} {r['wins']}-{r['losses']}" for r in standings}
 
+    # Fetch recent form: per candidate, last 20 games vs season average.
+    recent_form: dict[int, dict] = {}
+    for candidates in leaders.values():
+        for p in candidates:
+            pid = p["player_id"]
+            try:
+                row = await pool.fetchrow(
+                    """
+                    WITH recent_games AS (
+                        SELECT g.id AS game_id
+                        FROM games g
+                        JOIN game_box_scores b2 ON b2.game_id = g.id AND b2.player_id = $3
+                        WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
+                        ORDER BY g.game_index DESC
+                        LIMIT 20
+                    )
+                    SELECT
+                        AVG(b.points)                             AS ppg_recent,
+                        AVG(b.rebounds_off + b.rebounds_def)      AS rpg_recent,
+                        AVG(b.assists)                            AS apg_recent,
+                        COUNT(b.id)                               AS gp_recent
+                    FROM game_box_scores b
+                    JOIN recent_games rg ON rg.game_id = b.game_id
+                    WHERE b.player_id = $3
+                    """,
+                    league_id, season, pid,
+                )
+                if row and row["gp_recent"]:
+                    recent_form[pid] = {
+                        "ppg": round(float(row["ppg_recent"] or 0), 1),
+                        "rpg": round(float(row["rpg_recent"] or 0), 1),
+                        "apg": round(float(row["apg_recent"] or 0), 1),
+                        "gp": int(row["gp_recent"]),
+                    }
+            except Exception:
+                pass
+
+    # Compute positional rank per award (rank among the award's candidates).
+    award_sort_keys = {
+        "mvp":  lambda p: float(p["ppg"] or 0) + 0.4 * float(p["rpg"] or 0) + 0.6 * float(p["apg"] or 0),
+        "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.3 * float(p["rpg"] or 0),
+        "roy":  lambda p: float(p["ppg"] or 0) + 0.3 * float(p["rpg"] or 0) + 0.3 * float(p["apg"] or 0),
+        "6moy": lambda p: float(p["ppg"] or 0) + 0.3 * float(p["apg"] or 0),
+    }
+    positional_rank: dict[int, int] = {}
+    for award_type, candidates in leaders.items():
+        sort_key = award_sort_keys.get(award_type, lambda p: 0.0)
+        for rank, p in enumerate(sorted(candidates, key=sort_key, reverse=True), start=1):
+            positional_rank[p["player_id"]] = rank
+
     # Build prompt section per award.
     award_labels = {"mvp": "MVP", "dpoy": "DPOY", "roy": "ROY", "6moy": "6th Man"}
     sections = []
@@ -281,9 +331,17 @@ async def generate_awards_race_odds(
             apg = p.get("apg", 0.0)
             bpg = p.get("bpg", 0.0)
             spg = p.get("spg", 0.0)
+            pos_rank = positional_rank.get(pid, "?")
+            # Recent form suffix.
+            rf = recent_form.get(pid)
+            recent_str = (
+                f" | Last {rf['gp']}G: {rf['ppg']}PPG {rf['rpg']}RPG {rf['apg']}APG"
+                if rf else ""
+            )
             lines.append(
-                f"  - {pname} ({team_str}, {gp}GP): "
+                f"  - #{pos_rank} {pname} ({team_str}, {gp}GP): "
                 f"{ppg:.1f}PPG {rpg:.1f}RPG {apg:.1f}APG {bpg:.1f}BPG {spg:.1f}SPG"
+                f"{recent_str}"
             )
         sections.append("\n".join(lines))
 
@@ -293,7 +351,10 @@ async def generate_awards_race_odds(
     prompt = (
         "You are an NBA writer setting awards-race odds. For each award below, output "
         "the percentage chance each candidate wins, summing to 100% per award. "
-        "Weigh team record AND individual stats. Round to whole percentages.\n\n"
+        "Weight criteria in this order: (1) team success — wins and losses matter; "
+        "(2) recent form — last 20 games trend; (3) overall season stats vs position peers "
+        "(positional rank shown as #N); (4) games played / availability. "
+        "Round to whole percentages.\n\n"
         + "\n\n".join(sections)
         + "\n\nReturn ONLY valid JSON, no markdown, no code fences:\n"
         '{"mvp": [{"name": "...", "pct": 35}, ...], '
