@@ -89,9 +89,13 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
         pool = await get_pool()
 
-        outcome = await playoff_service.sim_series_game(
-            league.id, series_id, interaction.guild, league.current_season
-        )
+        try:
+            outcome = await playoff_service.sim_series_game(
+                league.id, series_id, interaction.guild, league.current_season
+            )
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
 
         series = outcome["series"]
         teams = await team_repo.get_all(pool, league.id)
