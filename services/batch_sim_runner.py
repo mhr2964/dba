@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 from typing import List, Optional
@@ -1286,9 +1287,8 @@ async def _maybe_post_columnist(
         except Exception as _exc:
             log.warning(f"Pat Chen strategy enrichment failed: {_exc}")
 
-    import asyncio as _asyncio
     try:
-        article = await _asyncio.wait_for(
+        article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
                 persona_id=persona_id,
@@ -1331,7 +1331,7 @@ async def _maybe_post_columnist(
         _marcus_game_counter = 0
         mb_persona = _PERSONAS.get("marcus_brooks")
         try:
-            mb_article = await _asyncio.wait_for(
+            mb_article = await asyncio.wait_for(
                 columnist_service.generate(
                     pool, league_id, season,
                     persona_id="marcus_brooks",
@@ -1641,8 +1641,7 @@ async def sim_until_rival(
 
         # Yield to the event loop after every game so Discord slash-command interactions
         # can be acknowledged within the 3-second window while sim is running.
-        import asyncio as _asyncio_loop
-        await _asyncio_loop.sleep(0)
+        await asyncio.sleep(0)
 
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
             standings = await game_repo.get_standings(pool, league_id, season)
@@ -1776,8 +1775,7 @@ async def sim_range(
 
         # Yield to the event loop after every game so Discord slash-command interactions
         # can be acknowledged within the 3-second window while sim is running.
-        import asyncio as _asyncio_loop
-        await _asyncio_loop.sleep(0)
+        await asyncio.sleep(0)
 
         if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
             standings = await game_repo.get_standings(pool, league_id, season)

@@ -160,9 +160,12 @@ def _assign_team_stats(
     reb_off_total = round(total_reb * 0.28)
     reb_def_total = total_reb - reb_off_total
 
+    # Use reb_tendency alone (BDL-derived, position-relative) as the rebounding weight.
+    # Dropping the separate `rebounding` skill prevents double-counting: for players
+    # like Curry whose OVR is high, `rebounding` was also high, inflating his boards.
+    # reb_tendency=50 means position-average; >50 means above-average for that position.
     reb_weights = [
-        players[i].get("rebounding", 50)
-        * (players[i].get("reb_tendency", 50) / 50.0)
+        (players[i].get("reb_tendency", 50) / 50.0)
         * minutes_list[i]
         for i in range(n)
     ]
@@ -276,11 +279,11 @@ def _build_box_for_team(
     scoring_weights = []
     for i, p in enumerate(players):
         pos_w = _POSITION_SCORING_WEIGHT.get(p.get("position", "SF"), 1.0)
-        # Exponential usage curve: (usage/50)^1.5 amplifies the gap between stars
-        # and role players more than a linear formula.
-        # usage=95 → (1.9)^1.5 ≈ 2.62x; usage=50 → 1.0x; usage=10 → 0.09x.
-        # Multiplied by 0.65 so the raw weight magnitude stays comparable to before.
-        usage_w = (p.get("usage_weight", 50) / 50.0) ** 1.5 * 0.65
+        # Exponential usage curve: (usage/50)^2.0 widens the gap between stars
+        # and role players significantly more than ^1.5.
+        # usage=95 → (1.9)^2.0 * 0.55 ≈ 1.98x; usage=80 → 1.41x; usage=35 → 0.27x.
+        # Multiplied by 0.55 (down from 0.65) to keep league-average PPG ~15-16.
+        usage_w = (p.get("usage_weight", 50) / 50.0) ** 2.0 * 0.55
         composite = p.get("finishing", 50) + p.get("shooting_2pt", 50) + p.get("shooting_3pt", 50)
         rating_adj = composite / max(team_avg_composite, 1)
         base = (minutes_list[i] / 48.0) * pos_w * rating_adj * usage_w
