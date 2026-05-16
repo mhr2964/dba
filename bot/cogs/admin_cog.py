@@ -612,6 +612,13 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                 except discord.HTTPException:
                     pass
 
+        # Also delete the league DB row so /league create can run fresh.
+        pool = await get_pool()
+        deleted_league = await pool.fetchval(
+            "DELETE FROM leagues WHERE discord_guild_id = $1 RETURNING id",
+            guild.id,
+        )
+
         embed = discord.Embed(
             title="Server Purge Complete",
             color=discord.Color.red(),
@@ -623,6 +630,11 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         )
         embed.add_field(name="Channels deleted", value=str(deleted_channels), inline=True)
         embed.add_field(name="Roles deleted", value=str(len(deleted_roles)), inline=True)
+        embed.add_field(
+            name="DB league deleted",
+            value=f"League ID {deleted_league}" if deleted_league else "none found",
+            inline=True,
+        )
         embed.set_footer(text="Server is clean. Use /league create to start fresh.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 

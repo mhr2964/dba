@@ -9,7 +9,8 @@ from core.errors import DBAError, PermissionError
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, series_repo, team_repo
-from services import playoff_service
+from phase.states import Phase
+from services import league_service, playoff_service
 
 log = get_logger(__name__)
 
@@ -74,6 +75,8 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             if channel:
                 await channel.send(embed=playin_em)
                 await channel.send(embed=r1_embed)
+
+        await league_service.advance_phase(league.id, Phase.PLAYIN_ACTIVE.value)
 
         await interaction.followup.send(
             f"Playoffs seeded for season {league.current_season}. "
@@ -164,19 +167,59 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
                 if outcome["series_over"]:
                     break
 
-        all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
-        bracket_em = playoff_embeds.bracket_embed(all_series, teams_by_id)
-        bracket_em.title = f"Round Complete — {games_simmed} games simmed"
+        # Advance to the next round — creates next-round series rows and returns the round name.
+        next_round = await playoff_service.advance_playoff_round(
+            league.id, league.current_season, guild=interaction.guild
+        )
 
-        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-        if news_channel_id:
-            channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
+        # Advance league phase to match the new round.
+        _ROUND_TO_PHASE = {
+            "r2_east": Phase.PLAYOFFS_R2,
+            "r2_west": Phase.PLAYOFFS_R2,
+            "conference_finals_east": Phase.CONFERENCE_FINALS,
+            "conference_finals_west": Phase.CONFERENCE_FINALS,
+            "nba_finals": Phase.NBA_FINALS,
+            "champion": Phase.OFFSEASON_AWARDS_CLOSED,
+        }
+        for key, phase in _ROUND_TO_PHASE.items():
+            if key in next_round:
                 try:
-                    await channel.send(embed=bracket_em)
+                    await league_service.advance_phase(league.id, phase.value)
                 except Exception:
                     pass
-        await interaction.followup.send(embed=bracket_em)
+                break
+
+        all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
+        bracket_em = playoff_embeds.bracket_embed(all_series, teams_by_id)
+
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+
+        if next_round == "champion":
+            winner_id = next(
+                (s.winner_team_id for s in all_series if s.round == "nba_finals"), None
+            )
+            winner = teams_by_id.get(winner_id) if winner_id else None
+            champ_em = playoff_embeds.champion_embed(winner)
+            if news_channel_id:
+                channel = interaction.guild.get_channel(news_channel_id)
+                if channel:
+                    try:
+                        await channel.send(embed=champ_em)
+                    except Exception:
+                        pass
+            await interaction.followup.send(
+                f"Round complete — {games_simmed} games simmed.", embed=champ_em
+            )
+        else:
+            bracket_em.title = f"Round Complete — {games_simmed} games simmed"
+            if news_channel_id:
+                channel = interaction.guild.get_channel(news_channel_id)
+                if channel:
+                    try:
+                        await channel.send(embed=bracket_em)
+                    except Exception:
+                        pass
+            await interaction.followup.send(embed=bracket_em)
 
     @app_commands.command(name="sim-playin", description="Sim the entire play-in tournament")
     async def sim_playin(self, interaction: discord.Interaction) -> None:
@@ -213,6 +256,8 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             value=f"7: {_name(seeds['west_7_seed'])}\n8: {_name(seeds['west_8_seed'])}",
             inline=True,
         )
+
+        await league_service.advance_phase(league.id, Phase.PLAYOFFS_R1.value)
 
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:

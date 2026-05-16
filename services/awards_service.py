@@ -201,10 +201,10 @@ async def get_race_leaders(
     """Return top-N candidates per award race (mvp, dpoy, roy, 6moy) for odds generation."""
     result = {}
     sort_keys = {
-        "mvp":  lambda p: p["ppg"] + 0.4 * p["rpg"] + 0.6 * p["apg"],
-        "dpoy": lambda p: p["bpg"] + p["spg"] + 0.3 * p["rpg"],
-        "roy":  lambda p: p["ppg"] + 0.3 * p["rpg"] + 0.3 * p["apg"],
-        "6moy": lambda p: p["ppg"] + 0.3 * p["apg"],
+        "mvp":  lambda p: float(p["ppg"] or 0) + 0.4 * float(p["rpg"] or 0) + 0.6 * float(p["apg"] or 0),
+        "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.3 * float(p["rpg"] or 0),
+        "roy":  lambda p: float(p["ppg"] or 0) + 0.3 * float(p["rpg"] or 0) + 0.3 * float(p["apg"] or 0),
+        "6moy": lambda p: float(p["ppg"] or 0) + 0.3 * float(p["apg"] or 0),
     }
     for award_type, sort_key in sort_keys.items():
         try:

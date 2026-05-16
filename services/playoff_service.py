@@ -219,6 +219,17 @@ async def _run_one_game(
         rng_seed,
     )
 
+    # Enrich box score lines with player names so columnists can reference them.
+    _name_map = {
+        p["id"]: f"{p['first_name']} {p['last_name']}"
+        for p in home_players + away_players
+        if p.get("id") and p.get("first_name")
+    }
+    for _box_list in (result.get("home_box", []), result.get("away_box", [])):
+        for _line in _box_list:
+            if "player_name" not in _line:
+                _line["player_name"] = _name_map.get(_line.get("player_id"), "")
+
     await game_repo.mark_simmed(
         pool, game_id,
         result["home_score"],
