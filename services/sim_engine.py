@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+# sim_engine v2 — position-weighted rebounding, calibrated APG, raised star cap
 from random import Random
 from typing import List
 
