@@ -99,6 +99,16 @@ async def generate(
     ]
     user_content = "\n".join(user_content_parts)
 
+    # Prepend a hard score-accuracy rule before the persona's own voice notes.
+    # This fires before any context so the model cannot later "forget" it.
+    score_accuracy_rule = (
+        "SCORE ACCURACY RULE (mandatory, overrides everything else): "
+        "If the context contains an 'actual_final_score' field, you MUST reproduce "
+        "that exact score when mentioning the game result. Never state a different score. "
+        "Do not invent, round, or approximate any score value.\n\n"
+    )
+    system_prompt = score_accuracy_rule + persona.voice_notes
+
     try:
         import anthropic
 
@@ -106,7 +116,7 @@ async def generate(
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=800,
-            system=persona.voice_notes,
+            system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
         raw = message.content[0].text.strip()

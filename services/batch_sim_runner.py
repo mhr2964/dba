@@ -161,14 +161,38 @@ async def _load_lineup_for_team(pool, league_id: int, team_id: int) -> List[dict
     return [_apply_directives(dict(r)) for r in rows]
 
 
-def _team_to_sim_dict(team: team_repo.Team) -> dict:
+def _team_to_sim_dict(team: team_repo.Team, top8_avg_ovr: int = 75) -> dict:
     return {
         "team_id": team.id,
-        "overall": 75,
-        "offense_rating": team.team_offense_rating or 75,
-        "defense_rating": team.team_defense_rating or 75,
+        "overall": top8_avg_ovr,
+        "offense_rating": team.team_offense_rating or top8_avg_ovr,
+        "defense_rating": team.team_defense_rating or top8_avg_ovr,
         "pace": team.pace or 100.0,
     }
+
+
+async def _compute_team_ovr(pool, league_id: int, team_id: int) -> int:
+    """Average OVR of the top-8 lineup slots (starters + primary bench).
+
+    Returns 75 as a safe fallback when the team has no lineup rows or no
+    players with a populated overall rating.
+    """
+    result = await pool.fetchval(
+        """
+        SELECT ROUND(AVG(p.overall))::INT
+        FROM (
+            SELECT p.overall
+            FROM lineups l
+            JOIN players p ON p.id = l.player_id
+            WHERE l.league_id = $1 AND l.team_id = $2
+            ORDER BY l.slot ASC
+            LIMIT 8
+        ) p
+        """,
+        league_id,
+        team_id,
+    )
+    return int(result) if result is not None else 75
 
 
 async def _persist_injuries(
@@ -327,7 +351,24 @@ async def _persist_game_result(
     record_announcements, at_announcements = await records_service.check_and_update_records(
         pool, game["league_id"], season, game_id, result
     )
-    for announcement in record_announcements:
+    # If an event is covered by an all-time announcement, the all-time version supersedes
+    # the season version — posting both for the same event is redundant noise.
+    # Strategy: for each at_announcement, check if any season_announcement is about the
+    # same metric (same numeric value appears in both strings) and suppress it.
+    suppressed_season: set[int] = set()
+    for at_ann in at_announcements:
+        # Extract numeric tokens from the all-time string (scores, margins, etc.)
+        import re as _re
+        at_nums = set(_re.findall(r'\d+', at_ann))
+        for idx, s_ann in enumerate(record_announcements):
+            s_nums = set(_re.findall(r'\d+', s_ann))
+            # If both strings share at least one key number AND the at_ann covers the
+            # same team/player token, treat the season message as superseded.
+            if at_nums & s_nums:
+                suppressed_season.add(idx)
+    for idx, announcement in enumerate(record_announcements):
+        if idx in suppressed_season:
+            continue
         if news_channel:
             await news_channel.send(embed=sim_embeds.season_record_embed(announcement))
     for at_announcement in at_announcements:
@@ -357,6 +398,9 @@ async def _sim_single_game(
     home_players = await _load_lineup_for_team(pool, league_id, home_team.id)
     away_players = await _load_lineup_for_team(pool, league_id, away_team.id)
 
+    home_ovr = await _compute_team_ovr(pool, league_id, home_team.id)
+    away_ovr = await _compute_team_ovr(pool, league_id, away_team.id)
+
     game_date = game.get("scheduled_date")
     fatigue = {
         "home_b2b": await game_repo.is_back_to_back(pool, league_id, season, game["home_team_id"], game_date),
@@ -373,8 +417,8 @@ async def _sim_single_game(
 
     seed = game.get("rng_seed") or (game["id"] * 31337)
     result = sim_engine.sim_game(
-        _team_to_sim_dict(home_team),
-        _team_to_sim_dict(away_team),
+        _team_to_sim_dict(home_team, home_ovr),
+        _team_to_sim_dict(away_team, away_ovr),
         home_players,
         away_players,
         seed,
@@ -941,7 +985,11 @@ async def _maybe_post_columnist(
 
         games_data.append({
             "game": f"{away_code} @ {home_code}",
-            "score": f"{away_code} {as_} - {home_code} {hs}",
+            "actual_final_score": f"{away_code} {as_} - {home_code} {hs}",
+            "result_instruction": (
+                f"IMPORTANT: The actual final score is {away_code} {as_} - {home_code} {hs}. "
+                "Do NOT invent or change the score."
+            ),
             "winner": winner_code,
             "margin": abs(hs - as_),
             "top_performer": game_top_performer_dict,

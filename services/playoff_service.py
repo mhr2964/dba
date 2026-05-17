@@ -169,14 +169,38 @@ async def _load_lineup(pool, league_id: int, team_id: int) -> List[dict]:
     return [dict(r) for r in rows]
 
 
-def _team_to_sim_dict(team: team_repo.Team) -> dict:
+def _team_to_sim_dict(team: team_repo.Team, top8_avg_ovr: int = 75) -> dict:
     return {
         "team_id": team.id,
-        "overall": 75,
-        "offense_rating": team.team_offense_rating or 75,
-        "defense_rating": team.team_defense_rating or 75,
+        "overall": top8_avg_ovr,
+        "offense_rating": team.team_offense_rating or top8_avg_ovr,
+        "defense_rating": team.team_defense_rating or top8_avg_ovr,
         "pace": team.pace or 100.0,
     }
+
+
+async def _compute_team_ovr(pool, league_id: int, team_id: int) -> int:
+    """Average OVR of the top-8 lineup slots (starters + primary bench).
+
+    Returns 75 as a safe fallback when the team has no lineup rows or no
+    players with a populated overall rating.
+    """
+    result = await pool.fetchval(
+        """
+        SELECT ROUND(AVG(p.overall))::INT
+        FROM (
+            SELECT p.overall
+            FROM lineups l
+            JOIN players p ON p.id = l.player_id
+            WHERE l.league_id = $1 AND l.team_id = $2
+            ORDER BY l.slot ASC
+            LIMIT 8
+        ) p
+        """,
+        league_id,
+        team_id,
+    )
+    return int(result) if result is not None else 75
 
 
 async def _get_playoff_sim_date(pool, league_id: int, season: int) -> datetime.date:
@@ -219,6 +243,9 @@ async def _run_one_game(
     home_players = await _load_lineup(pool, league_id, home_team.id)
     away_players = await _load_lineup(pool, league_id, away_team.id)
 
+    home_ovr = await _compute_team_ovr(pool, league_id, home_team.id)
+    away_ovr = await _compute_team_ovr(pool, league_id, away_team.id)
+
     rng_seed = random.getrandbits(63)
 
     # Use a sim-calendar date so player game logs stay coherent with regular-season dates.
@@ -239,8 +266,8 @@ async def _run_one_game(
     })
 
     result = sim_engine.sim_game(
-        _team_to_sim_dict(home_team),
-        _team_to_sim_dict(away_team),
+        _team_to_sim_dict(home_team, home_ovr),
+        _team_to_sim_dict(away_team, away_ovr),
         home_players,
         away_players,
         rng_seed,
@@ -383,13 +410,13 @@ async def sim_series_game(
                 "away_team": away_team_code,
                 "home_score": home_score,
                 "away_score": away_score,
-                "actual_score": f"{away_team_code} {away_score} - {home_team_code} {home_score}",
+                "actual_final_score": f"{away_team_code} {away_score} - {home_team_code} {home_score}",
                 "winner": winner_code,
                 "result_instruction": (
-                    f"IMPORTANT: The actual game result was {away_team_code} {away_score} - "
+                    f"IMPORTANT: The actual final score is {away_team_code} {away_score} - "
                     f"{home_team_code} {home_score}. "
                     f"Winner: {winner_code or 'see scores'}. "
-                    "Do NOT invent scores or results different from these."
+                    "Do NOT invent or change the score."
                 ),
                 "top_performer": top_performer_dict,
                 "game_index_range": {"season_pct": 100},
