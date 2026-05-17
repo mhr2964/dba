@@ -263,9 +263,12 @@ def _build_box_for_team(
         total = sum(raw) or 1.0
         minutes_list = [v / total * 240.0 for v in raw]
     else:
-        # Auto-allocate: starters 28-38, bench 8-22, must sum to 240.
-        starter_weights = [rng.uniform(28, 38) for _ in starters]
-        bench_weights = [rng.uniform(8, 22) for _ in bench] if bench else []
+        # Auto-allocate minutes so starters land ~33-38 min and bench shares the rest.
+        # Weights are chosen so that after normalization to 240 total, a 5-starter
+        # roster with 7 bench players produces ~35 min per starter.  The ratio
+        # starter_weight / bench_weight ≈ 4:1 achieves this at typical roster sizes.
+        starter_weights = [rng.uniform(50, 65) for _ in starters]
+        bench_weights = [rng.uniform(10, 18) for _ in bench] if bench else []
         all_weights = starter_weights + bench_weights
         total_w = sum(all_weights)
         minutes_list = [w / total_w * 240 for w in all_weights]

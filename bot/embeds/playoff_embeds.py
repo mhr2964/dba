@@ -43,7 +43,7 @@ def _series_line(series: Series, teams_by_id: Dict[int, Team]) -> str:
         loser_wins = series.wins_low if series.winner_team_id == series.high_seed_team_id else series.wins_high
         winner_wins = max(series.wins_high, series.wins_low)
         return f"**{winner}** def. {high if winner != high else low} ({winner_wins}–{loser_wins})"
-    return f"{high} **{series.wins_high}** – **{series.wins_low}** {low}  `ID:{series.id}`"
+    return f"{high} **{series.wins_high}** – **{series.wins_low}** {low}"
 
 
 def _matchup_str(series: Series, teams_by_id: Dict[int, Team]) -> str:

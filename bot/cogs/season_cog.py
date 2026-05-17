@@ -87,10 +87,10 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         interaction: discord.Interaction,
         season_year: Optional[int] = None,
     ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
-
-        await interaction.response.defer(ephemeral=True)
 
         season = season_year if season_year is not None else league.current_season
 

@@ -34,17 +34,17 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
     @app_commands.command(name="seed", description="Seed the playoffs from final standings")
     async def seed(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
         league = await _require_commissioner(interaction)
 
         if league.current_phase != "REGULAR_SEASON_COMPLETE":
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Regular season must be complete before seeding playoffs. "
                 f"Current phase: `{league.current_phase}`",
                 ephemeral=True,
             )
             return
-
-        await interaction.response.defer()
 
         pool = await get_pool()
         try:
@@ -87,8 +87,8 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
     @app_commands.command(name="sim-game", description="Sim the next game in a playoff series")
     @app_commands.describe(series_id="ID of the series to advance")
     async def sim_game(self, interaction: discord.Interaction, series_id: int) -> None:
-        league = await _require_commissioner(interaction)
         await interaction.response.defer()
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
 
@@ -141,8 +141,8 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
     @app_commands.command(name="sim-round", description="Sim all remaining games in the current playoff round")
     async def sim_round(self, interaction: discord.Interaction) -> None:
-        league = await _require_commissioner(interaction)
         await interaction.response.defer()
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
         teams = await team_repo.get_all(pool, league.id)
@@ -229,8 +229,8 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
     @app_commands.command(name="sim-playin", description="Sim the entire play-in tournament")
     async def sim_playin(self, interaction: discord.Interaction) -> None:
-        league = await _require_commissioner(interaction)
         await interaction.response.defer()
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
 
