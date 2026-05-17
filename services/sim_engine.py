@@ -446,8 +446,12 @@ def sim_game(
     def _ppp(off: float, opp_def: float) -> float:
         # Base raised from 1.08 → 1.11 to add ~2.5 PPG league-wide.
         # Each 0.01 increase in base yields ~0.8 PPG (80 possessions × 0.01).
-        base = 1.11 + (off - 60) / (95 - 60) * 0.22
-        base *= 1 - (opp_def - 60) / (95 - 60) * 0.10
+        # Offense scale raised from 0.22 → 0.38 so an 8-OVR gap (e.g. 84 vs 76)
+        # produces ~7-10 pts/game margin, giving a ~70% per-game win rate for the
+        # top seed — enough to yield ~95% series win probability in 7 games.
+        # Defense scale raised from 0.10 → 0.14 for complementary defensive impact.
+        base = 1.11 + (off - 60) / (95 - 60) * 0.38
+        base *= 1 - (opp_def - 60) / (95 - 60) * 0.14
         base *= rng.gauss(1.0, 0.05)
         return base
 

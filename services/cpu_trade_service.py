@@ -313,6 +313,27 @@ async def _attempt_one_offer(
         )
         return 0
 
+    # OVR sanity check — reject if team A is giving away a player 10+ OVR points
+    # above the best player received.  The salary-weighted value metric can make
+    # a superstar on a max contract appear equal in value to a cheaper role player,
+    # producing absurd trades (e.g. Luka OVR 93 for Cameron Johnson OVR 79).
+    # This check bypasses contract weighting and looks at raw OVR only.
+    if offer_player_ids:
+        best_offered_ovr = 0
+        for pid in offer_player_ids:
+            offered_p = await player_repo.get_by_id(pool, pid)
+            if offered_p and offered_p.overall > best_offered_ovr:
+                best_offered_ovr = offered_p.overall
+        target_ovr = target_player.overall
+        if secondary_target:
+            target_ovr = max(target_ovr, secondary_target.overall)
+        if best_offered_ovr >= target_ovr + 10:
+            log.info(
+                f"CPU trade aborted (OVR sanity): team {team_a.id} would give OVR "
+                f"{best_offered_ovr} for OVR {target_ovr} — gap ≥ 10"
+            )
+            return 0
+
     # Sanity check: only propose if the return package value is reasonably close
     # to the target value.  A package worth less than 50% or more than 200% of
     # the target is too lopsided to submit — this prevents absurd offers like
@@ -468,6 +489,32 @@ async def _maybe_auto_approve(
             f"— leaving as pending_commissioner"
         )
         return
+
+    # OVR sanity guard at auto-approve: salary-weighted value can mask huge OVR gaps
+    # (e.g. Luka OVR 93 on a $41M contract appears equal to a cheaper OVR 79 player).
+    # Collect each side's best OVR and reject if one side's best player is 10+ OVR
+    # above the other side's best player.
+    proposer_ovrs: list[int] = []
+    counterparty_ovrs: list[int] = []
+    for asset in assets:
+        if asset.asset_type == "player" and asset.player_id:
+            p_row = await pool.fetchrow("SELECT overall FROM players WHERE id = $1", asset.player_id)
+            if p_row:
+                if asset.from_team_id == trade.proposer_team_id:
+                    proposer_ovrs.append(p_row["overall"])
+                else:
+                    counterparty_ovrs.append(p_row["overall"])
+    if proposer_ovrs and counterparty_ovrs:
+        best_prop_ovr = max(proposer_ovrs)
+        best_counter_ovr = max(counterparty_ovrs)
+        ovr_gap = abs(best_prop_ovr - best_counter_ovr)
+        if ovr_gap >= 10:
+            log.info(
+                f"CPU-to-CPU trade {trade.id} blocked at auto-approve: OVR gap "
+                f"(proposer best OVR={best_prop_ovr}, counterparty best OVR={best_counter_ovr}) "
+                f"— leaving as pending_commissioner"
+            )
+            return
 
     # Always auto-approve CPU-to-CPU (human guard above ensures no human is involved).
     async with pool.acquire() as conn:
