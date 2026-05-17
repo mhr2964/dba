@@ -54,6 +54,25 @@ _BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
 _TENDENCY_STATS = ("ast", "reb", "stl", "blk")
 _DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50, "usage_weight": 50}
 
+# 2024 NBA Draft class — used to set is_rookie=TRUE for the 2024-25 season.
+# Normalized (accent-stripped, lowercase) names are compared; the set uses
+# display names which are normalized at lookup time via _normalize().
+_2024_DRAFT_CLASS: frozenset[str] = frozenset({
+    "Zaccharie Risacher", "Alex Sarr", "Alexandre Sarr", "Reed Sheppard",
+    "Stephon Castle", "Rob Dillingham", "Tidjane Salaun", "Tidjane Salaün",
+    "Donovan Clingan", "Carlton Carrington", "Nikola Topic", "Nikola Topić",
+    "Cody Williams", "Matas Buzelis", "Dalton Knecht", "Jared McCain",
+    "Baylor Scheierman", "Kel'el Ware", "Devin Carter", "Ryan Dunn",
+    "Isaiah Collier", "Jaylen Wells", "Dillon Jones", "Jonathan Mogbo",
+    "Kyle Filipowski", "Yves Missi", "Ja'Kobe Walter", "KyShawn George",
+    "Jamal Shead", "Oso Ighodaro", "Ronald Holland II", "Tristan Da Silva",
+    "Johnny Furphy", "Jaylon Tyson", "Pelle Larsson", "Enrique Freeman",
+    "Ajay Mitchell", "Cam Christie", "Quinten Post", "Adem Bona",
+    "Tyler Kolek", "K.J. Simpson", "Ariel Hukporti", "Bobi Klintman",
+    "Pacome Dadiet", "Antonio Reeves", "Tyler Smith", "Zach Edey",
+    "Bronny James", "AJ Johnson", "Harrison Ingram", "Cam Spencer",
+})
+
 
 def _load_bdl_base(season: int) -> dict[int, dict]:
     """Load season_{season}_base.json and return {bdl_player_id: record}.
@@ -265,6 +284,46 @@ def _normalize(name: str) -> str:
         .lower()
         .strip()
     )
+
+
+# Pre-compute normalized draft class set once at import time.
+_2024_DRAFT_CLASS_NORMALIZED: frozenset[str] = frozenset(
+    _normalize(n) for n in _2024_DRAFT_CLASS
+)
+
+
+def _is_2024_rookie(full_name: str) -> bool:
+    """Return True if the player's name matches the 2024 NBA Draft class."""
+    return _normalize(full_name) in _2024_DRAFT_CLASS_NORMALIZED
+
+
+async def seed_2024_rookies(pool: asyncpg.Pool, league_id: int) -> int:
+    """Mark all known 2024 draft class players in the league as is_rookie=TRUE.
+
+    Uses normalized name matching against the known draft class list.
+    Returns the count of rows updated.
+    """
+    rows = await pool.fetch(
+        "SELECT id, first_name, last_name FROM players WHERE league_id = $1",
+        league_id,
+    )
+    rookie_ids: list[int] = [
+        r["id"]
+        for r in rows
+        if _is_2024_rookie(f"{r['first_name']} {r['last_name']}")
+    ]
+    if not rookie_ids:
+        log.info(f"seed_2024_rookies: no matching players found for league {league_id}")
+        return 0
+    await pool.execute(
+        "UPDATE players SET is_rookie = TRUE WHERE id = ANY($1::int[])",
+        rookie_ids,
+    )
+    log.info(
+        f"seed_2024_rookies: marked {len(rookie_ids)} players as rookies "
+        f"for league {league_id}"
+    )
+    return len(rookie_ids)
 
 
 def _overall_from_ratings_file(
@@ -547,7 +606,7 @@ async def apply_reseed(
                 "weight_lb": None,
                 "birth_date": birth_date,
                 "years_pro": 0,
-                "is_rookie": False,
+                "is_rookie": season == 2024 and _is_2024_rookie(full_name),
                 "overall": overall,
                 **attrs,
                 **hidden,
@@ -685,6 +744,19 @@ async def apply_reseed(
         except Exception as exc:
             errors.append(f"Lineup regeneration failed for team_id={team_id}: {exc}")
             log.warning(f"reseed lineup regen failed for team_id={team_id}: {exc}")
+
+    # For the 2024-25 season, ensure all known 2024 draft-class players have
+    # is_rookie=TRUE regardless of whether they were inserted or already present.
+    # This is idempotent — safe to run every reseed.
+    if season == 2024 and not dry_run:
+        try:
+            rookie_count = await seed_2024_rookies(pool, league_id)
+            log.info(
+                f"apply_reseed: marked {rookie_count} 2024 rookies for league {league_id}"
+            )
+        except Exception as exc:
+            errors.append(f"rookie seeding error: {exc}")
+            log.warning(f"apply_reseed: rookie seeding failed: {exc}")
 
     log.info(
         f"apply_reseed: league={league_id} season={season} "

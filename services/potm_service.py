@@ -216,8 +216,15 @@ async def check_and_get_potm_awards(
 
         month_label = datetime.date(year_part, month_part, 1).strftime("%B %Y")
 
+        east_candidates = [r for r in rows if (r["conference"] or "").lower() == "east"]
+        west_candidates = [r for r in rows if (r["conference"] or "").lower() == "west"]
+        log.info(
+            f"POTM {ym}: East POTM eligible: {len(east_candidates)}, "
+            f"West POTM eligible: {len(west_candidates)}"
+        )
+
         for conference in ("East", "West"):
-            conf_players = [r for r in rows if (r["conference"] or "").lower() == conference.lower()]
+            conf_players = east_candidates if conference == "East" else west_candidates
             if not conf_players:
                 continue
             # Primary sort: ppg; tiebreaker: apg
