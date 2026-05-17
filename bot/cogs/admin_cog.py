@@ -578,9 +578,12 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         deleted_channels: int = 0
         deleted_roles: list[str] = []
 
-        # Delete any category whose name starts with the basketball emoji we use.
+        # Delete any category whose name starts with the basketball emoji we use,
+        # or contains "dba" (case-insensitive) to catch orphaned categories from
+        # old sessions that pre-date the emoji naming convention.
         for category in list(guild.categories):
-            if category.name.startswith("🏀"):
+            name_lower = category.name.lower()
+            if category.name.startswith("🏀") or "dba" in name_lower:
                 for ch in list(category.channels):
                     try:
                         await ch.delete(reason="DBA purge-server")

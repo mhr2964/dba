@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -21,8 +22,15 @@ from services import league_service
 _DATA_ROOT = Path(__file__).parent.parent.parent / "data"
 
 
+@lru_cache(maxsize=1)
 def _supported_seasons() -> list[int]:
-    """Return seasons that have either a pre-built ratings file or full BDL cache."""
+    """Return seasons that have either a pre-built ratings file or full BDL cache.
+
+    Cached at module level — filesystem scan runs once at import time, not on
+    every autocomplete keystroke. Blocking the asyncio event loop with repeated
+    Path.exists() calls caused Discord interaction tokens to expire before
+    defer() could fire.
+    """
     seasons = []
     for year in range(2024, 2011, -1):
         ratings_file = _DATA_ROOT / "stats_ratings" / f"{year}.json"
