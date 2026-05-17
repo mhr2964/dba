@@ -390,15 +390,41 @@ async def diff_league_against_seed(
         target_code = seed_row.get("nba_team_code", "").upper()
 
         # Try external_id first, then normalised name.
+        # When the seed row has an external_id but the DB has a same-named player
+        # with a *different* external_id, they are different people (e.g. a G-League
+        # namesake).  Skip the name-match in that case to avoid false merges.
         db_player = db_by_ext_id.get(ext_id) if ext_id else None
+        _matched_by = "external_id"
         if db_player is None:
-            db_player = db_by_norm_name.get(norm_name)
+            name_candidate = db_by_norm_name.get(norm_name)
+            if name_candidate is not None and ext_id and name_candidate.get("external_id"):
+                # Both seed and DB have external_ids — if they differ, this is a
+                # different person sharing a name.  Treat as "not found" → insert.
+                if str(name_candidate["external_id"]) != str(ext_id):
+                    log.warning(
+                        f"diff: name collision for {full_name!r} — "
+                        f"seed ext_id={ext_id!r} but DB player has ext_id="
+                        f"{name_candidate['external_id']!r} (player_id={name_candidate['id']}). "
+                        f"Treating as insert, not a match."
+                    )
+                    to_insert.append(seed_row)
+                    continue
+            db_player = name_candidate
+            _matched_by = "name"
 
         if db_player is None:
             to_insert.append(seed_row)
             continue
 
         matched_db_ids.add(db_player["id"])
+
+        # Log name-only matches for visibility into potential collisions.
+        if _matched_by == "name":
+            log.debug(
+                f"diff: matched {full_name!r} by name only "
+                f"(seed ext_id={ext_id!r}, db ext_id={db_player.get('external_id')!r}, "
+                f"db player_id={db_player['id']})"
+            )
 
         # Resolve current team code for this player.
         current_code = await _get_team_code_by_id(pool, league_id, db_player["team_id"])

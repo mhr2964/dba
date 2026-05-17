@@ -177,7 +177,10 @@ def _assign_team_stats(
         players[i].get("playmaking", 50)
         * _POSITION_PLAYMAKING_WEIGHT.get(players[i].get("position", "SF"), 1.0)
         * (players[i].get("tendency_pass", 50) / 50.0)
-        * (players[i].get("ast_tendency", 50) / 50.0)
+        # Exponent on ast_tendency widens the gap between elite passers and role players:
+        # ast_tendency=95 → (1.9)^1.6 ≈ 2.72x; =70 → (1.4)^1.6 ≈ 1.60x; =30 → (0.6)^1.6 ≈ 0.44x.
+        # Linear scaling was capping elite PGs (Trae Young) at ~7 APG; this targets 10–12.
+        * (players[i].get("ast_tendency", 50) / 50.0) ** 1.6
         * minutes_list[i]
         for i in range(n)
     ]

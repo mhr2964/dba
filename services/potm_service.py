@@ -118,6 +118,43 @@ async def check_and_get_potm_awards(
         month_start = datetime.date(year_part, month_part, 1)
         month_end = datetime.date(year_part, month_part, last_day)
 
+        log.info(
+            f"POTM {ym}: querying games between {month_start} and {month_end} "
+            f"for league={league_id} season={season}"
+        )
+
+        # Count how many regular-season simmed games exist in this window for debugging.
+        game_count = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM games
+            WHERE league_id = $1 AND season = $2
+              AND scheduled_date BETWEEN $3 AND $4
+              AND status = 'simmed'
+              AND season_type = 'regular'
+            """,
+            league_id, season, month_start, month_end,
+        )
+        log.info(
+            f"POTM {ym}: found {game_count} regular-season simmed games in window "
+            f"({month_start} to {month_end})"
+        )
+
+        if game_count == 0:
+            # Log date range of actual simmed games so we can diagnose year mismatch.
+            date_range = await pool.fetchrow(
+                """
+                SELECT MIN(scheduled_date)::text AS earliest, MAX(scheduled_date)::text AS latest
+                FROM games
+                WHERE league_id = $1 AND season = $2 AND status = 'simmed'
+                """,
+                league_id, season,
+            )
+            log.warning(
+                f"POTM {ym}: no games in window — actual simmed date range is "
+                f"{date_range['earliest']!r} to {date_range['latest']!r}. "
+                f"Possible year mismatch in scheduled_date values."
+            )
+
         rows = await pool.fetch(
             """
             SELECT
@@ -137,6 +174,7 @@ async def check_and_get_potm_awards(
               AND g.season = $2
               AND g.scheduled_date BETWEEN $3 AND $4
               AND g.status = 'simmed'
+              AND g.season_type = 'regular'
             GROUP BY p.id, p.first_name, p.last_name, t.nba_team_code, t.conference
             HAVING COUNT(b.game_id) >= $5
             ORDER BY AVG(b.points) DESC
@@ -144,8 +182,36 @@ async def check_and_get_potm_awards(
             league_id, season, month_start, month_end, _MIN_GAMES,
         )
 
-        log.info(f"POTM {ym}: eligible players found: {len(rows)} for league {league_id}")
-        if not rows:
+        log.info(
+            f"POTM {ym}: eligible players found: {len(rows)} "
+            f"(min {_MIN_GAMES} games, regular season only)"
+        )
+        if rows:
+            log.info(
+                f"POTM {ym}: top-5 candidates: "
+                + ", ".join(
+                    f"{r['player_name']} ({r['games_played']}gp {float(r['ppg']):.1f}ppg)"
+                    for r in rows[:5]
+                )
+            )
+        else:
+            # Check if non-regular games would have produced results (diagnose season_type filter).
+            any_rows = await pool.fetchval(
+                """
+                SELECT COUNT(DISTINCT b.player_id)
+                FROM game_box_scores b
+                JOIN games g ON g.id = b.game_id
+                WHERE g.league_id = $1 AND g.season = $2
+                  AND g.scheduled_date BETWEEN $3 AND $4
+                  AND g.status = 'simmed'
+                """,
+                league_id, season, month_start, month_end,
+            )
+            log.warning(
+                f"POTM {ym}: 0 eligible players with season_type='regular' filter. "
+                f"Without the filter, {any_rows} distinct players have box scores in window. "
+                f"Check that games.season_type is set to 'regular' for regular season games."
+            )
             continue
 
         month_label = datetime.date(year_part, month_part, 1).strftime("%B %Y")

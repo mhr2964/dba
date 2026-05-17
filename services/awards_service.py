@@ -173,6 +173,11 @@ async def _get_eligible_players(
         season,
     )
 
+    log.info(
+        f"_get_eligible_players({award_type}): raw rows from DB = {len(rows)} "
+        f"(league={league_id} season={season})"
+    )
+
     eligible: list[dict] = []
     for r in rows:
         row_dict = dict(r)
@@ -189,6 +194,10 @@ async def _get_eligible_players(
 
         eligible.append(row_dict)
 
+    log.info(
+        f"_get_eligible_players({award_type}): {len(eligible)} eligible after role filter. "
+        f"Candidate player_ids: {[p['player_id'] for p in eligible[:10]]}"
+    )
     return eligible
 
 
@@ -431,8 +440,16 @@ async def generate_cpu_votes(
 
     eligible = await _get_eligible_players(pool, league_id, season, award_type)
     if not eligible:
-        log.warning(f"No eligible players for award {award_type} in league {league_id} season {season}")
+        log.warning(
+            f"No eligible players for award {award_type} in league {league_id} season {season}. "
+            f"Verify that regular-season games have season_type='regular' in the games table."
+        )
         return 0
+
+    log.info(
+        f"generate_cpu_votes({award_type}): {len(eligible)} candidates. "
+        f"Top by player_id: {[p['player_id'] for p in eligible[:5]]}"
+    )
 
     # Pre-fetch team records from standings_cache for all team_ids present.
     team_ids = list({p["team_id"] for p in eligible if p["team_id"] is not None})
