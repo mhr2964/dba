@@ -12,8 +12,11 @@ needing an arbitrary cap.
 1. reb_tendency — from BDL reb per game, position-relative.
 2. stl_tendency — from BDL stl per game, position-relative.
 3. blk_tendency — from BDL blk per game, position-relative.
-4. defense_tendency — stl 60% + blk 40% weighted composite, position-relative. Capped at 85.
-5. usage_weight — from BDL pts per game: clamp(round((pts/25)*100), 10, 95).
+4. ast_tendency — from BDL ast per game, position-relative. Without this fix, players
+   default to 50 from migration 026, capping every player's APG at ~7 regardless of
+   their real passing ability (Trae Young 11.6 APG should reach 95).
+5. defense_tendency — stl 60% + blk 40% weighted composite, position-relative. Capped at 85.
+6. usage_weight — from BDL pts per game: clamp(round((pts/25)*100), 10, 95).
 
 NOTE: DB external_ids use nba_api IDs (different space from BDL), so lookups
 are done by normalized player name — the same approach used by fix_salaries_and_usage.py.
@@ -82,8 +85,8 @@ def _load_bdl_by_name(season: int) -> dict[str, dict]:
 
 
 def _compute_position_avgs(bdl_by_name: dict[str, dict]) -> dict[str, dict[str, float]]:
-    """Compute per position-group (G/F/C) averages for reb/stl/blk."""
-    _STATS = ("reb", "stl", "blk")
+    """Compute per position-group (G/F/C) averages for reb/stl/blk/ast."""
+    _STATS = ("reb", "stl", "blk", "ast")
     buckets: dict[str, dict[str, list[float]]] = {
         "G": {s: [] for s in _STATS},
         "F": {s: [] for s in _STATS},
@@ -155,6 +158,7 @@ async def main() -> None:
             """
             SELECT id, first_name, last_name, position,
                    reb_tendency, stl_tendency, blk_tendency,
+                   COALESCE(ast_tendency, 50)     AS ast_tendency,
                    COALESCE(defense_tendency, 50) AS defense_tendency,
                    usage_weight
             FROM players
@@ -170,6 +174,7 @@ async def main() -> None:
         reb_changed = 0
         stl_changed = 0
         blk_changed = 0
+        ast_changed = 0
         def_computed = 0
         usage_updated = 0
 
@@ -184,6 +189,7 @@ async def main() -> None:
             old_reb = row["reb_tendency"]
             old_stl = row["stl_tendency"]
             old_blk = row["blk_tendency"]
+            old_ast = row["ast_tendency"]
             old_def = row["defense_tendency"]
             old_usage = row["usage_weight"]
 
@@ -196,16 +202,22 @@ async def main() -> None:
             # Use BDL position group for denominator; fall back to last char of DB position.
             pos_group = entry["pos_group"]
 
-            avgs = pos_avgs.get(pos_group, pos_avgs.get("G", {"reb": 1.0, "stl": 1.0, "blk": 1.0}))
+            avgs = pos_avgs.get(pos_group, pos_avgs.get("G", {"reb": 1.0, "stl": 1.0, "blk": 1.0, "ast": 1.0}))
 
             reb_val = float(stats.get("reb") or 0.0)
             stl_val = float(stats.get("stl") or 0.0)
             blk_val = float(stats.get("blk") or 0.0)
+            ast_val = float(stats.get("ast") or 0.0)
             pts_val = float(stats.get("pts") or 0.0)
 
             new_reb = _tend(reb_val, avgs["reb"])
             new_stl = _tend(stl_val, avgs["stl"])
             new_blk = _tend(blk_val, avgs["blk"])
+            # ast_tendency: position-relative, same formula as reb/stl/blk.
+            # Trae Young (11.6 APG, G avg ~2.7 APG) → (11.6/2.7)*50 = 215 → capped to 95.
+            # Without this fix, all players default to 50 from migration 026, which caps
+            # every player's APG at ~7 regardless of their real passing ability.
+            new_ast = _tend(ast_val, avgs["ast"])
 
             # defense_tendency: stl 60% weight, blk 40%. Capped at 85.
             defense_raw = round(
@@ -223,8 +235,8 @@ async def main() -> None:
 
             changed = (
                 new_reb != old_reb or new_stl != old_stl
-                or new_blk != old_blk or new_def != old_def
-                or new_usage != old_usage
+                or new_blk != old_blk or new_ast != old_ast
+                or new_def != old_def or new_usage != old_usage
             )
 
             if not changed:
@@ -236,6 +248,8 @@ async def main() -> None:
                 stl_changed += 1
             if old_blk != new_blk:
                 blk_changed += 1
+            if old_ast != new_ast:
+                ast_changed += 1
 
             safe_name = name.encode("ascii", "replace").decode("ascii")
 
@@ -245,6 +259,7 @@ async def main() -> None:
                     f"  reb {old_reb}->{new_reb}"
                     f"  stl {old_stl}->{new_stl}"
                     f"  blk {old_blk}->{new_blk}"
+                    f"  ast {old_ast}->{new_ast}"
                     f"  def {old_def}->{new_def}"
                     f"  usage {old_usage}->{new_usage}"
                 )
@@ -254,10 +269,11 @@ async def main() -> None:
                        SET reb_tendency     = $1,
                            stl_tendency     = $2,
                            blk_tendency     = $3,
-                           defense_tendency = $4,
-                           usage_weight     = $5
-                       WHERE id = $6""",
-                    new_reb, new_stl, new_blk, new_def, new_usage, pid,
+                           ast_tendency     = $4,
+                           defense_tendency = $5,
+                           usage_weight     = $6
+                       WHERE id = $7""",
+                    new_reb, new_stl, new_blk, new_ast, new_def, new_usage, pid,
                 )
                 updated += 1
 
@@ -269,6 +285,7 @@ async def main() -> None:
         print(f"reb_tendency changed:        {reb_changed}")
         print(f"stl_tendency changed:        {stl_changed}")
         print(f"blk_tendency changed:        {blk_changed}")
+        print(f"ast_tendency changed:        {ast_changed}")
 
         if args.dry_run:
             print()

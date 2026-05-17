@@ -42,6 +42,21 @@ _POSITION_BLOCK_WEIGHT = {
     "C":  1.80,
 }
 
+# Position-based rebounding multiplier.  reb_tendency is scaled relative to the
+# position-group average (50 = average for G/F/C), so a guard with reb_tendency=81
+# means "above-average guard rebounder" — not "above-average rebounder overall."
+# Without this multiplier, Curry (G, reb_tendency=81) gets as many boards as an
+# average PF because the raw weight values are similar.  The multiplier re-introduces
+# the absolute positional gap: centers rebound far more than guards regardless of
+# their position-relative tendency value.
+_POSITION_REBOUND_WEIGHT = {
+    "PG": 0.42,
+    "SG": 0.70,
+    "SF": 0.85,
+    "PF": 1.10,
+    "C":  1.40,
+}
+
 
 def _distribute_proportional(rng: Random, total: int, weights: List[float]) -> List[int]:
     """Distribute total among buckets proportional to weights, rounding correctly."""
@@ -156,16 +171,21 @@ def _assign_team_stats(
     def w_minutes() -> List[float]:
         return [m for m in minutes_list]
 
-    total_reb = rng.randint(40, 50)
+    # Reduced from randint(40,50) to randint(32,42) — the minutes fix raised starter
+    # minutes from ~27 to ~36, which would otherwise inflate individual RPG by ~33%.
+    # Pulling the pool down ~20% compensates so absolute RPG targets remain realistic.
+    total_reb = rng.randint(32, 42)
     reb_off_total = round(total_reb * 0.28)
     reb_def_total = total_reb - reb_off_total
 
-    # Use reb_tendency alone (BDL-derived, position-relative) as the rebounding weight.
-    # Dropping the separate `rebounding` skill prevents double-counting: for players
-    # like Curry whose OVR is high, `rebounding` was also high, inflating his boards.
-    # reb_tendency=50 means position-average; >50 means above-average for that position.
+    # reb_tendency is position-relative (50 = average for G/F/C group), so a guard
+    # with reb_tendency=81 means "above-average guard" — not "above-average overall."
+    # _POSITION_REBOUND_WEIGHT reintroduces the absolute positional gap so that an
+    # elite guard (reb_tendency=95, C-weight=1.40 vs SG-weight=0.70) gets ~6 RPG,
+    # while a true center with the same tendency gets ~12 RPG.
     reb_weights = [
         (players[i].get("reb_tendency", 50) / 50.0)
+        * _POSITION_REBOUND_WEIGHT.get(players[i].get("position", "SF"), 0.85)
         * minutes_list[i]
         for i in range(n)
     ]
@@ -325,11 +345,13 @@ def _build_box_for_team(
         second_idx = indexed_weights[1][0]
         scoring_weights[top_idx] *= 1.08
         scoring_weights[second_idx] *= 1.03
-        # Enforce 30% cap on the top player (post-bump total, iterated once to converge).
-        # At a ~107-pt team average, 30% ≈ 32 PPG — consistent with the Luka 30-32 target.
+        # Enforce 33% cap on the top player (raised from 30% to free up share for secondary
+        # stars and reach ~17 players at 25+ PPG league-wide).
+        # At a ~115-pt team average, 33% ≈ 38 PPG ceiling — stars who organically hit
+        # above that (usage=95+ on a low-competition roster) get clipped here.
         total_w_star = sum(scoring_weights)
-        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.30:
-            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.30 / 0.70
+        if total_w_star > 0 and scoring_weights[top_idx] / total_w_star > 0.33:
+            scoring_weights[top_idx] = (sum(scoring_weights) - scoring_weights[top_idx]) * 0.33 / 0.67
 
     # Clutch adjustment: in close games, high-clutch players get more late-game usage.
     if abs(score_diff) < 12:
