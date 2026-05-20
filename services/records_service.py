@@ -7,9 +7,9 @@ import asyncpg
 from data.repositories import records_repo, all_time_records_repo
 
 _RECORD_FLOORS = {
-    "most_pts_game_player": 30,
-    "highest_team_score":   120,
-    "biggest_blowout":      20,
+    "most_pts_game_player": 40,
+    "highest_team_score":   130,
+    "biggest_blowout":      25,
 }
 
 # A new season record only announces if it improves the prior value by at least 5%

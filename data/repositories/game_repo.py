@@ -322,7 +322,7 @@ async def is_back_to_back(
     return row is not None
 
 
-_NOTABLE_STREAK_LENGTHS = frozenset({5, 10, 15})
+_NOTABLE_STREAK_LENGTHS = frozenset({7, 12, 18})
 
 
 async def update_standings(pool: asyncpg.Pool, league_id: int, season: int, game_result: dict) -> dict:

@@ -508,28 +508,12 @@ async def _persist_game_result(
     result["home_team_id"] = home_team.id
     result["away_team_id"] = away_team.id
 
-    record_announcements, at_announcements = await records_service.check_and_update_records(
+    # Season-scope records are still written to DB for /team records queries, but we
+    # suppress their announcements entirely — they triggered on ordinary numbers every
+    # game and were the primary spam source. Only all-time records post to the channel.
+    _record_announcements, at_announcements = await records_service.check_and_update_records(
         pool, game["league_id"], season, game_id, result
     )
-    # If an event is covered by an all-time announcement, the all-time version supersedes
-    # the season version — posting both for the same event is redundant noise.
-    # Strategy: for each at_announcement, check if any season_announcement is about the
-    # same metric (same numeric value appears in both strings) and suppress it.
-    suppressed_season: set[int] = set()
-    for at_ann in at_announcements:
-        # Extract numeric tokens from the all-time string (scores, margins, etc.)
-        at_nums = set(re.findall(r'\d+', at_ann))
-        for idx, s_ann in enumerate(record_announcements):
-            s_nums = set(re.findall(r'\d+', s_ann))
-            # If both strings share at least one key number AND the at_ann covers the
-            # same team/player token, treat the season message as superseded.
-            if at_nums & s_nums:
-                suppressed_season.add(idx)
-    for idx, announcement in enumerate(record_announcements):
-        if idx in suppressed_season:
-            continue
-        if news_channel:
-            await news_channel.send(embed=sim_embeds.season_record_embed(announcement))
     for at_announcement in at_announcements:
         if news_channel:
             await news_channel.send(embed=sim_embeds.season_record_embed(at_announcement))
