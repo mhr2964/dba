@@ -41,15 +41,17 @@ def score_player_for_award(
         # in _get_eligible_players. Defense attribute is passed via player dict.
         # Age is NOT a DPOY eligibility factor — voters evaluate actual defensive output.
         defense_attr = player.get("defense", 75)
-        # Halved from *8 → *4: attribute alone shouldn't beat a stat-producer.
-        # A 90-rated defender gets +3.6 vs a 75-rated one at +3.0 — small spread
-        # that preserves ordering without drowning out spg/bpg production.
-        defense_boost = (defense_attr / 99) * 4
+        # Reduced *8 → *4 → *2.5: attribute is now a small nudge, not a base.
+        # A 90-rated defender gets +2.27 vs a 75-rated one at +1.89 — minimal spread
+        # so that pure-stat producers clearly outrank reputation-only defenders.
+        defense_boost = (defense_attr / 99) * 2.5
 
         # --- Foul-rate penalty ---
         # Foul-prone players are poor DPOY candidates.
+        # Threshold lowered 3.0 → 2.8, slope steepened 2.5 → 3.0 to disqualify
+        # high-fouling bigs (KAT ~3.7 fpg) more aggressively.
         fouls_pg = float(player.get("fouls_per_game") or 0.0)
-        foul_penalty = max(0.0, (fouls_pg - 3.0) * 2.5)
+        foul_penalty = max(0.0, (fouls_pg - 2.8) * 3.0)
 
         # --- Center positional penalty ---
         # Kept but reduced: position alone shouldn't override role/stats.
@@ -57,8 +59,11 @@ def score_player_for_award(
         position_penalty = -3 if position == "C" else 0
 
         # Raised stat weights: produced defensive stats now clearly outrank
-        # attribute-only reputation. spg: 3.5 → 4.5, bpg: 3.0 → 4.0.
-        base = spg * 4.5 + bpg * 4.0 + defense_boost + position_penalty
+        # attribute-only reputation. spg: 3.5 → 4.5, bpg: 3.0 → 4.0 → 4.5.
+        # Elite shot-blocker bonus: Gobert/Wemby-type 2+ bpg gets explicit +3 nudge
+        # that stat-stuffers without blocks cannot replicate.
+        elite_blocker_bonus = 3.0 if bpg >= 2.0 else 0.0
+        base = spg * 4.5 + bpg * 4.5 + defense_boost + position_penalty + elite_blocker_bonus
         base -= foul_penalty
 
         # Team defensive rating boost: softened from +5 → +3.
@@ -116,6 +121,20 @@ def score_player_for_award(
     # Tank-team hard cap: prevents stat-padders on terrible teams from winning.
     if wins < 25:
         base_mvp = min(base_mvp, 35.0)
+
+    # Conference-rank gate: relative standing matters — being last in conference
+    # is disqualifying even if absolute record looks tolerable.
+    # Rank 1 = best team in conference, 15 = worst.
+    # Populated by generate_cpu_votes via the standings subquery; defaults to 15.
+    conf_rank: int = int(player.get("team_conf_rank") or 15)
+    if conf_rank >= 12:
+        base_mvp -= 30
+        base_mvp = min(base_mvp, 25.0)  # hard ceiling for bottom-of-conference
+    elif conf_rank >= 9:
+        base_mvp -= 15
+    elif conf_rank >= 5:
+        base_mvp -= 5
+    # conf_rank <= 4: no adjustment — top-tier team is MVP-eligible
 
     # Profile adds a small tiebreaker (5% swing) without overriding rankings.
     if profile == VoterProfile.SCORER:

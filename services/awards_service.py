@@ -499,15 +499,39 @@ async def generate_cpu_votes(
     )
 
     # Pre-fetch team records from standings_cache for all team_ids present.
+    # Also compute conference rank (1 = best) using the same subquery pattern as team_intel.
     team_ids = list({p["team_id"] for p in eligible if p["team_id"] is not None})
     record_rows = await pool.fetch(
-        "SELECT team_id, wins, losses FROM standings_cache WHERE league_id=$1 AND season=$2 AND team_id=ANY($3)",
+        """
+        SELECT
+            sc.team_id,
+            sc.wins,
+            sc.losses,
+            t.conference,
+            (
+                SELECT COUNT(*) + 1
+                FROM standings_cache sc2
+                JOIN teams t2 ON t2.id = sc2.team_id
+                WHERE sc2.league_id = sc.league_id
+                  AND sc2.season    = sc.season
+                  AND t2.conference = t.conference
+                  AND sc2.wins      > sc.wins
+            )::int AS conf_rank
+        FROM standings_cache sc
+        JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id = $1 AND sc.season = $2 AND sc.team_id = ANY($3)
+        """,
         league_id,
         season,
         team_ids,
     )
     records_by_team: dict[int, dict] = {
-        r["team_id"]: {"wins": r["wins"], "losses": r["losses"]} for r in record_rows
+        r["team_id"]: {
+            "wins": r["wins"],
+            "losses": r["losses"],
+            "conf_rank": r["conf_rank"] if r["conf_rank"] is not None else 15,
+        }
+        for r in record_rows
     }
 
     # For DPOY: identify top-10 teams by fewest points allowed per game.
@@ -575,6 +599,7 @@ async def generate_cpu_votes(
             p_scored["_team_def_boost"] = 3 if p.get("team_id") in dpoy_def_team_ids else 0
             p_scored["_team_losses"] = team_rec.get("losses", 0)
             p_scored["_season"] = season
+            p_scored["team_conf_rank"] = team_rec.get("conf_rank", 15)
             score = score_player_for_award(p_scored, stats, team_rec, award_type, profile)
             if score > best_score:
                 best_score = score
