@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 from enum import Enum
 
 
@@ -38,39 +37,14 @@ def score_player_for_award(
     wins = team_record.get("wins", 0)
 
     if award_type == "dpoy":
-        # Eligibility: players with defense < 65 and age > 37 are excluded upstream
+        # Eligibility: players with defense < 65 are excluded upstream
         # in _get_eligible_players. Defense attribute is passed via player dict.
+        # Age is NOT a DPOY eligibility factor — voters evaluate actual defensive output.
         defense_attr = player.get("defense", 75)
-        defense_boost = (defense_attr / 99) * 8
-
-        # --- Age curve: subtract (age - 33)^1.5 for players over 33 ---
-        # LeBron at 40 → -(7^1.5) ≈ -18.5; 36yo → -(3^1.5) ≈ -5.2; ≤33 → 0.
-        age_penalty = 0.0
-        birth = player.get("birth_date")
-        if birth is not None:
-            season_val = player.get("_season", datetime.date.today().year)
-            age = (datetime.date(season_val, 10, 1) - birth).days / 365.25
-            age_penalty = max(0.0, (age - 33) ** 1.5)
-
-        # --- Role-based penalties / boosts ---
-        # Offensive-first roles don't belong on DPOY ballots.
-        _OFFENSIVE_ROLE_PENALTY_TAGS = frozenset({
-            "iso_scorer", "primary_initiator", "slashing_lead", "movement_shooter",
-            "secondary_creator", "wing_creator", "spark_plug_scorer",
-            "transition_engine", "catch_and_shoot", "floor_spacer",
-        })
-        # Defense-first and two-way roles get a boost.
-        _DEFENSIVE_ROLE_BOOST_TAGS = frozenset({
-            "rim_protector", "wing_stopper", "on_ball_pest", "switching_big",
-            "two_way_wing", "two_way_big",
-        })
-        role_tag = player.get("role_tag") or ""
-        if role_tag in _OFFENSIVE_ROLE_PENALTY_TAGS:
-            role_adjust = -12.0
-        elif role_tag in _DEFENSIVE_ROLE_BOOST_TAGS:
-            role_adjust = 8.0
-        else:
-            role_adjust = 0.0
+        # Halved from *8 → *4: attribute alone shouldn't beat a stat-producer.
+        # A 90-rated defender gets +3.6 vs a 75-rated one at +3.0 — small spread
+        # that preserves ordering without drowning out spg/bpg production.
+        defense_boost = (defense_attr / 99) * 4
 
         # --- Foul-rate penalty ---
         # Foul-prone players are poor DPOY candidates.
@@ -82,14 +56,14 @@ def score_player_for_award(
         position = (player.get("position") or "").upper()
         position_penalty = -3 if position == "C" else 0
 
-        # Bumped stat weights: steal and block leaders now clearly outrank
-        # general-rep candidates.
-        base = spg * 3.5 + bpg * 3.0 + defense_boost + position_penalty
-        base -= age_penalty + foul_penalty
-        base += role_adjust
+        # Raised stat weights: produced defensive stats now clearly outrank
+        # attribute-only reputation. spg: 3.5 → 4.5, bpg: 3.0 → 4.0.
+        base = spg * 4.5 + bpg * 4.0 + defense_boost + position_penalty
+        base -= foul_penalty
 
-        # Team defensive rating boost: added by caller when team is top-10 in
-        # points allowed; the voter profiles add small profile-specific tiebreakers.
+        # Team defensive rating boost: softened from +5 → +3.
+        # Being on a good-defense team is correlated but not causal;
+        # a full +5 was too large relative to individual stat contributions.
         team_def_boost = player.get("_team_def_boost", 0)
         base += team_def_boost
         if profile == VoterProfile.SCORER:

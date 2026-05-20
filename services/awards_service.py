@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import json
 import logging
 import os
@@ -156,7 +155,6 @@ async def _get_eligible_players(
             p.position,
             p.defense,
             p.birth_date,
-            pr.role                                                     AS role_tag,
             COUNT(b.id)                                                 AS games_played,
             SUM(CASE WHEN b.started THEN 1 ELSE 0 END)                 AS games_started,
             AVG(b.points)                                               AS ppg,
@@ -174,15 +172,11 @@ async def _get_eligible_players(
         FROM players p
         JOIN game_box_scores b ON b.player_id = p.id
         JOIN games g ON g.id = b.game_id
-        LEFT JOIN player_roles pr
-               ON pr.player_id = p.id
-              AND pr.league_id  = $1
-              AND pr.season     = $2
         WHERE g.league_id = $1
           AND g.season    = $2
           AND g.season_type = 'regular'
           AND p.league_id = $1
-        GROUP BY p.id, pr.role
+        GROUP BY p.id
         HAVING COUNT(b.id) > 20
         """,
         league_id,
@@ -209,13 +203,6 @@ async def _get_eligible_players(
             continue
         if award_type == "dpoy" and (row_dict.get("defense") or 0) < 65:
             continue
-        # No 38+ player has won DPOY historically; hard-gate before scoring.
-        if award_type == "dpoy":
-            birth = row_dict.get("birth_date")
-            if birth is not None:
-                age = (datetime.date(season, 10, 1) - birth).days / 365.25
-                if age > 37:
-                    continue
 
         eligible.append(row_dict)
 
@@ -585,7 +572,7 @@ async def generate_cpu_votes(
             # Enrich player dict with DPOY-specific context so the scorer can use it.
             # birth_date, role_tag, and fouls_per_game come from the eligible query.
             p_scored = dict(p)
-            p_scored["_team_def_boost"] = 5 if p.get("team_id") in dpoy_def_team_ids else 0
+            p_scored["_team_def_boost"] = 3 if p.get("team_id") in dpoy_def_team_ids else 0
             p_scored["_team_losses"] = team_rec.get("losses", 0)
             p_scored["_season"] = season
             score = score_player_for_award(p_scored, stats, team_rec, award_type, profile)
