@@ -352,12 +352,11 @@ async def _attempt_three_team_deal(
             )
             continue  # try next C candidate
 
-        # Team A value check: A sends secondary_pid (to C) + leg-2 players (to B)
-        # + filler_pick (to B); receives target_player.
-        # A's out = secondary + leg-2 players + filler_pick (filler_pick_value_c is
-        # the pick A forwards from C to B — a real cost to A).
+        # Team A value check: A sends secondary_pid (to C) + leg-2 players (to B);
+        # receives target_player.  The filler_pick originates from C and is routed
+        # to B — A never owns it, so it does not appear in A's outflow.
         _a_value_in = target_value
-        _a_value_out = _sec_value_c + _b_leg2_val + _filler_pick_value_c
+        _a_value_out = _sec_value_c + _b_leg2_val
         _a_ratio = _a_value_in / max(_a_value_out, 1.0)
         if _a_ratio < _MIN_3WAY_RATIO:
             log.info(
@@ -874,6 +873,11 @@ async def _attempt_one_offer(
         _asset_targets_a: list[str] = _plan_a.get("asset_targets") or [] if _plan_a else []
         _plan_a_goal: str = _plan_a.get("goal", "") if _plan_a else ""
 
+        # Hoist philosophy fetch for team A — constant across the entire b-team/player loop.
+        _a_philosophy = await pool.fetchval(
+            "SELECT coach_philosophy FROM teams WHERE id = $1", a.id
+        )
+
         # ── Phase 3: targeted counterparty scan for surplus players ──────────
         # When team A has a specific high-value surplus player to shop, rank all
         # counterparties by how much they'd value that player and restrict the
@@ -979,7 +983,7 @@ async def _attempt_one_offer(
                    WHERE league_id = $1 AND season = $2
                      AND ((proposer_team_id = $3 AND counterparty_team_id = $4)
                           OR (proposer_team_id = $4 AND counterparty_team_id = $3))
-                     AND status NOT IN ('approved', 'rejected', 'declined', 'expired', 'superseded')
+                     AND status IN ('pending_counterparty', 'pending_commissioner')
                    LIMIT 1""",
                 league.id, season, a.id, b.id,
             )
@@ -1162,9 +1166,7 @@ async def _attempt_one_offer(
                     }
                     _a_plan_for_ctx = _plan_a or {}
                     _a_posture_for_ctx = postures.get(a.id) or {}
-                    _a_philosophy = await pool.fetchval(
-                        "SELECT coach_philosophy FROM teams WHERE id = $1", a.id
-                    )
+                    # _a_philosophy hoisted before b-team loop — no per-candidate DB hit.
                     _form_mod_ctx = 1.0  # form not yet computed at rank time; use neutral
                     _ctx_modifier, _ctx_sigs = await _tc_mod.compute_context_modifier(
                         pool=pool,

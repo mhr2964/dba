@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import re
 from pathlib import Path
 
 from core.logging import get_logger
@@ -53,7 +54,12 @@ async def assert_philosophy_constraint_sync(conn) -> None:
         return
 
     constraint_def = row["def"]
-    missing = [k for k in PHILOSOPHY_BIASES if k not in constraint_def]
+
+    def _in_constraint(key: str) -> bool:
+        # Use word-boundary match so 'star' doesn't match 'star_maxer' substring.
+        return bool(re.search(r"\b" + re.escape(key) + r"\b", constraint_def))
+
+    missing = [k for k in PHILOSOPHY_BIASES if not _in_constraint(k)]
     if missing:
         msg = (
             f"philosophies: PHILOSOPHY_BIASES ↔ CHECK constraint drift detected. "
@@ -62,6 +68,17 @@ async def assert_philosophy_constraint_sync(conn) -> None:
         )
         log.error(msg)
         raise RuntimeError(msg)
+
+    # Reverse check: warn if the DB constraint mentions values not in the Python registry.
+    # Don't crash — the DB may temporarily have legacy values during migration.
+    # Extract quoted values from the constraint definition (e.g. 'star_maxer').
+    db_values = set(re.findall(r"'([^']+)'", constraint_def))
+    legacy = db_values - set(PHILOSOPHY_BIASES.keys())
+    if legacy:
+        log.warning(
+            "philosophies: DB CHECK constraint has values not in PHILOSOPHY_BIASES "
+            "(legacy migration values?): %s", sorted(legacy)
+        )
 
     log.debug("philosophies: constraint sync OK (%d philosophies)", len(PHILOSOPHY_BIASES))
 

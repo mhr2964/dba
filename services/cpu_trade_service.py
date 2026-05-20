@@ -251,7 +251,7 @@ async def maybe_initiate_round(
         WHERE t.league_id = $1
           AND t.season = $2
           AND ta.asset_type = 'player'
-          AND t.status NOT IN ('approved', 'rejected', 'declined', 'expired', 'superseded')
+          AND t.status IN ('pending_counterparty', 'pending_commissioner')
           AND ta.player_id IS NOT NULL
         """,
         league_id,

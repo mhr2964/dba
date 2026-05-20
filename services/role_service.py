@@ -27,6 +27,7 @@ derive_and_persist_all(conn, league_id, season) -> None
 from __future__ import annotations
 
 import datetime
+import re
 import random
 from typing import Optional
 
@@ -235,7 +236,11 @@ async def assert_role_constraint_sync(conn) -> None:
         return
 
     constraint_def = row["def"]
-    missing = [k for k in ROLE_REGISTRY if k not in constraint_def]
+
+    def _in_constraint(key: str) -> bool:
+        return bool(re.search(r"\b" + re.escape(key) + r"\b", constraint_def))
+
+    missing = [k for k in ROLE_REGISTRY if not _in_constraint(k)]
     if missing:
         msg = (
             f"role_service: ROLE_REGISTRY ↔ CHECK constraint drift detected. "
@@ -244,6 +249,16 @@ async def assert_role_constraint_sync(conn) -> None:
         )
         log.error(msg)
         raise RuntimeError(msg)
+
+    # Reverse check: warn if the DB constraint mentions values not in ROLE_REGISTRY.
+    # Don't crash — the DB may temporarily have legacy values during migration.
+    db_values = set(re.findall(r"'([^']+)'", constraint_def))
+    legacy = db_values - set(ROLE_REGISTRY.keys())
+    if legacy:
+        log.warning(
+            "role_service: DB CHECK constraint has values not in ROLE_REGISTRY "
+            "(legacy migration values?): %s", sorted(legacy)
+        )
 
     log.debug("role_service: role constraint sync OK (%d roles)", len(ROLE_REGISTRY))
 

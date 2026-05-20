@@ -94,7 +94,7 @@ def is_cornerstone(team: team_repo.Team, player: player_repo.Player, roster: lis
         return True
 
     # OVR 86-87 — untouchable only if team is actively trying to win.
-    if ovr >= 86 and is_top_player and mode in ("contending", "play_in_fringe", "comfortable"):
+    if ovr >= 86 and is_top_player and mode in ("contending", "play_in_fringe"):
         return True
 
     return False

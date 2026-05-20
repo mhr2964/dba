@@ -44,20 +44,24 @@ _INJURY_GAMES_MISSED: dict[str, tuple[int, int]] = {
 _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 
 # Tracks games processed so Marcus Brooks fires every ~200 games (every 20 batches of 10).
-_marcus_game_counter: int = 0
+# Keyed by league_id so multi-league bots don't bleed counters across leagues.
+_marcus_game_counter: dict[int, int] = {}
 
 # Tracks games processed so Darius Cole fires every ~50 games.
-_darius_game_counter: int = 0
+_darius_game_counter: dict[int, int] = {}
 
 # Tracks games processed so Quinn Park (coach_beat) fires every ~50 games (offset from Marcus).
-_coach_beat_game_counter: int = 0
+# Keyed by league_id so multi-league bots don't bleed counters across leagues.
+_coach_beat_game_counter: dict[int, int] = {}
 
 # Tracks the game index of the last columnist article so the 50-game fallback works.
-_last_columnist_game_index: int = 0
+# Keyed by league_id.
+_last_columnist_game_index: dict[int, int] = {}
 
 # Columnist rotation — cycles through these personas on every batch (subject to reactive gate).
 _COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole"]
-_columnist_rotation_index: int = 0
+# Keyed by league_id so concurrent leagues each have their own rotation position.
+_columnist_rotation_index: dict[int, int] = {}
 
 # Hot Take Hour season-long running narratives.  Seeded on first HTH article of the
 # season and then injected into every subsequent HTH context so Dave and Tony keep
@@ -66,7 +70,8 @@ _HTH_NARRATIVES: dict[int, dict] = {}
 
 # Playoff columnist rotation — cycles through recap-capable personas for post-game coverage.
 _PLAYOFF_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams"]
-_playoff_rotation_index: int = 0
+# Keyed by league_id.
+_playoff_rotation_index: dict[int, int] = {}
 
 # POTM month-gate: keyed by league_id, stores the last "YYYY-MM" for which
 # _maybe_post_potm was allowed to call through to potm_service.  Batches within
@@ -1202,12 +1207,10 @@ async def _maybe_post_coach_beat(
     Focuses on the team with the most extreme philosophy-vs-outcome mismatch in
     the current batch.  Swallows exceptions so article failures never abort the sim.
     """
-    global _coach_beat_game_counter
-
-    _coach_beat_game_counter += len(batch_results)
-    if _coach_beat_game_counter < 50:
+    _coach_beat_game_counter[league_id] = _coach_beat_game_counter.get(league_id, 0) + len(batch_results)
+    if _coach_beat_game_counter[league_id] < 50:
         return
-    _coach_beat_game_counter = 0
+    _coach_beat_game_counter[league_id] = 0
 
     analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
     analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
@@ -1325,16 +1328,14 @@ async def _maybe_post_columnist(
     game-day when the sim is covering hundreds of games at once.  The Darius Cole
     independent counter is unaffected — he still fires every ~50 games.
     """
-    global _marcus_game_counter, _darius_game_counter, _last_columnist_game_index, _columnist_rotation_index
-
     if not batch_results:
         return
 
     # Counters must increment even when the analysis channel is absent so that
     # Darius Cole and Marcus Brooks fire correctly once the channel exists.
-    _darius_game_counter += len(batch_results)
-    _marcus_game_counter += len(batch_results)
-    log.info(f"Darius Cole check: counter={_darius_game_counter}")
+    _darius_game_counter[league_id] = _darius_game_counter.get(league_id, 0) + len(batch_results)
+    _marcus_game_counter[league_id] = _marcus_game_counter.get(league_id, 0) + len(batch_results)
+    log.info(f"Darius Cole check: counter={_darius_game_counter[league_id]}")
 
     analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
     analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
@@ -1694,7 +1695,7 @@ async def _maybe_post_columnist(
     _has_big_game = overall_top_pts >= 40
 
     # Fallback: more than 50 games since the last article.
-    _games_since_last = batch_end_index - _last_columnist_game_index
+    _games_since_last = batch_end_index - _last_columnist_game_index.get(league_id, 0)
     _fallback_due = _games_since_last >= 50
 
     if _has_long_streak or _has_blowout or _has_big_game or _recent_trade_within_50 or _fallback_due:
@@ -1705,7 +1706,7 @@ async def _maybe_post_columnist(
     # last article.  This prevents an LLM call on every game-day when hundreds of games
     # are being pushed through at once.  Darius Cole's independent counter is unaffected.
     if force and _batch_is_interesting:
-        _games_since_last_for_force = batch_end_index - _last_columnist_game_index
+        _games_since_last_for_force = batch_end_index - _last_columnist_game_index.get(league_id, 0)
         if _games_since_last_for_force < _COLUMNIST_FORCE_MIN_GAP:
             log.debug(
                 f"_maybe_post_columnist: force mode — suppressing article "
@@ -1714,8 +1715,9 @@ async def _maybe_post_columnist(
             _batch_is_interesting = False
 
     # Rotation — pick this batch's columnist.
-    persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
-    _columnist_rotation_index += 1
+    _columnist_rotation_index[league_id] = _columnist_rotation_index.get(league_id, 0)
+    persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index[league_id] % len(_COLUMNIST_ROTATION)]
+    _columnist_rotation_index[league_id] += 1
 
     # Pat Chen: enrich context with team strategy data.
     # Build a copy so we don't mutate the shared batch_context used by other callers.
@@ -1724,13 +1726,13 @@ async def _maybe_post_columnist(
     # Darius Cole fires independently every ~50 games — skip him in the regular rotation
     # so he doesn't consume a rotation slot.
     if persona_id == "darius_cole":
-        persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
-        _columnist_rotation_index += 1
+        persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index[league_id] % len(_COLUMNIST_ROTATION)]
+        _columnist_rotation_index[league_id] += 1
 
     if persona_id == "hot_take_hour":
         # Inject format_variant so the four Hot Take Hour variants cycle.
         columnist_context = dict(batch_context)
-        columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index - 1) % len(_FORMAT_VARIANTS)]
+        columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index[league_id] - 1) % len(_FORMAT_VARIANTS)]
 
         # Seed season-long HTH narratives on first use per league, then inject every time.
         global _HTH_NARRATIVES
@@ -1876,7 +1878,7 @@ async def _maybe_post_columnist(
             log.warning(f"_maybe_post_columnist: article timed out or failed ({persona_id}): {_col_exc}")
             article = None
         if article:
-            _last_columnist_game_index = batch_end_index
+            _last_columnist_game_index[league_id] = batch_end_index
             if persona_id == "hot_take_hour":
                 # Body is plain text formatted as "DAVE: ...\n\nTONY: ...\n\nDAVE: ..."
                 # Bold the speaker labels for Discord markdown.
@@ -1907,8 +1909,8 @@ async def _maybe_post_columnist(
 
     # Darius Cole — every ~50 games, independently.  Covers bottom-5 teams and lottery odds.
     # Counter was already incremented at the top of this function (before channel guard).
-    if _darius_game_counter >= 50:
-        _darius_game_counter = 0
+    if _darius_game_counter.get(league_id, 0) >= 50:
+        _darius_game_counter[league_id] = 0
         dc_persona = _PERSONAS.get("darius_cole")
         if not dc_persona:
             log.warning("_maybe_post_columnist: darius_cole persona missing from _PERSONAS — skipping")
@@ -1977,8 +1979,8 @@ async def _maybe_post_columnist(
 
     # Marcus Brooks — every ~200 games (every 20 batches), independently of the rotation.
     # Counter was already incremented at the top of this function (before channel guard).
-    if _marcus_game_counter >= 200:
-        _marcus_game_counter = 0
+    if _marcus_game_counter.get(league_id, 0) >= 200:
+        _marcus_game_counter[league_id] = 0
         mb_persona = _PERSONAS.get("marcus_brooks")
         try:
             mb_article = await asyncio.wait_for(
@@ -2019,10 +2021,9 @@ async def _maybe_post_playoff_columnist(
     Called from playoff_service.sim_series_game — always for clinching/elimination
     games, ~30% of the time for regular playoff games.
     """
-    global _playoff_rotation_index
-
-    persona_id = _PLAYOFF_COLUMNIST_ROTATION[_playoff_rotation_index % len(_PLAYOFF_COLUMNIST_ROTATION)]
-    _playoff_rotation_index += 1
+    _playoff_rotation_index[league_id] = _playoff_rotation_index.get(league_id, 0)
+    persona_id = _PLAYOFF_COLUMNIST_ROTATION[_playoff_rotation_index[league_id] % len(_PLAYOFF_COLUMNIST_ROTATION)]
+    _playoff_rotation_index[league_id] += 1
 
     persona = _PERSONAS.get(persona_id)
     if not persona:

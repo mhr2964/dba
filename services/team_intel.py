@@ -27,6 +27,8 @@ Design notes
 """
 from __future__ import annotations
 
+import json
+
 from core.logging import get_logger
 from data.repositories import league_repo
 from services import franchise_plan_service
@@ -323,10 +325,10 @@ async def get_recent_role_changes(
         WHERE pr.league_id  = $1
           AND pr.team_id    = $2
           AND pr.season     = $3
-          AND pr.assigned_at > NOW() - ($4 || ' days')::INTERVAL
+          AND pr.assigned_at > NOW() - ($4::int * INTERVAL '1 day')
         ORDER BY pr.assigned_at DESC
         """,
-        league_id, team_id, season, str(days),
+        league_id, team_id, season, int(days),
     )
     return [
         {
@@ -384,21 +386,29 @@ async def build_team_intel(
 
         sc_rows = await pool.fetch(
             """
-            SELECT sc.team_id,
-                   sc.wins,
-                   sc.losses,
-                   t.conference,
-                   RANK() OVER (
-                       PARTITION BY t.conference
-                       ORDER BY sc.wins DESC
-                   )::int AS conf_rank
-            FROM standings_cache sc
-            JOIN teams t ON t.id = sc.team_id
-            WHERE sc.league_id = $1
-              AND sc.season    = $2
-              AND sc.team_id   = ANY($3::int[])
+            WITH all_standings AS (
+                SELECT sc.team_id,
+                       sc.wins,
+                       sc.losses,
+                       t.conference,
+                       (
+                           SELECT COUNT(*) + 1
+                           FROM standings_cache sc2
+                           JOIN teams t2 ON t2.id = sc2.team_id
+                           WHERE sc2.league_id = sc.league_id
+                             AND sc2.season    = sc.season
+                             AND t2.conference = t.conference
+                             AND sc2.wins      > sc.wins
+                       )::int AS conf_rank
+                FROM standings_cache sc
+                JOIN teams t ON t.id = sc.team_id
+                WHERE sc.league_id = $1
+                  AND sc.season    = $2
+            )
+            SELECT * FROM all_standings
+            WHERE team_id = ANY($3::int[])
             """,
-            league.id, league.current_season, team_ids,
+            league.id, season, team_ids,
         )
         sc_by_team: dict[int, dict] = {r["team_id"]: dict(r) for r in sc_rows}
 
@@ -529,7 +539,13 @@ async def build_team_intel(
                 if plan is None:
                     result[tid]["recent_pivots"] = []
                     continue
-                dfr: dict = plan.get("derived_from_record") or {}
+                dfr = plan.get("derived_from_record") or {}
+                if isinstance(dfr, str):
+                    try:
+                        dfr = json.loads(dfr)
+                    except (json.JSONDecodeError, TypeError):
+                        log.warning("team_intel: malformed derived_from_record for team %d — skipping pivots", tid)
+                        dfr = {}
                 pivot_from = dfr.get("pivot_from_goal")
                 if not pivot_from:
                     result[tid]["recent_pivots"] = []

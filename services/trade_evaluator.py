@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -1135,10 +1136,16 @@ async def cpu_should_accept(
     - Rebuilding CPU: prefers picks > vets. Accepts if receiving picks or youth (age < 26).
     - Contending CPU: prefers proven players. Reluctant to give picks.
     - Reject if accepting would put CPU over salary_cap.
+
+    Mutates `evaluation` in place: adds 'context_signals_per_player' and
+    'score_a_after_context' keys for ride-along / ra_reasoning access.
     - Never give up a player with overall >= 88 unless rebuilding AND getting 2+ first-rounders.
     - Buy-low fit bonus: underperforming player (form_modifier < 0.92) gets a value bump
       from the receiving team's perspective when archetype fits their scheme or mode.
     """
+    # Normalize mode string defensively — callers may pass un-stripped or mixed-case values.
+    cpu_team_mode = (cpu_team_mode or "").lower().strip()
+
     score_a = evaluation["score_a"]
     score_b = evaluation["score_b"]
     max_side = max(score_a, score_b, 1.0)
@@ -1163,53 +1170,63 @@ async def cpu_should_accept(
         posture = context_kwargs.get("posture") or {}
         coach_philosophy = context_kwargs.get("coach_philosophy")
 
-        for a in assets_receiving:
-            if a.get("asset_type") != "player":
-                continue
-            p_dict = a.get("player", {})
-            pid = p_dict.get("id")
-            if not pid:
-                continue
-            form_mod = a.get("form_modifier", 1.0)
-            player_stats = a.get("season_stats") or {}
-            # Build a player dict compatible with detector signatures (merge in tendency fields)
+        # Build per-player coroutines and gather in parallel; filter exceptions.
+        _player_assets = [
+            (a, a.get("player", {}), a.get("player", {}).get("id"))
+            for a in assets_receiving
+            if a.get("asset_type") == "player" and a.get("player", {}).get("id")
+        ]
+
+        async def _compute_one(a_item, p_dict, pid):
+            form_mod = a_item.get("form_modifier", 1.0)
+            player_stats = a_item.get("season_stats") or {}
             player_for_ctx = dict(p_dict)
-            try:
-                modifier, signals = await _tc.compute_context_modifier(
-                    pool=pool,
-                    league_id=league_id,
-                    season=season,
-                    perspective_team_id=perspective_team_id,
-                    plan=plan,
-                    posture=posture,
-                    coach_philosophy=coach_philosophy,
-                    incoming_player=player_for_ctx,
-                    form_mod=form_mod,
-                    stats=player_stats,
+            modifier, signals = await _tc.compute_context_modifier(
+                pool=pool,
+                league_id=league_id,
+                season=season,
+                perspective_team_id=perspective_team_id,
+                plan=plan,
+                posture=posture,
+                coach_philosophy=coach_philosophy,
+                incoming_player=player_for_ctx,
+                form_mod=form_mod,
+                stats=player_stats,
+            )
+            return pid, modifier, signals, a_item, player_for_ctx
+
+        # return_exceptions=True preserves index order so enumerate(_ctx_results)[_idx] maps correctly to _player_assets[_idx].
+        _ctx_results = await asyncio.gather(
+            *[_compute_one(a, p, pid) for a, p, pid in _player_assets],
+            return_exceptions=True,
+        )
+
+        for _idx, _res in enumerate(_ctx_results):
+            if isinstance(_res, BaseException):
+                _pid = _player_assets[_idx][2]
+                log.warning("context modifier failed pid=%d: %s", _pid, _res)
+                continue
+            pid, modifier, signals, a_item, player_for_ctx = _res
+            context_signals_per_player[pid] = [s._asdict() for s in signals]
+            # Apply context modifier to player's market-value contribution in score_a.
+            # Score adjustment: add (modifier - 1.0) * player_value to score_a.
+            form_mod = a_item.get("form_modifier", 1.0)
+            player_base = player_trade_value(
+                player_for_ctx,
+                a_item.get("contract", {}),
+                salary_cap,
+                a_item.get("season_stats") or None,
+                form_mod,
+            )
+            delta_from_context = player_base * (modifier - 1.0)
+            score_a += delta_from_context
+            if abs(delta_from_context) >= 0.5:
+                log.info(
+                    "[CPU] context modifier pid=%d modifier=%.4f delta=%.2f "
+                    "codes=%s",
+                    pid, modifier, delta_from_context,
+                    [s.get("code") for s in context_signals_per_player[pid]],
                 )
-                context_signals_per_player[pid] = [s._asdict() for s in signals]
-                # Apply context modifier to player's market-value contribution in score_a.
-                # Score adjustment: add (modifier - 1.0) * player_value to score_a.
-                # player_trade_value gives the base value for this player; use the
-                # form-adjusted value already in score_a so the delta is proportional.
-                player_base = player_trade_value(
-                    player_for_ctx,
-                    a.get("contract", {}),
-                    salary_cap,
-                    a.get("season_stats") or None,
-                    form_mod,
-                )
-                delta_from_context = player_base * (modifier - 1.0)
-                score_a += delta_from_context
-                if abs(delta_from_context) >= 0.5:
-                    log.info(
-                        "[CPU] context modifier pid=%d modifier=%.4f delta=%.2f "
-                        "codes=%s",
-                        pid, modifier, delta_from_context,
-                        [s.get("code") for s in context_signals_per_player[pid]],
-                    )
-            except Exception as _ctx_exc:
-                log.debug("context modifier failed pid=%d: %s", pid, _ctx_exc)
 
         # Recompute differential/max_side after context adjustment.
         differential = abs(score_a - score_b)

@@ -71,6 +71,36 @@ def _norm_name(name: str) -> str:
     )
 
 
+def _safe_ts_pct(s: dict) -> float:
+    """Compute TS% from BDL stat dict with range validation.
+
+    Prefers the pre-computed ts_pct field (advanced cache); falls back to
+    PTS / (2 * (FGA + 0.44 * FTA)) from totals (base cache).  Returns 0.0 on
+    divide-by-zero or if the result is outside [0.0, 1.0] (corrupt data).
+    """
+    if s.get("ts_pct"):
+        val = float(s["ts_pct"])
+        if 0.0 <= val <= 1.0:
+            return val
+        log.warning(
+            "franchise_plan: BDL ts_pct=%s out of [0,1] range — skipping", val
+        )
+        return 0.0
+    fga = float(s.get("fga") or 0)
+    fta = float(s.get("fta") or 0)
+    pts = float(s.get("pts") or 0)
+    denom = 2.0 * (fga + 0.44 * fta)
+    if denom <= 0:
+        return 0.0
+    val = pts / denom
+    if not (0.0 <= val <= 1.0):
+        log.warning(
+            "franchise_plan: computed ts_pct=%s out of [0,1] range — skipping", val
+        )
+        return 0.0
+    return val
+
+
 def _load_bdl_production_fallback(
     player_rows: list[dict],
     current_season: int,
@@ -144,17 +174,8 @@ def _load_bdl_production_fallback(
                 "ft_pct": float(s.get("ft_pct")  or 0),
                 # BDL advanced cache has ts_pct but base cache does not;
                 # compute from fgm/fga/ftm/fta totals if available, else zero.
-                "ts_pct": (
-                    float(s.get("ts_pct") or 0)
-                    if s.get("ts_pct")
-                    else (
-                        float(s.get("pts") or 0) / (
-                            2.0 * (float(s.get("fga") or 0) + 0.44 * float(s.get("fta") or 0))
-                        )
-                        if (s.get("fga") or s.get("fta"))
-                        else 0.0
-                    )
-                ),
+                # Validate that ts_pct lands in [0.0, 1.0]; log and skip to 0 if corrupt.
+                "ts_pct": _safe_ts_pct(s),
                 "fg3a":   round(fg3a_pg_bdl, 2),
                 "_source": f"bdl_{prior}",
             }
