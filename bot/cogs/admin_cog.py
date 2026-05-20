@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.errors import safe_defer, safe_respond
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import admin_repo, game_repo, league_repo, player_repo, team_repo
@@ -782,13 +782,20 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
     @app_commands.command(
         name="restart",
-        description="Commissioner: restart the bot process",
+        description="Bot owner: restart the bot process",
     )
     async def restart_bot(self, interaction: discord.Interaction) -> None:
         await safe_defer(interaction, ephemeral=True)
 
-        league = await get_league_or_error(interaction.guild_id)
-        await require_commissioner(interaction, league)
+        # Bot-level admin: check Discord application owner OR commissioner of
+        # any league in this guild. This is a process-restart, not a
+        # league-state action, so it shouldn't require a league to exist.
+        bot = interaction.client
+        is_owner = await bot.is_owner(interaction.user)
+        if not is_owner:
+            league = await league_repo.get_by_guild(await get_pool(), interaction.guild_id)
+            if not league or interaction.user.id != league.commissioner_user_id:
+                raise DBAError("Only the bot owner or league commissioner can restart the bot.")
 
         await safe_respond(
             interaction,
