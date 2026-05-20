@@ -7,10 +7,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import strategy_embeds
-from core.errors import DBAError
+from core.errors import DBAError, safe_defer
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import player_repo, strategy_repo, team_repo
+from data.repositories import player_repo, strategy_repo
 from services import strategy_service
 
 log = get_logger(__name__)
@@ -69,7 +69,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         app_commands.Choice(name="Run & Gun", value="run_and_gun"),
     ])
     async def pace(self, interaction: discord.Interaction, value: app_commands.Choice[str]) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
@@ -90,7 +90,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         app_commands.Choice(name="Balanced", value="balanced"),
     ])
     async def offense(self, interaction: discord.Interaction, scheme: app_commands.Choice[str]) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
@@ -110,7 +110,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         app_commands.Choice(name="Switch All", value="switch_all"),
     ])
     async def defense(self, interaction: discord.Interaction, scheme: app_commands.Choice[str]) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
@@ -129,7 +129,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         app_commands.Choice(name="Aggressive", value="aggressive"),
     ])
     async def intensity(self, interaction: discord.Interaction, level: app_commands.Choice[str]) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
@@ -143,7 +143,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
     @app_commands.command(name="star-usage", description="Control how much shots go to your top-2 players (0-100)")
     @app_commands.describe(value="Star usage value (0 = spread it out, 100 = funnel everything to stars)")
     async def star_usage(self, interaction: discord.Interaction, value: int) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         if not (0 <= value <= 100):
             await interaction.followup.send("Star usage must be between 0 and 100.", ephemeral=True)
             return
@@ -161,7 +161,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
     @app_commands.command(name="view", description="View a team's current strategy")
     @app_commands.describe(team="Team code (e.g. LAL). Defaults to your team.")
     async def view(self, interaction: discord.Interaction, team: Optional[str] = None) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team_row = await _resolve_team_for_view(pool, league_id, team, interaction.user.id)
@@ -171,9 +171,75 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         embed = strategy_embeds.strategy_embed(team_row, strategy, modifiers)
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="auto", description="Toggle CPU coach mode (on = CPU picks strategy every game)")
+    @app_commands.describe(value="on = CPU coach runs your gameplan; off = your manual settings are used")
+    @app_commands.choices(value=[
+        app_commands.Choice(name="On (CPU coach)", value="on"),
+        app_commands.Choice(name="Off (manual)", value="off"),
+    ])
+    async def auto(self, interaction: discord.Interaction, value: app_commands.Choice[str]) -> None:
+        await safe_defer(interaction)
+        pool = await get_pool()
+        league_id = await _get_league_id(pool, interaction.guild_id)
+
+        is_commissioner = await pool.fetchval(
+            "SELECT commissioner_user_id FROM leagues WHERE id = $1", league_id
+        ) == interaction.user.id
+        team_row = await pool.fetchrow(
+            "SELECT * FROM teams WHERE league_id = $1 AND manager_user_id = $2",
+            league_id,
+            interaction.user.id,
+        )
+        if not team_row and not is_commissioner:
+            await interaction.followup.send("You are not a team manager in this league.", ephemeral=True)
+            return
+        if not team_row:
+            await interaction.followup.send(
+                "Commissioner: use `/strategy auto` on a team by being their manager, or set coach_mode directly.",
+                ephemeral=True,
+            )
+            return
+
+        coach_mode = "auto" if value.value == "on" else "manual"
+        await strategy_repo.set_strategy(pool, league_id, team_row["id"], coach_mode=coach_mode)
+        label = "CPU coach enabled — the CPU will pick your gameplan each game." if coach_mode == "auto" else "Manual mode — your saved settings are used."
+        await interaction.followup.send(label)
+
+    @app_commands.command(name="transition", description="Set your team's transition aggression")
+    @app_commands.describe(value="How aggressively your team attacks in transition")
+    @app_commands.choices(value=[
+        app_commands.Choice(name="Crash (run at every opportunity)", value="crash"),
+        app_commands.Choice(name="Balanced", value="balanced"),
+        app_commands.Choice(name="Retreat (get back on defense)", value="retreat"),
+    ])
+    async def transition(self, interaction: discord.Interaction, value: app_commands.Choice[str]) -> None:
+        await safe_defer(interaction)
+        pool = await get_pool()
+        league_id = await _get_league_id(pool, interaction.guild_id)
+        team = await _require_team_manager(pool, league_id, interaction.user.id)
+
+        await strategy_repo.set_strategy(pool, league_id, team["id"], transition_aggression=value.value)
+        await interaction.followup.send(f"Transition aggression set to **{value.name}**.")
+
+    @app_commands.command(name="bench-leash", description="Set how quickly you pull underperforming bench players")
+    @app_commands.describe(value="Short = quick hook, Long = more patience")
+    @app_commands.choices(value=[
+        app_commands.Choice(name="Short (quick hook)", value="short"),
+        app_commands.Choice(name="Normal", value="normal"),
+        app_commands.Choice(name="Long (patient)", value="long"),
+    ])
+    async def bench_leash(self, interaction: discord.Interaction, value: app_commands.Choice[str]) -> None:
+        await safe_defer(interaction)
+        pool = await get_pool()
+        league_id = await _get_league_id(pool, interaction.guild_id)
+        team = await _require_team_manager(pool, league_id, interaction.user.id)
+
+        await strategy_repo.set_strategy(pool, league_id, team["id"], bench_leash=value.value)
+        await interaction.followup.send(f"Bench leash set to **{value.name}**.")
+
     @app_commands.command(name="reset", description="Reset your team's strategy to defaults")
     async def reset(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
@@ -190,11 +256,11 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
 
     @app_commands.command(name="set", description="Set target minutes for a player (0 = auto)")
     @app_commands.describe(
-        player_id="Player ID",
+        player="Player name (e.g. LeBron James)",
         minutes="Target minutes per game (0-48, 0 = auto)",
     )
-    async def set_minutes(self, interaction: discord.Interaction, player_id: int, minutes: int) -> None:
-        await interaction.response.defer()
+    async def set_minutes(self, interaction: discord.Interaction, player: str, minutes: int) -> None:
+        await safe_defer(interaction)
         if not (0 <= minutes <= 48):
             await interaction.followup.send("Minutes must be between 0 and 48.", ephemeral=True)
             return
@@ -203,18 +269,29 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player or player.team_id != team["id"]:
+        matches = await player_repo.search_by_name(pool, league_id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            return
+        if len(matches) > 1:
+            names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
+            await interaction.followup.send(
+                f"Multiple players match '{player}': {names}. Be more specific.", ephemeral=True
+            )
+            return
+
+        found_player = matches[0]
+        if found_player.team_id != team["id"]:
             await interaction.followup.send("That player is not on your team.", ephemeral=True)
             return
 
-        await strategy_repo.set_player_minutes(pool, league_id, team["id"], player_id, minutes)
+        await strategy_repo.set_player_minutes(pool, league_id, team["id"], found_player.id, minutes)
 
         # Warn if total exceeds 240 but still allow it (will normalize at sim time).
         all_targets = await strategy_repo.get_player_minutes(pool, league_id, team["id"])
         total = sum(all_targets.values())
         label = str(minutes) if minutes > 0 else "Auto"
-        msg = f"Set target minutes for **{player.full_name}** to **{label}**."
+        msg = f"Set target minutes for **{found_player.full_name}** to **{label}**."
         if total > 240:
             msg += f"\n**Warning:** Team total target minutes ({total}) exceed 240 and will be normalized at sim time."
         await interaction.followup.send(msg)
@@ -222,7 +299,7 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
     @app_commands.command(name="view", description="View player minutes targets for a team")
     @app_commands.describe(team="Team code (e.g. LAL). Defaults to your team.")
     async def view_minutes(self, interaction: discord.Interaction, team: Optional[str] = None) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team_row = await _resolve_team_for_view(pool, league_id, team, interaction.user.id)
@@ -250,7 +327,7 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
 
     @app_commands.command(name="reset", description="Clear all target minutes for your team (set all to Auto)")
     async def reset_minutes(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         pool = await get_pool()
         league_id = await _get_league_id(pool, interaction.guild_id)
         team = await _require_team_manager(pool, league_id, interaction.user.id)

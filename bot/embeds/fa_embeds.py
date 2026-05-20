@@ -16,7 +16,7 @@ def fa_day_open_embed(fa_state: dict, day: int, league: object) -> discord.Embed
         ),
         color=discord.Color.green(),
     )
-    embed.set_footer(text="Use /fa offer <player_id> <salary> <years> to submit an offer.")
+    embed.set_footer(text="Use /fa offer <player name> <salary> <years> to submit an offer.")
     return embed
 
 

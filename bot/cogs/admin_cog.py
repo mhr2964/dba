@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.errors import DBAError
+from core.errors import safe_defer
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import admin_repo, player_repo, team_repo
+from data.repositories import admin_repo, game_repo, league_repo, player_repo, team_repo
 from phase.helpers import get_league_or_error, require_commissioner
-from services import league_service
+from services import import_service, league_service, roster_seed_service
 
 log = get_logger(__name__)
 
@@ -52,18 +54,18 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
     @app_commands.command(name="edit-player", description="Commissioner: edit a player attribute")
     @app_commands.describe(
-        player_id="Player ID to edit",
+        player="Player name to edit (e.g. LeBron James)",
         field="Attribute to change (ovr, speed, shooting_2pt, shooting_3pt, shooting_mid, finishing, playmaking, defense, rebounding, iq, position)",
         value="New value (integer for stats, string for position)",
     )
     async def edit_player(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         field: str,
         value: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -76,18 +78,19 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             return
 
         pool = await get_pool()
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player:
-            await interaction.followup.send(f"Player #{player_id} not found.", ephemeral=True)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
             return
-        if player.league_id != league.id:
-            await interaction.followup.send(
-                f"Player #{player_id} does not belong to this league.", ephemeral=True
-            )
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
+        found_player = matches[0]
+        player_id = found_player.id
 
         column = _FIELD_TO_COLUMN[field]
-        old_value = getattr(player, column if column != "overall" else "overall", None)
+        old_value = getattr(found_player, column if column != "overall" else "overall", None)
 
         if field in _STRING_FIELDS:
             typed_value: str | int = value
@@ -117,14 +120,14 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         )
 
         await interaction.followup.send(
-            f"Updated **{player.full_name}** `{field}`: {old_value} → {typed_value}",
+            f"Updated **{found_player.full_name}** `{field}`: {old_value} → {typed_value}",
             ephemeral=True,
         )
 
     @app_commands.command(name="rollback-game", description="Commissioner: reset a game to scheduled and reverse standings")
     @app_commands.describe(game_id="Game ID to roll back")
     async def rollback_game(self, interaction: discord.Interaction, game_id: int) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -216,7 +219,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Commissioner: recount standings from scratch from simmed games",
     )
     async def recalculate_standings(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -314,7 +317,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Commissioner: emergency sign a free agent directly to a team",
     )
     @app_commands.describe(
-        player_id="Player ID to sign",
+        player="Player name to sign (e.g. LeBron James)",
         team_code="Team code (e.g. LAL)",
         salary="Annual salary in dollars",
         years="Contract length in years",
@@ -322,30 +325,32 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
     async def force_fa_sign(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         team_code: str,
         salary: int,
         years: int,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
 
         pool = await get_pool()
 
-        player = await player_repo.get_by_id(pool, player_id)
-        if not player:
-            await interaction.followup.send(f"Player #{player_id} not found.", ephemeral=True)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        if not matches:
+            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
             return
-        if player.league_id != league.id:
-            await interaction.followup.send(
-                f"Player #{player_id} does not belong to this league.", ephemeral=True
-            )
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
-        if player.roster_status not in ("free_agent", "waived"):
+        found_player = matches[0]
+        player_id = found_player.id
+
+        if found_player.roster_status not in ("free_agent", "waived"):
             await interaction.followup.send(
-                f"**{player.full_name}** is not a free agent or waived (status: {player.roster_status}).",
+                f"**{found_player.full_name}** is not a free agent or waived (status: {found_player.roster_status}).",
                 ephemeral=True,
             )
             return
@@ -379,8 +384,8 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     """
                     INSERT INTO contracts
                         (league_id, player_id, team_id, salary, years_remaining, total_years,
-                         contract_type, signed_in_season, is_active)
-                    VALUES ($1, $2, $3, $4, $5, $5, 'standard', $6, TRUE)
+                         contract_type, signed_in_season, is_active, signed_at)
+                    VALUES ($1, $2, $3, $4, $5, $5, 'standard', $6, TRUE, NOW())
                     """,
                     league.id,
                     player_id,
@@ -396,11 +401,347 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             user_id=interaction.user.id,
             action_type="force_fa_sign",
             target_ref=str(player_id),
-            detail=f"Signed {player.full_name} to {team.full_name} — ${salary:,}/yr x {years}yr.",
+            detail=f"Signed {found_player.full_name} to {team.full_name} — ${salary:,}/yr x {years}yr.",
         )
 
         await interaction.followup.send(
-            f"**{player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
+            f"**{found_player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
+            ephemeral=True,
+        )
+
+
+    @app_commands.command(
+        name="reseed-rosters",
+        description="Commissioner: reconcile league rosters against a season seed file",
+    )
+    @app_commands.describe(
+        year="Season year to reconcile against (e.g. 2024)",
+        mode="dry-run previews changes without writing; apply commits them",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="dry-run", value="dry-run"),
+            app_commands.Choice(name="apply", value="apply"),
+        ]
+    )
+    async def reseed_rosters(
+        self,
+        interaction: discord.Interaction,
+        year: int,
+        mode: app_commands.Choice[str] = None,
+    ) -> None:
+        await safe_defer(interaction, ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        mode_value = mode.value if mode is not None else "dry-run"
+        pool = await get_pool()
+
+        # Validate seed file exists before doing any work.
+        try:
+            roster_seed_service.load_seed(year)
+        except FileNotFoundError:
+            available = roster_seed_service.list_available_seed_years()
+            supported = ", ".join(str(y) for y in available) if available else "none"
+            await interaction.followup.send(
+                f"No roster seed found for **{year}**. Supported years: {supported}",
+                ephemeral=True,
+            )
+            return
+
+        if mode_value == "dry-run":
+            diff = await roster_seed_service.diff_league_against_seed(
+                pool, league.id, year
+            )
+
+            to_insert = diff["to_insert"]
+            to_move = diff["to_move"]
+            already_correct = diff["already_correct"]
+            unknown_in_db = diff["unknown_in_db"]
+
+            embed = discord.Embed(
+                title=f"Roster Reseed Preview — {year}",
+                color=discord.Color.blue(),
+            )
+            embed.add_field(name="To insert", value=str(len(to_insert)), inline=True)
+            embed.add_field(name="To move", value=str(len(to_move)), inline=True)
+            embed.add_field(name="Already correct", value=str(already_correct), inline=True)
+            embed.add_field(
+                name="Unknown in DB (not in seed)",
+                value=str(len(unknown_in_db)),
+                inline=True,
+            )
+
+            # First 10 pending changes as bullet lines.
+            change_lines: list[str] = []
+            for row in to_insert[:5]:
+                name = row.get("full_name") or f"{row.get('first_name','')} {row.get('last_name','')}".strip()
+                change_lines.append(f"+ Insert **{name}** → {row.get('nba_team_code')}")
+            for entry in to_move[: max(0, 10 - len(change_lines))]:
+                seed_row = entry["seed_row"]
+                name = seed_row.get("full_name") or (
+                    f"{seed_row.get('first_name','')} {seed_row.get('last_name','')}".strip()
+                )
+                change_lines.append(
+                    f"~ Move **{name}**: {entry['from_team_code']} → {entry['to_team_code']}"
+                )
+
+            if change_lines:
+                embed.add_field(
+                    name="Sample changes (first 10)",
+                    value="\n".join(change_lines),
+                    inline=False,
+                )
+
+            embed.set_footer(text="Run with mode:apply to commit these changes.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        else:  # apply
+            result = await roster_seed_service.apply_reseed(
+                pool, league.id, year, dry_run=False
+            )
+
+            embed = discord.Embed(
+                title=f"Roster Reseed Applied — {year}",
+                color=discord.Color.green() if not result["errors"] else discord.Color.orange(),
+            )
+            embed.add_field(name="Inserted", value=str(result["inserted"]), inline=True)
+            embed.add_field(name="Moved", value=str(result["moved"]), inline=True)
+            embed.add_field(name="Skipped", value=str(result["skipped"]), inline=True)
+
+            if result["errors"]:
+                # Show first 5 errors to avoid embed overflow.
+                error_text = "\n".join(result["errors"][:5])
+                if len(result["errors"]) > 5:
+                    error_text += f"\n… and {len(result['errors']) - 5} more"
+                embed.add_field(name="Errors", value=error_text, inline=False)
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            await admin_repo.log_commissioner_action(
+                pool,
+                league_id=league.id,
+                user_id=interaction.user.id,
+                action_type="reseed_rosters",
+                target_ref=str(year),
+                detail=(
+                    f"Reseed applied for season {year}: "
+                    f"inserted={result['inserted']} moved={result['moved']} "
+                    f"skipped={result['skipped']} errors={len(result['errors'])}"
+                ),
+            )
+
+    @app_commands.command(
+        name="ensure-channels",
+        description="Commissioner: create any missing DBA channels for this league",
+    )
+    async def ensure_channels(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction, ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        pool = await get_pool()
+        created = await league_service.ensure_channels(interaction.guild, pool, league.id)
+
+        if created:
+            await interaction.followup.send(
+                f"Created {len(created)} missing channel(s): {', '.join(f'#{c}' for c in created)}",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "All expected channels already exist — nothing to do.", ephemeral=True
+            )
+
+    @app_commands.command(
+        name="purge-server",
+        description="Remove all DBA categories, channels, and roles left over after a DB reset",
+    )
+    @app_commands.describe(confirm="Type CONFIRM to proceed — this deletes all DBA channels and roles")
+    @app_commands.default_permissions(administrator=True)
+    async def purge_server(self, interaction: discord.Interaction, confirm: str = "") -> None:
+        """Scans the guild by name pattern and deletes DBA artifacts.
+        Safe to run after a DB wipe when league_channels/league_roles tables are empty.
+        """
+        if confirm != "CONFIRM":
+            await interaction.response.send_message(
+                "This will delete **all DBA channels, categories, and roles** from the server.\n"
+                "Run `/admin purge-server confirm:CONFIRM` to proceed.",
+                ephemeral=True,
+            )
+            return
+        await safe_defer(interaction, ephemeral=True)
+
+        guild = interaction.guild
+        deleted_categories: list[str] = []
+        deleted_channels: int = 0
+        deleted_roles: list[str] = []
+
+        # Delete any category whose name starts with the basketball emoji we use,
+        # or contains "dba" (case-insensitive) to catch orphaned categories from
+        # old sessions that pre-date the emoji naming convention.
+        for category in list(guild.categories):
+            name_lower = category.name.lower()
+            if category.name.startswith("🏀") or "dba" in name_lower:
+                for ch in list(category.channels):
+                    try:
+                        await ch.delete(reason="DBA purge-server")
+                        deleted_channels += 1
+                    except discord.HTTPException:
+                        pass
+                try:
+                    await category.delete(reason="DBA purge-server")
+                    deleted_categories.append(category.name)
+                except discord.HTTPException:
+                    pass
+
+        # Load NBA team full names so we can match team roles exactly.
+        _teams_path = Path(__file__).parent.parent.parent / "data" / "seeds" / "nba_teams.json"
+        try:
+            _nba_teams = json.loads(_teams_path.read_text())
+            _team_full_names = {f"{t['city']} {t['name']}" for t in _nba_teams}
+        except Exception:
+            _team_full_names = set()
+
+        # Delete DBA Commissioner role and any role matching a team's full name.
+        for role in list(guild.roles):
+            if role.name == "DBA Commissioner" or role.name in _team_full_names:
+                try:
+                    await role.delete(reason="DBA purge-server")
+                    deleted_roles.append(role.name)
+                except discord.HTTPException:
+                    pass
+
+        # Also delete the league DB row so /league create can run fresh.
+        pool = await get_pool()
+        deleted_league = await pool.fetchval(
+            "DELETE FROM leagues WHERE discord_guild_id = $1 RETURNING id",
+            guild.id,
+        )
+
+        embed = discord.Embed(
+            title="Server Purge Complete",
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="Categories deleted",
+            value="\n".join(deleted_categories) or "none",
+            inline=False,
+        )
+        embed.add_field(name="Channels deleted", value=str(deleted_channels), inline=True)
+        embed.add_field(name="Roles deleted", value=str(len(deleted_roles)), inline=True)
+        embed.add_field(
+            name="DB league deleted",
+            value=f"League ID {deleted_league}" if deleted_league else "none found",
+            inline=True,
+        )
+        embed.set_footer(text="Server is clean. Use /league create to start fresh.")
+        # Send result to a channel that still exists — the DBA channels were just deleted,
+        # so posting to the interaction channel (which may be #league-news) would 404.
+        # Try the guild's system channel, then DM the user, as fallbacks.
+        sent = False
+        if guild.system_channel:
+            try:
+                await guild.system_channel.send(embed=embed)
+                sent = True
+            except discord.HTTPException:
+                pass
+        if not sent:
+            try:
+                await interaction.user.send(embed=embed)
+                sent = True
+            except discord.HTTPException:
+                pass
+        if not sent:
+            # Last resort — try the followup (may 404 if issued from a deleted channel)
+            try:
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+
+    @app_commands.command(
+        name="rebuild-lineups",
+        description="Commissioner: regenerate starting lineups for all teams (top-OVR ordering)",
+    )
+    async def rebuild_lineups(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction, ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        pool = await get_pool()
+        teams = await team_repo.get_all(pool, league.id)
+
+        n_success = 0
+        errors: list[str] = []
+        for team in teams:
+            try:
+                players_sorted = await roster_seed_service._players_for_team(pool, league.id, team.id)
+                await import_service._generate_lineup(pool, league.id, team.id, players_sorted)
+                n_success += 1
+            except Exception as exc:
+                team_label = getattr(team, "nba_team_code", str(team.id))
+                log.error(f"rebuild-lineups: failed for team {team_label} — {exc}", exc_info=True)
+                errors.append(f"{team_label}: {exc}")
+
+        embed = discord.Embed(
+            title="Lineups Rebuilt",
+            color=discord.Color.green() if not errors else discord.Color.orange(),
+        )
+        embed.add_field(name="Teams updated", value=str(n_success), inline=True)
+        embed.add_field(name="League ID", value=str(league.id), inline=True)
+        if errors:
+            error_text = "\n".join(errors[:10])
+            if len(errors) > 10:
+                error_text += f"\n… and {len(errors) - 10} more"
+            embed.add_field(name="Errors", value=error_text, inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        await admin_repo.log_commissioner_action(
+            pool,
+            league_id=league.id,
+            user_id=interaction.user.id,
+            action_type="rebuild_lineups",
+            target_ref=str(league.id),
+            detail=f"Rebuilt lineups for {n_success}/{len(teams)} teams. Errors: {len(errors)}",
+        )
+
+
+    @app_commands.command(
+        name="force-ready",
+        description="Commissioner: mark all managers as ready (testing / catch-up)",
+    )
+    async def force_ready(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction, ephemeral=True)
+        pool = await get_pool()
+        league = await league_repo.get_by_guild(pool, interaction.guild_id)
+        if not league:
+            await interaction.followup.send("No active league.", ephemeral=True)
+            return
+
+        if interaction.user.id != league.commissioner_user_id:
+            await interaction.followup.send(
+                "Only the commissioner can force-ready.", ephemeral=True
+            )
+            return
+
+        teams = await team_repo.get_all(pool, league.id)
+        human_teams = [t for t in teams if t.manager_user_id is not None]
+
+        if not human_teams:
+            await interaction.followup.send("No managers to ready up.", ephemeral=True)
+            return
+
+        for team in human_teams:
+            await game_repo.set_ready(pool, league.id, team.id, team.manager_user_id, True)
+
+        await interaction.followup.send(
+            f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.",
             ephemeral=True,
         )
 

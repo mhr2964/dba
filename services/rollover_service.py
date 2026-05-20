@@ -7,9 +7,9 @@ import asyncpg
 from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import extension_repo, history_repo, league_repo, player_repo, team_repo, trade_repo
+from data.repositories import extension_repo, history_repo, trade_repo
 from phase.states import Phase
-from services import hof_service, progression_service
+from services import hof_service
 
 log = get_logger(__name__)
 
@@ -40,8 +40,6 @@ async def run_rollover(league_id: int) -> dict:
 
     contracts_expired = await _age_contracts(pool, league_id)
 
-    players_progressed = await progression_service.run_progression(league_id, season)
-
     await _reset_game_state(pool, league_id, next_season)
 
     await pool.execute(
@@ -52,7 +50,7 @@ async def run_rollover(league_id: int) -> dict:
 
     await pool.execute(
         "UPDATE leagues SET current_phase = $1 WHERE id = $2",
-        Phase.PRESEASON_READY.value,
+        Phase.PROGRESSION_PENDING.value,
         league_id,
     )
 
@@ -63,14 +61,13 @@ async def run_rollover(league_id: int) -> dict:
 
     log.info(
         f"Rollover complete: league={league_id} season={season}->{next_season} "
-        f"expired={contracts_expired} progressed={players_progressed} "
+        f"expired={contracts_expired} "
         f"extensions_activated={extensions_activated} picks_seeded=1 hof_inducted={len(inducted)}"
     )
 
     return {
         "season_archived": season,
         "next_season": next_season,
-        "players_progressed": players_progressed,
         "contracts_expired": contracts_expired,
         "extensions_activated": extensions_activated,
         "picks_seeded": 1,

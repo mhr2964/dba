@@ -8,10 +8,10 @@ from discord.ext import commands
 
 from bot.embeds import draft_embeds
 from bot.ui.draft_views import DraftPickView, _build_summary
-from core.errors import DBAError
+from core.errors import safe_defer
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import draft_repo, league_repo, team_repo
+from data.repositories import draft_repo, league_repo
 from services import draft_service, league_service
 
 log = get_logger(__name__)
@@ -26,7 +26,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
     @app_commands.command(name="lottery", description="Run the draft lottery (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def lottery(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -34,7 +34,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
             return
 
         pool = await get_pool()
-        draft = await draft_repo.create_draft(pool, league.id, league.current_season)
+        await draft_repo.create_draft(pool, league.id, league.current_season)
 
         ordered_picks = await draft_service.run_lottery(league.id, league.current_season)
 
@@ -50,7 +50,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
     @app_commands.command(name="advance", description="Advance the draft (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def advance(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -93,7 +93,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
     @app_commands.command(name="board", description="Show the current draft board")
     async def board(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -121,7 +121,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
     async def prospects(
         self, interaction: discord.Interaction, position: Optional[str] = None
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -159,7 +159,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
     @app_commands.describe(year="Draft class year (e.g. 2029)")
     @app_commands.default_permissions(administrator=True)
     async def draft_class(self, interaction: discord.Interaction, year: int) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:

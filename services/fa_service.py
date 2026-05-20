@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import os
 import random
 from typing import Optional
 
@@ -10,6 +12,7 @@ from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import fa_repo, league_repo, player_repo, team_repo
+from phase.states import Phase
 from services.player_decision import (
     Decision,
     LeagueContext,
@@ -20,6 +23,8 @@ from services.player_decision import (
 )
 
 log = get_logger(__name__)
+
+_HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
 DAILY_OFFER_LIMIT = 3
 _MIN_SALARY = 1_100_000
@@ -109,6 +114,22 @@ async def submit_cpu_offers(league_id: int, season: int) -> int:
             cap_used += offer_salary
             offers_this_day += 1
             total_submitted += 1
+
+            if _HEADLESS:
+                try:
+                    _team_row = await pool.fetchrow(
+                        "SELECT nba_team_code FROM teams WHERE id = $1", team_id
+                    )
+                    _tc = _team_row["nba_team_code"] if _team_row else str(team_id)
+                    _fa_name = f"{fa.get('first_name', '')} {fa.get('last_name', '')}".strip() or f"Player #{fa['id']}"
+                    _min_ovr_note = f" (contender min OVR {min_ovr})" if min_ovr > 0 else ""
+                    print(
+                        f"CPU [{_tc}] — FA bid: {_fa_name} OVR {player_ovr}\n"
+                        f"   mode: {cpu_mode}{_min_ovr_note} | offer: ${offer_salary:,}/yr × {years}yr\n"
+                        f"   position priority: any | cap_used after: ${cap_used:,}"
+                    )
+                except Exception:
+                    pass  # never let logging break the sim
 
     log.info(f"CPU FA offers submitted: {total_submitted} (league {league_id} day {fa_day})")
     return total_submitted
@@ -501,8 +522,7 @@ async def close_fa(league_id: int, season: int) -> dict:
 
     await fa_repo.update_fa_state(pool, league_id, "complete")
 
-    from services.league_service import advance_phase
-    from phase.states import Phase
+    from services.league_service import advance_phase  # local: avoids circular dep
     await advance_phase(league_id, Phase.FA_CLOSED.value)
 
     log.info(
@@ -607,8 +627,8 @@ async def _sign_player(
         """
         INSERT INTO contracts
             (league_id, player_id, team_id, salary, years_remaining, total_years,
-             contract_type, signed_in_season, is_active)
-        VALUES ($1, $2, $3, $4, $5, $5, 'fa', $6, TRUE)
+             contract_type, signed_in_season, is_active, signed_at)
+        VALUES ($1, $2, $3, $4, $5, $5, 'fa', $6, TRUE, NOW())
         """,
         league_id,
         player_id,
@@ -645,7 +665,6 @@ async def _get_team_wins(
 def _estimate_age(player: player_repo.Player) -> int:
     """Derive age from birth_date if available; fall back to years_pro heuristic."""
     if player.birth_date is not None:
-        import datetime
         today = datetime.date.today()
         born = player.birth_date
         return today.year - born.year - ((today.month, today.day) < (born.month, born.day))

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -15,14 +13,17 @@ from bot.embeds.stats_embeds import (
     player_profile_embed,
 )
 from bot.embeds.info_embeds import h2h_embed, power_rankings_embed
+from bot.embeds.intel_embeds import power_rankings_posture_embed
 from bot.ui.stats_views import LeaderboardView, _fetch_season_leaders
-from core.errors import DBAError
+from core.errors import DBAError, safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo, team_repo
-from services import league_service
+from services import league_service, team_intel
+from services.player_style_service import load_profile as _load_nba_profile
 
 log = get_logger(__name__)
+
 
 _CATEGORY_CHOICES = [
     app_commands.Choice(name="Points", value="ppg"),
@@ -38,17 +39,40 @@ async def _season_stats_for_player(pool, player_id: int) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT
+            COUNT(*)                                 AS games_played,
             AVG(points)                              AS ppg,
             AVG(rebounds_off + rebounds_def)         AS rpg,
             AVG(assists)                             AS apg,
             AVG(steals)                              AS spg,
             AVG(blocks)                              AS bpg,
+            AVG(minutes)                             AS mpg,
             CASE WHEN SUM(fga) > 0
                 THEN SUM(fgm)::FLOAT / SUM(fga) * 100
                 ELSE NULL END                        AS fg_pct,
             CASE WHEN SUM(tpa) > 0
                 THEN SUM(tpm)::FLOAT / SUM(tpa) * 100
-                ELSE NULL END                        AS fg3_pct
+                ELSE NULL END                        AS fg3_pct,
+            -- True Shooting %: PTS / (2 * (FGA + 0.44 * FTA)) * 100
+            CASE WHEN (SUM(fga) + 0.44 * SUM(fta)) > 0
+                THEN SUM(points)::FLOAT / (2.0 * (SUM(fga) + 0.44 * SUM(fta))) * 100
+                ELSE NULL END                        AS ts_pct,
+            -- Simplified USG%: (FGA + 0.44*FTA + TOV) / MP * 48
+            CASE WHEN SUM(minutes) > 0
+                THEN (SUM(fga) + 0.44 * SUM(fta) + SUM(turnovers))::FLOAT / SUM(minutes) * 48
+                ELSE NULL END                        AS usg_pct,
+            -- Simplified PER: (PTS + REB + AST + STL + BLK - (FGA-FGM) - (FTA-FTM) - TOV) / GP
+            CASE WHEN COUNT(*) > 0
+                THEN (
+                    SUM(points)
+                    + SUM(rebounds_off + rebounds_def)
+                    + SUM(assists)
+                    + SUM(steals)
+                    + SUM(blocks)
+                    - SUM(fga - fgm)
+                    - SUM(fta - ftm)
+                    - SUM(turnovers)
+                )::FLOAT / COUNT(*)
+                ELSE NULL END                        AS per
         FROM game_box_scores
         WHERE player_id = $1
         """,
@@ -60,7 +84,12 @@ async def _season_stats_for_player(pool, player_id: int) -> dict | None:
 
 
 async def _recent_games_for_player(pool, player_id: int, n: int = 5) -> list[dict]:
-    """Return last N game lines for a player, newest first."""
+    """Return last N game lines for a player, newest first.
+
+    Orders by game_id (insertion order) rather than scheduled_date so that
+    playoff games — which used to receive real-world wall-clock dates — don't
+    sort above earlier regular-season games incorrectly.
+    """
     rows = await pool.fetch(
         """
         SELECT
@@ -73,7 +102,7 @@ async def _recent_games_for_player(pool, player_id: int, n: int = 5) -> list[dic
         FROM game_box_scores b
         JOIN games g ON g.id = b.game_id
         WHERE b.player_id = $1
-        ORDER BY g.scheduled_date DESC
+        ORDER BY g.id DESC
         LIMIT $2
         """,
         player_id,
@@ -150,6 +179,80 @@ def compute_power_rankings(standings_rows: list[dict], teams_by_id: dict) -> lis
     return result
 
 
+def compute_power_rankings_posture(
+    standings_rows: list[dict],
+    teams_by_id: dict,
+    intel_by_team: dict,
+    avg_ovr_by_team: dict,
+    mode: str,
+) -> list[dict]:
+    """Return posture-aware ranked list for the extended /power-rankings command.
+
+    Args:
+        standings_rows: Raw rows from standings_cache.
+        teams_by_id:    {team_id: Team} from team_repo.get_all.
+        intel_by_team:  {team_id: {posture: dict}} from build_team_intel.
+        avg_ovr_by_team:{team_id: float} team average OVR from players table.
+        mode:           "record" | "expected" | "talent"
+
+    Sort key:
+        record   — power score (win% × 0.6 + L10 × 0.4)  [existing behavior]
+        expected — posture.projected_wins DESC (None → 0)
+        talent   — avg_ovr_by_team DESC (None → 0)
+    """
+    enriched = []
+    for row in standings_rows:
+        games = row["wins"] + row["losses"]
+        win_pct = row["wins"] / max(1, games)
+        l10_wins = row.get("last_10_wins", 0)
+        score = win_pct * 0.6 + (l10_wins / 10) * 0.4
+
+        tid = row["team_id"]
+        posture = (intel_by_team.get(tid) or {}).get("posture")
+        avg_ovr = avg_ovr_by_team.get(tid)
+
+        enriched.append({
+            **dict(row),
+            "score": score,
+            "win_pct": win_pct,
+            "posture": posture,
+            "avg_ovr": avg_ovr,
+        })
+
+    if mode == "expected":
+        sorted_list = sorted(
+            enriched,
+            key=lambda r: (r.get("posture") or {}).get("projected_wins") or 0,
+            reverse=True,
+        )
+    elif mode == "talent":
+        sorted_list = sorted(
+            enriched,
+            key=lambda r: r.get("avg_ovr") or 0,
+            reverse=True,
+        )
+    else:
+        # "record" — existing power-score ordering
+        sorted_list = sorted(enriched, key=lambda r: r["score"], reverse=True)
+
+    result = []
+    for rank, row in enumerate(sorted_list, start=1):
+        team = teams_by_id.get(row["team_id"])
+        result.append({
+            "rank": rank,
+            "team_code": team.nba_team_code if team else str(row["team_id"]),
+            "wins": row["wins"],
+            "losses": row["losses"],
+            "last_10_wins": row.get("last_10_wins", 0),
+            "last_10_losses": row.get("last_10_losses", 0),
+            "score": row["score"],
+            "trend": "→",  # legacy field; posture badge replaces it in the new embed
+            "posture": row.get("posture"),
+            "avg_ovr": row.get("avg_ovr"),
+        })
+    return result
+
+
 def count_h2h_wins(games: list[dict], team_a_id: int, team_b_id: int) -> tuple[int, int]:
     """Return (wins_a, wins_b) from a list of simmed game dicts."""
     wins_a = 0
@@ -177,7 +280,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
         category: app_commands.Choice[str] = None,
         all_time: bool = False,
     ) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -212,7 +315,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
         name_or_id: str,
         career: bool = False,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -233,20 +336,22 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
             if row:
                 team_name = f"{row['city']} {row['name']}"
 
+        nba_profile = _load_nba_profile(f"{p.first_name} {p.last_name}", league.current_season)
+
         if career:
             career_data = await player_repo.get_career_stats(pool, p.id, league.id)
-            embed = career_stats_embed(p, career_data, team_name)
+            embed = career_stats_embed(p, career_data, team_name, nba_profile=nba_profile)
         else:
             contract = await player_repo.get_active_contract(pool, p.id)
             season_stats = await _season_stats_for_player(pool, p.id)
             recent_games = await _recent_games_for_player(pool, p.id)
-            embed = player_profile_embed(p, team_name, contract, season_stats, recent_games)
+            embed = player_profile_embed(p, team_name, contract, season_stats, recent_games, nba_profile=nba_profile)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="all-time-records", description="Show notable all-time league records")
     async def all_time_records(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -266,7 +371,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
         player1: str,
         player2: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -295,15 +400,32 @@ class StatsCog(commands.Cog):
         self.bot.tree.add_command(StatsGroup())
 
     @app_commands.command(name="power-rankings", description="Show current power rankings for all teams")
-    async def power_rankings(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+    @app_commands.describe(
+        mode=(
+            "Ranking mode: record (default, power score), "
+            "expected (projected wins), talent (roster OVR)"
+        ),
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Record (power score)", value="record"),
+        app_commands.Choice(name="Expected wins (posture)", value="expected"),
+        app_commands.Choice(name="Talent (roster OVR)", value="talent"),
+    ])
+    async def power_rankings(
+        self,
+        interaction: discord.Interaction,
+        mode: app_commands.Choice[str] = None,
+    ) -> None:
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
             await interaction.followup.send("No active league found.", ephemeral=True)
             return
 
+        rank_mode = mode.value if mode else "record"
         pool = await get_pool()
+
         standings_rows = await pool.fetch(
             "SELECT * FROM standings_cache WHERE league_id = $1 AND season = $2",
             league.id,
@@ -316,8 +438,48 @@ class StatsCog(commands.Cog):
         all_teams = await team_repo.get_all(pool, league.id)
         teams_by_id = {t.id: t for t in all_teams}
 
-        ranked = compute_power_rankings([dict(r) for r in standings_rows], teams_by_id)
-        embed = power_rankings_embed(ranked)
+        # Default "record" mode with no posture enrichment — matches legacy output.
+        if rank_mode == "record" and mode is None:
+            ranked = compute_power_rankings([dict(r) for r in standings_rows], teams_by_id)
+            embed = power_rankings_embed(ranked)
+            await interaction.followup.send(embed=embed)
+            return
+
+        # Posture-aware path: bulk fetch posture for all teams (1 batch call).
+        team_ids = [t.id for t in all_teams]
+        try:
+            intel_by_team = await team_intel.build_team_intel(
+                pool, league, league.current_season,
+                team_ids,
+                include=("posture",),
+            )
+        except Exception as exc:
+            log.error(f"power_rankings posture fetch failed: {exc}", exc_info=True)
+            intel_by_team = {}
+
+        # Fetch avg OVR per team for talent mode (1 query regardless of mode).
+        ovr_rows = await pool.fetch(
+            """
+            SELECT l.team_id, AVG(p.overall)::float AS avg_ovr
+            FROM lineups l
+            JOIN players p ON p.id = l.player_id
+            WHERE l.league_id = $1
+            GROUP BY l.team_id
+            """,
+            league.id,
+        )
+        avg_ovr_by_team: dict[int, float] = {
+            r["team_id"]: r["avg_ovr"] for r in ovr_rows if r["avg_ovr"] is not None
+        }
+
+        ranked = compute_power_rankings_posture(
+            [dict(r) for r in standings_rows],
+            teams_by_id,
+            intel_by_team,
+            avg_ovr_by_team,
+            rank_mode,
+        )
+        embed = power_rankings_posture_embed(ranked, rank_mode)
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="h2h", description="Head-to-head record between two teams")
@@ -328,7 +490,7 @@ class StatsCog(commands.Cog):
         team1_code: str,
         team2_code: str,
     ) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:

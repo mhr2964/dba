@@ -3,14 +3,23 @@
 Usage:
     python scripts/import_players.py --league-id 1 --season 2024
     python scripts/import_players.py --league-id 1 --season 2024 --dry-run
+
+Player overall ratings are derived entirely from NBA stats via nba_api:
+  - Veterans: best composite score across the target season + 2 prior seasons
+    (min 10 GP), using absolute stat thresholds so a Luka injury year doesn't
+    crater his rating.
+  - Rookies: draft pick position → OVR range (pick 1-3 ≈ 82-86, etc.)
+  - Undrafted / data gaps: experience-based estimate.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import random
 import time
+from pathlib import Path
 from datetime import date
 from typing import Optional
 
@@ -67,14 +76,266 @@ _POSITION_MAP = {
     "C": "C",
 }
 
+# Headers required by stats.nba.com to avoid 403/timeout responses.
+_NBA_HEADERS = {
+    "Host": "stats.nba.com",
+    "Connection": "keep-alive",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "x-nba-stats-origin": "stats",
+    "x-nba-stats-token": "true",
+}
+
+_STATS_RATINGS_DIR = Path(__file__).parent.parent / "data" / "stats_ratings"
+
+
+def _load_stats_ratings(season: int) -> dict[int, int]:
+    """Load pre-computed stats ratings from data/stats_ratings/{season}.json if present."""
+    path = _STATS_RATINGS_DIR / f"{season}.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        result = {int(k): int(v) for k, v in raw.items()}
+        print(f"[INFO] Loaded pre-built stats ratings for {len(result)} players ({season}).")
+        return result
+    except Exception as exc:
+        print(f"[WARN] Failed to load stats ratings: {exc}")
+        return {}
+
 
 def _normalize_position(raw: str) -> str:
     raw = (raw or "").strip()
     return _POSITION_MAP.get(raw, "SF")
 
 
+# ---------------------------------------------------------------------------
+# Absolute-threshold OVR formula
+# ---------------------------------------------------------------------------
+
+# Breakpoints: list of (threshold, cumulative_score). Ascending.
+# The highest threshold the player clears wins — we walk all entries and keep
+# updating, so the final score is the pts for the last threshold they cleared.
+_PPG_BREAKS:  list[tuple[float, int]] = [(5,5),(10,10),(15,14),(20,18),(25,21),(30,24),(35,26)]
+_RPG_BREAKS:  list[tuple[float, int]] = [(3,3),(5,5),(7,7),(10,9),(13,11),(15,12)]
+_APG_BREAKS:  list[tuple[float, int]] = [(2,3),(4,5),(6,7),(8,9),(10,11),(12,13)]
+_SPG_BREAKS:  list[tuple[float, int]] = [(0.5,2),(1.0,4),(1.5,6),(2.0,8)]
+_BPG_BREAKS:  list[tuple[float, int]] = [(0.5,2),(1.0,4),(1.5,6),(2.0,8),(3.0,10)]
+_FG3_BREAKS:  list[tuple[float, int]] = [(0.30,2),(0.35,4),(0.38,6),(0.40,8),(0.43,10)]  # 3PT%
+_FGA3_BREAKS: list[tuple[float, int]] = [(2,1),(4,2),(6,3),(8,4)]                         # 3PA volume
+_USG_BREAKS:  list[tuple[float, int]] = [(0.15,2),(0.20,4),(0.25,6),(0.30,8),(0.35,10)]   # usage rate
+_EFF_BREAKS:  list[tuple[float, int]] = [(0.50,2),(0.53,4),(0.55,6),(0.58,8),(0.60,10)]   # TS%
+
+# Theoretical raw max: 26+12+13+8+10+10+4+10+10+8(def) = 111, but unreachable.
+# Real elite players top out ~80-88; formula is scaled to that practical range.
+_RAW_SUM_MAX = 88
+_DEF_RTG_BASELINE = 115.0  # lenient league avg; below = good defense
+
+
+def _compute_defensive_scores(
+    pct_blk: float,
+    pct_stl: float,
+    dreb_pct: float,
+    def_rating: float | None,
+    position: str,
+) -> tuple[float, float, str]:
+    """
+    Compute interior and perimeter defensive scores (0-100 each) from rate-based
+    advanced/usage stats, then derive an archetype label.
+
+    Scores are calibrated against 2022-2024 BDL data distributions:
+      pct_blk  p50≈0.16, elite(top5%)≈0.55  → maps 0→0, 0.65→50
+      dreb_pct p50≈0.12, elite≈0.25          → maps 0.05→0, 0.28→25
+      def_rating best≈104, avg≈112           → maps 104→25, 116→0
+      pct_stl  p50≈0.20, elite≈0.33          → maps 0.10→0, 0.36→40
+      position bonus (perimeter score)        → PG/SG/SF +20, PF +10, C +5
+
+    Interior weights: 50% pct_blk, 25% dreb_pct, 25% def_rating.
+    Perimeter weights: 40% pct_stl, 40% def_rating, 20% position bonus.
+    """
+    pos = (position or "SF").upper()
+    dr = def_rating if def_rating is not None else 114.0  # neutral league-avg fallback
+
+    # --- Interior score (0–100) ---
+    blk_score  = min(50.0, max(0.0, (pct_blk / 0.65) * 50.0))
+    dreb_score = min(25.0, max(0.0, (dreb_pct - 0.05) / 0.23 * 25.0))
+    dr_int     = min(25.0, max(0.0, (116.0 - dr) / 12.0 * 25.0))
+    interior   = blk_score + dreb_score + dr_int
+
+    # --- Perimeter score (0–100) ---
+    stl_score = min(40.0, max(0.0, (pct_stl - 0.10) / 0.26 * 40.0))
+    dr_peri   = min(40.0, max(0.0, (116.0 - dr) / 12.0 * 40.0))
+    pos_bonus = 20.0 if pos in ("PG", "SG", "SF") else (10.0 if pos == "PF" else 5.0)
+    perimeter  = stl_score + dr_peri + pos_bonus
+
+    # --- Archetype (priority order) ---
+    # two_way_big first: interior elite AND meaningful perimeter presence
+    if interior >= 70.0 and perimeter >= 45.0:
+        archetype = "two_way_big"
+    elif interior >= 75.0 and perimeter < 55.0:
+        archetype = "rim_protector"
+    elif perimeter >= 65.0 and pos in ("PG", "SG") and pct_stl >= 0.22:
+        archetype = "on_ball_pest"
+    elif perimeter >= 65.0 and pos in ("SG", "SF") and interior < 55.0:
+        archetype = "wing_stopper"
+    elif interior >= 50.0 and pos in ("C", "PF"):
+        archetype = "size_defender"
+    elif interior < 50.0 and perimeter < 50.0:
+        archetype = "non_defender"
+    else:
+        archetype = "generalist"
+
+    return interior, perimeter, archetype
+
+
+def _defensive_ovr_bump(
+    interior_score: float,
+    perimeter_score: float,
+) -> int:
+    """
+    OVR bump derived from the split interior/perimeter defensive scores.
+
+    Bump tiers (based on the dominant score):
+      ≥78 → +6   (elite single-dimension defender)
+      62-77 → +4
+      50-61 → +2
+      <50   →  0
+
+    +1 stack when interior ≥ 60 AND perimeter ≥ 45 (genuine two-way impact).
+    Hard cap: +7.
+
+    Replaces the old per-game BPG/SPG/DREB thresholds that treated all defense
+    as one bucket and over-rewarded block-only or board-only profiles.
+    """
+    dominant = max(interior_score, perimeter_score)
+    if dominant >= 78.0:
+        bump = 6
+    elif dominant >= 62.0:
+        bump = 4
+    elif dominant >= 50.0:
+        bump = 2
+    else:
+        bump = 0
+
+    # Two-way stack: rare — requires meaningful contribution on both ends.
+    if interior_score >= 60.0 and perimeter_score >= 45.0:
+        bump = min(7, bump + 1)
+
+    return bump
+
+
+def _defensive_ovr_bump_fallback(defense_attribute: int) -> int:
+    """
+    Fallback bump when no advanced/usage cache entry exists for a player.
+    Uses the player's already-computed `defense` attribute (0-99) as a proxy.
+    Mirrors the old Path-B attr-fallback logic: ≥85 → +3, ≥75 → +1.
+    """
+    if defense_attribute >= 85:
+        return 3
+    if defense_attribute >= 75:
+        return 1
+    return 0
+
+
+def _stat_to_score(val: float, breakpoints: list[tuple[float, int]]) -> int:
+    """Return the score for the highest threshold the value clears."""
+    score = 0
+    for threshold, pts in breakpoints:
+        if val >= threshold:
+            score = pts
+    return score
+
+
+def _composite_from_row(row: dict) -> float:
+    """
+    Compute composite raw score from per-game stats. Returns value used by _overall_from_raw_sum.
+    Accepts optional DEF_RTG (defensive rating); lower = better defense, ~112-115 is league avg.
+    """
+    pts  = float(row.get("PTS", 0) or 0)
+    reb  = float(row.get("REB", 0) or 0)
+    ast  = float(row.get("AST", 0) or 0)
+    stl  = float(row.get("STL", 0) or 0)
+    blk  = float(row.get("BLK", 0) or 0)
+    fg3  = float(row.get("FG3_PCT", 0) or 0)
+    fga3 = float(row.get("FG3A", 0) or 0)
+    usg  = float(row.get("USG_PCT", 0) or 0)
+
+    # True Shooting % = PTS / (2 * (FGA + 0.44 * FTA))
+    fga = float(row.get("FGA", 0) or 0)
+    fta = float(row.get("FTA", 0) or 0)
+    denom = 2 * (fga + 0.44 * fta)
+    ts = pts / denom if denom > 0 else 0.0
+
+    # Defensive rating: 0-8 pts; league avg ~112-115, elite ~104-108.
+    # Only applied when DEF_RTG is present (advanced stats cached).
+    def_rtg = row.get("DEF_RTG")
+    if def_rtg is not None:
+        def_score = max(0, min(8, int(_DEF_RTG_BASELINE - float(def_rtg))))
+    else:
+        def_score = 0
+
+    raw_sum = (
+        _stat_to_score(pts,  _PPG_BREAKS)
+        + _stat_to_score(reb,  _RPG_BREAKS)
+        + _stat_to_score(ast,  _APG_BREAKS)
+        + _stat_to_score(stl,  _SPG_BREAKS)
+        + _stat_to_score(blk,  _BPG_BREAKS)
+        + _stat_to_score(fg3,  _FG3_BREAKS)
+        + _stat_to_score(fga3, _FGA3_BREAKS)
+        + _stat_to_score(usg,  _USG_BREAKS)
+        + _stat_to_score(ts,   _EFF_BREAKS)
+        + def_score
+    )
+    return float(raw_sum)
+
+
+def _overall_from_raw_sum(raw_sum: float, noise: int = 0) -> int:
+    """Scale raw_sum to overall (50–99), optionally add noise, then clamp."""
+    overall = 55 + int(raw_sum * 44 / _RAW_SUM_MAX)
+    return max(50, min(99, overall + noise))
+
+
+# ---------------------------------------------------------------------------
+# Draft-class OVR for rookies
+# ---------------------------------------------------------------------------
+
+def _overall_for_draft_pick(round_num: int, pick: int) -> int:
+    """
+    Estimate rookie OVR from draft round + pick number using absolute ranges.
+    Adds small noise ±3 to avoid identical ratings for adjacent picks.
+    """
+    noise = random.randint(-3, 3)
+    if round_num == 1:
+        if pick <= 3:
+            base = random.randint(82, 86)
+        elif pick <= 10:
+            base = random.randint(76, 82)
+        elif pick <= 20:
+            base = random.randint(71, 77)
+        else:
+            base = random.randint(68, 74)
+    else:
+        # Second round: picks 31-45 and beyond
+        if pick <= 45:
+            base = random.randint(63, 69)
+        else:
+            base = random.randint(60, 66)
+    return max(50, min(99, base + noise))
+
+
 def _overall_for_exp(exp: int) -> int:
-    """Fallback: estimate overall from years of experience when stats are unavailable."""
+    """
+    Fallback OVR estimate from years of experience when stats and draft info
+    are both unavailable. Only reached for undrafted players or data gaps.
+    """
     if exp >= 8:
         base = random.randint(82, 95)
     elif exp >= 3:
@@ -82,15 +343,22 @@ def _overall_for_exp(exp: int) -> int:
     elif exp >= 1:
         base = random.randint(62, 74)
     else:
-        base = random.randint(58, 70)
+        # Undrafted rookie — no draft position available
+        base = random.randint(60, 65)
     noise = random.randint(-5, 5)
     return max(50, min(99, base + noise))
 
 
+# ---------------------------------------------------------------------------
+# Stats fetching
+# ---------------------------------------------------------------------------
+
 def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
     """
     Fetch per-game stats for all players in `season` from LeagueDashPlayerStats.
-    Returns a dict keyed by PLAYER_ID (int).
+    Returns a dict keyed by PLAYER_ID (int) containing raw per-game stat columns
+    plus 'gp'. The composite/OVR calculation is deferred to _overall_from_stats
+    so that multi-season peak logic can compare apples-to-apples raw_sums.
     Raises on network or API failure — caller wraps in try/except.
     """
     from nba_api.stats.endpoints import leaguedashplayerstats
@@ -98,60 +366,169 @@ def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
     season_str = f"{season}-{str(season + 1)[2:]}"
     stats = leaguedashplayerstats.LeagueDashPlayerStats(
         season=season_str,
-        per_mode_simple="PerGame",
-        headers={"User-Agent": "Mozilla/5.0"},
+        per_mode_detailed="PerGame",
+        headers=_NBA_HEADERS,
+        timeout=60,
     )
     df = stats.get_data_frames()[0]
-
-    max_pts = df["PTS"].max() or 1.0
-    max_reb = df["REB"].max() or 1.0
-    max_ast = df["AST"].max() or 1.0
-    max_stl = df["STL"].max() or 1.0
-    max_blk = df["BLK"].max() or 1.0
-    max_usg = df["USG_PCT"].max() or 1.0
-    max_min = df["MIN"].max() or 1.0
 
     lookup: dict[int, dict] = {}
     for _, row in df.iterrows():
         pid = int(row["PLAYER_ID"])
         gp = int(row.get("GP", 0) or 0)
-
-        pts_n  = float(row["PTS"])    / max_pts
-        reb_n  = float(row["REB"])    / max_reb
-        ast_n  = float(row["AST"])    / max_ast
-        stl_n  = float(row["STL"])    / max_stl
-        blk_n  = float(row["BLK"])    / max_blk
-        fg_n   = float(row["FG_PCT"] or 0)
-        usg_n  = float(row["USG_PCT"] or 0) / max_usg
-        min_n  = float(row["MIN"])    / max_min
-
-        composite = (
-            pts_n  * 0.35 +
-            reb_n  * 0.15 +
-            ast_n  * 0.15 +
-            stl_n  * 0.07 +
-            blk_n  * 0.05 +
-            fg_n   * 0.10 +
-            usg_n  * 0.08 +
-            min_n  * 0.05
-        )
-        overall = int(round(50 + composite * 49))
-        overall = max(50, min(99, overall))
-
-        lookup[pid] = {"overall": overall, "gp": gp}
-
+        lookup[pid] = {
+            "gp": gp,
+            "PTS":    float(row.get("PTS", 0) or 0),
+            "REB":    float(row.get("REB", 0) or 0),
+            "DREB":   float(row.get("DREB", 0) or 0),
+            "AST":    float(row.get("AST", 0) or 0),
+            "STL":    float(row.get("STL", 0) or 0),
+            "BLK":    float(row.get("BLK", 0) or 0),
+            "FG3_PCT":float(row.get("FG3_PCT", 0) or 0),
+            "FG3A":   float(row.get("FG3A", 0) or 0),
+            "USG_PCT":float(row.get("USG_PCT", 0) or 0),
+            "FGA":    float(row.get("FGA", 0) or 0),
+            "FTA":    float(row.get("FTA", 0) or 0),
+        }
     return lookup
 
 
-def _overall_from_stats(player_id: int, stats_lookup: dict[int, dict], exp: int) -> int:
+def _fetch_multi_season_peak(season: int) -> dict[int, dict]:
     """
-    Derive overall from real stats when available and games played >= 10.
-    Falls back to _overall_for_exp when the player is absent or has <10 GP.
+    Fetch per-game stats for `season`, `season-1`, and `season-2`, then return
+    the row with the highest composite raw_sum per player (min 10 GP required).
+
+    Returns the same shape as _fetch_league_stats_sync but only includes the
+    player's best single-season row, so _overall_from_stats correctly reflects
+    peak performance rather than an injury-shortened year.
     """
-    entry = stats_lookup.get(player_id)
-    if entry is None or entry["gp"] < 10:
-        return _overall_for_exp(exp)
-    return entry["overall"]
+    from nba_api.stats.endpoints import leaguedashplayerstats
+
+    seasons_to_try = [season, season - 1, season - 2]
+    # player_id → best raw_sum and corresponding stat row
+    best: dict[int, tuple[float, dict]] = {}
+
+    for yr in seasons_to_try:
+        season_str = f"{yr}-{str(yr + 1)[2:]}"
+        try:
+            print(f"  Fetching stats for {season_str}...")
+            stats = leaguedashplayerstats.LeagueDashPlayerStats(
+                season=season_str,
+                per_mode_detailed="PerGame",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            df = stats.get_data_frames()[0]
+            time.sleep(0.6)  # be polite between calls
+        except Exception as exc:
+            print(f"  [WARN] Could not fetch stats for {season_str}: {exc}")
+            continue
+
+        for _, row in df.iterrows():
+            pid = int(row["PLAYER_ID"])
+            gp = int(row.get("GP", 0) or 0)
+            if gp < 10:
+                continue
+
+            stat_row = {
+                "gp": gp,
+                "PTS":    float(row.get("PTS", 0) or 0),
+                "REB":    float(row.get("REB", 0) or 0),
+                "DREB":   float(row.get("DREB", 0) or 0),
+                "AST":    float(row.get("AST", 0) or 0),
+                "STL":    float(row.get("STL", 0) or 0),
+                "BLK":    float(row.get("BLK", 0) or 0),
+                "FG3_PCT":float(row.get("FG3_PCT", 0) or 0),
+                "FG3A":   float(row.get("FG3A", 0) or 0),
+                "USG_PCT":float(row.get("USG_PCT", 0) or 0),
+                "FGA":    float(row.get("FGA", 0) or 0),
+                "FTA":    float(row.get("FTA", 0) or 0),
+            }
+            raw_sum = _composite_from_row(stat_row)
+
+            if pid not in best or raw_sum > best[pid][0]:
+                best[pid] = (raw_sum, stat_row)
+
+    return {pid: row for pid, (_, row) in best.items()}
+
+
+def _fetch_draft_class_sync(season: int) -> dict[int, dict]:
+    """
+    Fetch the draft class for `season` using DraftHistory.
+    Returns {player_id: {"round": int, "pick": int}} for all drafted players.
+    Raises on network or API failure — caller wraps in try/except.
+    """
+    from nba_api.stats.endpoints.drafthistory import DraftHistory
+
+    df = DraftHistory(
+        league_id="00",
+        season_year_nullable=str(season),
+    ).get_data_frames()[0]
+
+    result: dict[int, dict] = {}
+    for _, row in df.iterrows():
+        pid = int(row["PERSON_ID"])
+        result[pid] = {
+            "round": int(row["ROUND_NUMBER"]),
+            "pick":  int(row["ROUND_PICK"]),
+        }
+    return result
+
+
+def _overall_from_stats(
+    player_id: int,
+    peak_lookup: dict[int, dict],
+    exp: int,
+    draft_info: Optional[dict] = None,
+    position: str = "SF",
+) -> int:
+    """
+    Derive overall from multi-season peak stats when available (min 10 GP).
+    Applies the split interior/perimeter defensive premium on top of the raw
+    composite. When PCT_BLK/PCT_STL/DREB_PCT are present in the stat row
+    (populated by build_stats_ratings from BDL advanced+usage caches), the full
+    two-score formula is used. When absent (live nba_api fallback path), falls
+    back to the attribute-proxy bump.
+    For rookies (exp == 0), falls back to draft position OVR if draft_info is
+    provided, then to _overall_for_exp for undrafted / data-gap cases.
+    """
+    entry = peak_lookup.get(player_id)
+    if entry is not None and entry.get("gp", 0) >= 10:
+        raw_sum = _composite_from_row(entry)
+        base_ovr = _overall_from_raw_sum(raw_sum)
+
+        # Use rate-based scores when BDL advanced/usage data is available.
+        pct_blk  = entry.get("PCT_BLK")
+        pct_stl  = entry.get("PCT_STL")
+        dreb_pct = entry.get("DREB_PCT")
+        def_rtg  = entry.get("DEF_RTG")
+
+        if pct_blk is not None and pct_stl is not None and dreb_pct is not None:
+            interior, perimeter, _arch = _compute_defensive_scores(
+                pct_blk=pct_blk,
+                pct_stl=pct_stl,
+                dreb_pct=dreb_pct,
+                def_rating=def_rtg,
+                position=position,
+            )
+            bump = _defensive_ovr_bump(interior, perimeter)
+        else:
+            # Live nba_api path: no rate stats — fall back to attr proxy.
+            bump = _defensive_ovr_bump_fallback(
+                defense_attribute=_overall_from_raw_sum(raw_sum)
+            )
+
+        # Cap at 96: reserves 97-99 for a future explicit all-time tier
+        # multiplier.  The bump itself is uncapped; the ceiling applies only
+        # to the final derived OVR.
+        return min(96, base_ovr + bump)
+
+    # No qualifying stats found — use draft position for rookies.
+    if exp == 0 and draft_info is not None:
+        pick_info = draft_info.get(player_id)
+        if pick_info is not None:
+            return _overall_for_draft_pick(pick_info["round"], pick_info["pick"])
+
+    return _overall_for_exp(exp)
 
 
 def _clamp(val: int, lo: int, hi: int) -> int:
@@ -198,13 +575,29 @@ def _market_pref() -> str:
 
 
 def _contract_salary(overall: int, exp: int, salary_cap: int) -> tuple[int, str, int]:
-    max_salary = salary_cap // 4
+    """Return (salary, contract_type, years) scaled to real-NBA proportions.
+
+    Piecewise tiers (anchored to $140M cap):
+        OVR 90+  : 25% + (ovr-90)*1.5% of cap  → ~35–54M range
+        OVR 80-89: 8%  + (ovr-80)*1.7% of cap  → ~11–30M range
+        OVR 68-79: 2%  + (ovr-68)*0.5% of cap  → ~3–10M range
+        OVR <68  : league minimum ($1.1M)
+
+    Hard ceiling: 40% of salary_cap.
+    """
     min_salary = 1_100_000
+    if overall >= 90:
+        raw = salary_cap * (0.25 + (overall - 90) * 0.015)
+    elif overall >= 80:
+        raw = salary_cap * (0.08 + (overall - 80) * 0.017)
+    elif overall >= 68:
+        raw = salary_cap * (0.02 + (overall - 68) * 0.005)
+    else:
+        raw = min_salary
 
-    raw = (overall - 60) * 800_000
-    salary = _clamp(raw, min_salary, max_salary)
+    salary = _clamp(int(raw), min_salary, int(salary_cap * 0.40))
 
-    if salary >= salary_cap * 0.25:
+    if salary >= int(salary_cap * 0.25):
         ctype = "max"
     elif salary <= min_salary:
         ctype = "minimum"
@@ -316,8 +709,8 @@ async def _insert_contract(
         """
         INSERT INTO contracts (
             league_id, player_id, team_id, salary, years_remaining,
-            total_years, contract_type, signed_in_season, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+            total_years, contract_type, signed_in_season, is_active, signed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW())
         """,
         league_id, player_id, team_id, salary, years, years, contract_type, current_season,
     )
@@ -371,6 +764,21 @@ async def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print actions without writing to DB")
     args = parser.parse_args()
 
+    # Validate that we have data for this season before hitting the DB.
+    _data_root = Path(__file__).parent.parent / "data"
+    ratings_file = _data_root / "stats_ratings" / f"{args.season}.json"
+    cache_ok = all(
+        (_data_root / "bdl_cache" / f"season_{s}_{t}.json").exists()
+        for s in [args.season, args.season - 1, args.season - 2]
+        for t in ("base", "usage")
+    )
+    if not ratings_file.exists() and not cache_ok:
+        raise SystemExit(
+            f"No stats data for season {args.season}. "
+            "Run scripts/fetch_bdl_cache.py then scripts/build_stats_ratings.py --season "
+            f"{args.season} first."
+        )
+
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         raise SystemExit("DATABASE_URL environment variable is not set.")
@@ -391,14 +799,27 @@ async def main() -> None:
         nba_teams_list = nba_teams_static.get_teams()
         abbrev_to_id: dict[str, int] = {t["abbreviation"]: t["id"] for t in nba_teams_list}
 
-        # Fetch per-game stats for all players in one call before the team loop.
-        stats_lookup: dict[int, dict] = {}
+        # Pre-built stats ratings file is the primary OVR source (keyed by nba player_id).
+        # If absent, fall back to live multi-season API fetch.
+        prebuilt: dict[int, int] = _load_stats_ratings(args.season)
+        peak_lookup: dict[int, dict] = {}
+        if not prebuilt:
+            try:
+                print(f"Fetching multi-season peak stats (seasons {args.season-2}–{args.season})...")
+                peak_lookup = _fetch_multi_season_peak(args.season)
+                print(f"  Peak stats resolved for {len(peak_lookup)} players.")
+            except Exception as exc:
+                print(f"[WARN] Multi-season stats fetch failed, using exp fallback: {exc}")
+
+        # Fetch draft history for the target season so rookies get pick-based OVR.
+        draft_info: dict[int, dict] = {}
         try:
-            print(f"Fetching league-wide stats for {args.season}-{str(args.season + 1)[2:]}...")
-            stats_lookup = _fetch_league_stats_sync(args.season)
-            print(f"  Loaded stats for {len(stats_lookup)} players.")
+            print(f"Fetching draft class for {args.season}...")
+            draft_info = _fetch_draft_class_sync(args.season)
+            print(f"  Draft info loaded for {len(draft_info)} players.")
+            time.sleep(0.6)
         except Exception as exc:
-            print(f"[WARN] LeagueDashPlayerStats failed, using exp fallback: {exc}")
+            print(f"[WARN] DraftHistory fetch failed, rookies will use exp fallback: {exc}")
 
         for code in NBA_TEAM_CODES:
             nba_team_id = abbrev_to_id.get(code)
@@ -435,7 +856,15 @@ async def main() -> None:
 
                     position = _normalize_position(str(row.get("POSITION", "")))
                     player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
-                    overall = _overall_from_stats(player_id_raw, stats_lookup, exp)
+
+                    if player_id_raw in prebuilt:
+                        overall = prebuilt[player_id_raw]
+                    else:
+                        overall = _overall_from_stats(
+                            player_id_raw, peak_lookup, exp,
+                            draft_info=draft_info if is_rookie else None,
+                            position=position,
+                        )
                     attrs = _generate_attributes(overall, position)
                     hidden = _generate_hidden(overall, exp)
 
@@ -460,8 +889,12 @@ async def main() -> None:
                     }
 
                     if is_rookie:
-                        # Use pick 15 salary as default when actual pick is unknown.
-                        salary = rookie_scale.get(15, 2_500_000)
+                        # Use the actual draft pick salary when available; fall
+                        # back to pick 15 if the rookie wasn't in the draft table
+                        # (undrafted players on rookie minimums).
+                        pick_info = draft_info.get(player_id_raw)
+                        pick_num = pick_info["pick"] if pick_info else 15
+                        salary = rookie_scale.get(pick_num, rookie_scale.get(15, 2_500_000))
                         contract_type = "rookie_scale"
                         years = 4
                     else:

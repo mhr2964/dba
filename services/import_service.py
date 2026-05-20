@@ -210,6 +210,21 @@ def _overall_from_stats(player_id: int, stats_lookup: dict[int, dict], exp: int)
 _2K_RATINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "seeds", "nba_2k_ratings.json")
 _2k_ratings_cache: dict | None = None
 
+_STATS_RATINGS_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "stats_ratings")
+_stats_ratings_cache: dict[int, dict] = {}
+
+
+def _load_stats_ratings_for_season(season: int) -> dict[str, int]:
+    """Load pre-built stats_ratings/{season}.json keyed by string player_id → overall."""
+    if season not in _stats_ratings_cache:
+        path = os.path.normpath(os.path.join(_STATS_RATINGS_DIR, f"{season}.json"))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                _stats_ratings_cache[season] = _json.load(f)
+        except Exception:
+            _stats_ratings_cache[season] = {}
+    return _stats_ratings_cache[season]
+
 
 def _load_2k_ratings() -> dict:
     global _2k_ratings_cache
@@ -296,11 +311,31 @@ def _market_pref() -> str:
 
 
 def _contract_salary(overall: int, salary_cap: int) -> tuple[int, str, int]:
-    raw = (overall - 60) * 800_000
-    salary = _clamp(raw, 1_100_000, salary_cap // 4)
-    if salary >= salary_cap * 0.25:
+    """Return (salary, contract_type, years) scaled to real-NBA proportions.
+
+    Piecewise tiers (anchored to $140M cap):
+        OVR 90+  : 25% + (ovr-90)*1.5% of cap  → ~35–54M range
+        OVR 80-89: 8%  + (ovr-80)*1.7% of cap  → ~11–30M range
+        OVR 68-79: 2%  + (ovr-68)*0.5% of cap  → ~3–10M range
+        OVR <68  : league minimum ($1.1M)
+
+    Hard ceiling: 40% of salary_cap.
+    """
+    min_salary = 1_100_000
+    if overall >= 90:
+        raw = salary_cap * (0.25 + (overall - 90) * 0.015)
+    elif overall >= 80:
+        raw = salary_cap * (0.08 + (overall - 80) * 0.017)
+    elif overall >= 68:
+        raw = salary_cap * (0.02 + (overall - 68) * 0.005)
+    else:
+        raw = min_salary
+
+    salary = _clamp(int(raw), min_salary, int(salary_cap * 0.40))
+
+    if salary >= int(salary_cap * 0.25):
         ctype = "max"
-    elif salary <= 1_100_000:
+    elif salary <= min_salary:
         ctype = "minimum"
     else:
         ctype = "standard"
@@ -395,8 +430,8 @@ async def _insert_contract_row(
         """
         INSERT INTO contracts (
             league_id, player_id, team_id, salary, years_remaining,
-            total_years, contract_type, signed_in_season, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+            total_years, contract_type, signed_in_season, is_active, signed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NULL)
         """,
         league_id, player_id, team_id, salary, years, years, contract_type, current_season,
     )
@@ -408,8 +443,52 @@ async def _generate_lineup(
     team_id: int,
     player_ids_by_overall: list[tuple[int, int]],
 ) -> None:
-    for i, (pid, _ovr) in enumerate(player_ids_by_overall[:15]):
-        slot = i + 1
+    if not player_ids_by_overall:
+        return
+
+    # Fetch positions for all players on this team.
+    pids = [pid for pid, _ in player_ids_by_overall]
+    rows = await pool.fetch(
+        "SELECT id, position FROM players WHERE id = ANY($1::int[])", pids
+    )
+    pos_map = {r["id"]: r["position"] for r in rows}
+
+    # Fill exactly one starter per position slot, in order PG → SG → SF → PF → C.
+    # Within each slot, pick the highest-OVR eligible player not already used.
+    # If no player fits the required position, fall back to highest-OVR remaining.
+    starter_positions = ["PG", "SG", "SF", "PF", "C"]
+    starters: list[int] = []
+    used_ids: set[int] = set()
+
+    all_players = [(pid, ovr) for pid, ovr in player_ids_by_overall]
+
+    for pos in starter_positions:
+        # Best player at the required position, by OVR descending.
+        best = max(
+            ((pid, ovr) for pid, ovr in all_players if pid not in used_ids and pos_map.get(pid) == pos),
+            key=lambda x: x[1],
+            default=None,
+        )
+        if best is None:
+            # No player at this position — use best overall remaining.
+            best = max(
+                ((pid, ovr) for pid, ovr in all_players if pid not in used_ids),
+                key=lambda x: x[1],
+                default=None,
+            )
+        if best is not None:
+            starters.append(best[0])
+            used_ids.add(best[0])
+
+    # Bench: remaining players in OVR order, up to 10 bench slots.
+    bench = [pid for pid, _ in player_ids_by_overall if pid not in used_ids][:10]
+
+    all_slots = (
+        [(pid, True, slot + 1) for slot, pid in enumerate(starters)]
+        + [(pid, False, slot + 6) for slot, pid in enumerate(bench)]
+    )
+
+    for pid, is_starter, slot in all_slots:
         await pool.execute(
             """
             INSERT INTO lineups (league_id, team_id, is_starter, slot, player_id)
@@ -418,7 +497,7 @@ async def _generate_lineup(
                 SET player_id = EXCLUDED.player_id,
                     is_starter = EXCLUDED.is_starter
             """,
-            league_id, team_id, slot <= 5, slot, pid,
+            league_id, team_id, is_starter, slot, pid,
         )
 
 
@@ -494,6 +573,7 @@ async def import_players_from_api(
         news_channel = guild.get_channel(news_channel_id)
 
     teams_imported = 0
+    teams_skipped = 0
     players_imported = 0
     errors: list[str] = []
 
@@ -528,6 +608,7 @@ async def import_players_from_api(
 
         if await _team_has_players(pool, league_id, team_id):
             log.info(f"import_players: {code} already has players, skipping")
+            teams_skipped += 1
             continue
 
         try:
@@ -553,11 +634,19 @@ async def import_players_from_api(
 
                 position = _normalize_position(str(row.get("POSITION", "")))
                 full_name = str(row.get("PLAYER", ""))
-                overall = _overall_from_2k(full_name, season, exp)
+                player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
+
+                # stats_ratings/{season}.json is keyed by nba_api player_id — most accurate source.
+                # 2K ratings cover 2015-2020; exp-band is the last resort.
+                ratings_file = _load_stats_ratings_for_season(season)
+                if str(player_id_raw) in ratings_file:
+                    overall = int(ratings_file[str(player_id_raw)])
+                else:
+                    overall = _overall_from_2k(full_name, season, exp)
+
                 attrs = _generate_attributes(overall, position)
                 hidden = _generate_hidden(overall, exp)
 
-                player_id_raw = int(row.get("PLAYER_ID", 0) or 0)
                 tendencies = _derive_tendencies(player_id_raw, position, stats_lookup)
 
                 # Set clutch_rating based on overall tier (overrides the 50 placeholder).
@@ -624,6 +713,7 @@ async def import_players_from_api(
     )
     return {
         "teams_imported": teams_imported,
+        "teams_skipped": teams_skipped,
         "players_imported": players_imported,
         "errors": errors,
     }
