@@ -87,7 +87,9 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
 
         pool = await get_pool()
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-        if news_channel_id:
+        # Skip the news post if the user already saw it (ran the command in that
+        # channel) — the embed reply is enough on its own.
+        if news_channel_id and interaction.channel_id != news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
             if channel:
                 await channel.send(

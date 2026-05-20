@@ -84,6 +84,52 @@ async def safe_respond(
         log.warning(f"safe_respond failed for interaction {interaction.id} ({exc}) — continuing")
 
 
+async def post_to_channel_or_respond(
+    interaction: discord.Interaction,
+    target_channel_id: int | None,
+    *,
+    embed: discord.Embed | None = None,
+    content: str | None = None,
+    ephemeral_ack: str = "Posted.",
+) -> None:
+    """Post to a dedicated channel, deduping if the user is already there.
+
+    - target_channel_id set, user IS in that channel: channel.send once, then
+      ack ephemerally so the user knows the command ran without seeing the
+      message twice.
+    - target_channel_id set, user is ELSEWHERE: post to target AND respond
+      visibly (they can't see the target channel from here).
+    - No target channel: respond visibly, same as before.
+    """
+    channel = interaction.guild.get_channel(target_channel_id) if target_channel_id else None
+
+    if channel is None:
+        # No target channel — respond visibly to the user.
+        kwargs: dict = {}
+        if embed is not None:
+            kwargs["embed"] = embed
+        if content is not None:
+            kwargs["content"] = content
+        await safe_respond(interaction, **kwargs)
+        return
+
+    # Post to the target channel unconditionally.
+    post_kwargs: dict = {}
+    if embed is not None:
+        post_kwargs["embed"] = embed
+    if content is not None:
+        post_kwargs["content"] = content
+    await channel.send(**post_kwargs)
+
+    if interaction.channel_id == target_channel_id:
+        # User is already in the target channel — they see the channel.send.
+        # Ack ephemerally so they know the command completed without duplicating.
+        await safe_respond(interaction, content=ephemeral_ack, ephemeral=True)
+    else:
+        # User is elsewhere — show them the same content in their channel too.
+        await safe_respond(interaction, **post_kwargs)
+
+
 class DBAError(Exception):
     """Base domain exception — caught by the error handler and shown to the user."""
     def __init__(self, message: str):

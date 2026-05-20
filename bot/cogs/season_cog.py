@@ -11,7 +11,7 @@ from bot.embeds import season_embeds
 from bot.embeds import sim_embeds
 from bot.embeds.sim_embeds import box_score_summary_embed, box_score_team_embed
 from bot.ui.box_score_views import BoxScoreView
-from core.errors import safe_defer, safe_respond
+from core.errors import post_to_channel_or_respond, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, team_repo
@@ -78,12 +78,12 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         embed = season_embeds.season_started_embed(target_league, game_count, first_games)
 
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-        if news_channel_id:
-            channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
-                await channel.send(embed=embed)
-
-        await safe_respond(interaction, embed=embed)
+        await post_to_channel_or_respond(
+            interaction,
+            news_channel_id,
+            embed=embed,
+            ephemeral_ack="Season started. Posted to #league-news.",
+        )
         log.info(f"Season {season} started for league {league.id} by {interaction.user.id}")
 
     @app_commands.command(name="import-players", description="Commissioner: import NBA rosters from nba_api")

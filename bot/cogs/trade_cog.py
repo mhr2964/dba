@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from bot.embeds import trade_embeds
 from bot.embeds import intel_embeds
-from core.errors import DBAError, safe_defer, safe_respond
+from core.errors import DBAError, post_to_channel_or_respond, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
@@ -515,13 +515,14 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         trade = await trade_service.veto(pool, trade_id, interaction.user.id, reason)
         result_embed = trade_embeds.trade_result(trade, "vetoed")
-        await safe_respond(interaction, embed=result_embed)
 
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
-        if transactions_channel_id:
-            tx_channel = interaction.guild.get_channel(transactions_channel_id)
-            if tx_channel:
-                await tx_channel.send(embed=result_embed)
+        await post_to_channel_or_respond(
+            interaction,
+            transactions_channel_id,
+            embed=result_embed,
+            ephemeral_ack="Trade vetoed. Posted to #transactions.",
+        )
 
     @app_commands.command(name="pending", description="Commissioner: view trades awaiting approval")
     async def pending(self, interaction: discord.Interaction) -> None:
@@ -959,13 +960,29 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             "years_remaining": _contract.years_remaining if _contract else None,
         }
         embed = trade_embeds.trade_block_added_embed(player_dict, user_team, asking_price, note)
-        await safe_respond(interaction, content=f"Added **{found_player.full_name}** to your trade block.", embed=embed)
 
         block_channel_id = await league_repo.get_channel(pool, league.id, "trade-block")
-        if block_channel_id:
+        if block_channel_id and interaction.channel_id == block_channel_id:
+            # User is in #trade-block — channel.send is visible; ack ephemerally.
             ch = interaction.guild.get_channel(block_channel_id)
             if ch:
                 await ch.send(embed=embed)
+            await safe_respond(
+                interaction,
+                content=f"Added **{found_player.full_name}** to your trade block. Posted to #trade-block.",
+                ephemeral=True,
+            )
+        else:
+            # User is elsewhere — respond visibly, then post to the block channel too.
+            await safe_respond(
+                interaction,
+                content=f"Added **{found_player.full_name}** to your trade block.",
+                embed=embed,
+            )
+            if block_channel_id:
+                ch = interaction.guild.get_channel(block_channel_id)
+                if ch:
+                    await ch.send(embed=embed)
 
     @app_commands.command(name="remove", description="Remove a player from your trade block")
     @app_commands.describe(player="Player name to remove from your trade block")
