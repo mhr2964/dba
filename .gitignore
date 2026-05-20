@@ -46,3 +46,4 @@ data/tendency_cache/
 
 # Nested checkout (separate working copy, has its own .git)
 /dba/
+.restart_marker.json

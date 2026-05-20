@@ -1,3 +1,8 @@
+import json
+from datetime import datetime
+from pathlib import Path
+
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -132,6 +137,39 @@ class DBABot(commands.Bot):
         log.info(f"Tree commands: total={len(all_cmds)}, unique={len(name_counts)}, duplicates={dups}")
         log.info(f"Tree class: {type(self.tree).__name__} (expected DedupeTree)")
 
+    async def _process_restart_marker(self) -> None:
+        marker_path = Path(".restart_marker.json")
+        if not marker_path.exists():
+            return
+        try:
+            data = json.loads(marker_path.read_text())
+            saved_at = datetime.fromisoformat(data["saved_at"])
+            age_seconds = (datetime.utcnow() - saved_at).total_seconds()
+            if age_seconds > 600:
+                log.warning(f"restart marker too old ({age_seconds:.0f}s) — skipping")
+                return
+            url = (
+                f"https://discord.com/api/v10/webhooks/"
+                f"{data['application_id']}/{data['interaction_token']}/messages/@original"
+            )
+            payload = {
+                "content": f"Restart complete — back online in {age_seconds:.1f}s.",
+                "flags": 64,  # ephemeral
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(url, json=payload) as resp:
+                    if resp.status not in (200, 204):
+                        body = await resp.text()
+                        log.warning(
+                            f"restart marker edit failed: {resp.status} {body[:200]}"
+                        )
+                    else:
+                        log.info(f"restart marker edit OK (took {age_seconds:.1f}s total)")
+        except Exception as exc:
+            log.warning(f"restart marker processing failed: {exc}", exc_info=True)
+        finally:
+            marker_path.unlink(missing_ok=True)
+
     async def on_ready(self) -> None:
         log.info(f"DBA online as {self.user} ({self.user.id}) — on_ready FIRED (shard={self.shard_id}, latency={self.latency:.3f}s, ws_id={id(self.ws)})")
         await self.change_presence(activity=discord.Game(name="Basketball"))
@@ -142,6 +180,7 @@ class DBABot(commands.Bot):
                 log.info(f"Synced commands to guild {guild.id}")
             except Exception as e:
                 log.warning(f"Failed to sync commands to guild {guild.id}: {e}")
+        await self._process_restart_marker()
 
 
     async def close(self) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -790,11 +791,12 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         # this (is_owner, DB lookups) eats into that budget.
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.HTTPException:
+            log.info(f"restart: defer OK for interaction {interaction.id}")
+        except discord.HTTPException as exc:
             # Interaction already expired before we could ack. Discord
             # will show "Application did not respond" — nothing we can
             # do; restart still proceeds.
-            pass
+            log.warning(f"restart: defer FAILED for interaction {interaction.id} ({exc})")
 
         # Permission check (after defer so it doesn't eat ack budget).
         bot = interaction.client
@@ -806,8 +808,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     await interaction.edit_original_response(
                         content="Only the bot owner or league commissioner can restart the bot."
                     )
-                except discord.HTTPException:
-                    pass
+                    log.info(f"restart: permission-denied edit OK for interaction {interaction.id}")
+                except discord.HTTPException as exc:
+                    log.warning(f"restart: permission-denied edit FAILED for interaction {interaction.id} ({exc})")
                 return
 
         # Replace the "DBA is thinking..." placeholder with the restart
@@ -817,8 +820,23 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             await interaction.edit_original_response(
                 content="Restarting now — back in ~5 seconds."
             )
-        except discord.HTTPException:
-            pass
+            log.info(f"restart: restarting-now edit OK for interaction {interaction.id}")
+        except discord.HTTPException as exc:
+            log.warning(f"restart: restarting-now edit FAILED for interaction {interaction.id} ({exc})")
+
+        try:
+            marker = {
+                "interaction_id": interaction.id,
+                "interaction_token": interaction.token,
+                "application_id": interaction.application_id,
+                "user_id": interaction.user.id,
+                "channel_id": interaction.channel_id,
+                "saved_at": datetime.utcnow().isoformat(),
+            }
+            Path(".restart_marker.json").write_text(json.dumps(marker))
+            log.info(f"restart: marker written for interaction {interaction.id}")
+        except Exception as exc:
+            log.warning(f"restart: failed to write marker ({exc})")
 
         log.warning(
             f"Bot restart requested by {interaction.user} ({interaction.user.id})"
