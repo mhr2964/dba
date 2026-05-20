@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -807,43 +805,18 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             f"Bot restart requested by {interaction.user} ({interaction.user.id})"
         )
 
-        main_py = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "main.py")
-        )
-        workdir = os.path.dirname(main_py)
-
-        try:
-            if sys.platform == "win32":
-                # `cmd /c start "" python main.py` is the reliable Windows
-                # detach pattern. CREATE_NEW_CONSOLE via subprocess.Popen has
-                # been flaky from inside the asyncio event loop in our
-                # environment. The empty "" is the window title that `start`
-                # requires before the program path.
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "", sys.executable, main_py],
-                    cwd=workdir,
-                )
-            else:
-                subprocess.Popen(
-                    [sys.executable, main_py],
-                    cwd=workdir,
-                    start_new_session=True,
-                    close_fds=True,
-                )
-        except Exception as spawn_exc:
-            log.error(f"Failed to spawn replacement bot process: {spawn_exc}", exc_info=True)
-            # Don't close — user gets to keep the running bot rather than
-            # losing it to a half-restart.
-            raise DBAError(
-                f"Could not spawn the replacement bot process: {spawn_exc}. "
-                "Bot is still running; check the host machine."
-            )
-
-        # Give the new process a head start before the lock file disappears.
-        await asyncio.sleep(1.5)
-
-        # Clean shutdown — main.py's finally clause releases the lock.
+        # Exit with code 42 — run.py watchdog sees this and respawns main.py.
+        # All the previous self-spawn approaches (subprocess.Popen with
+        # CREATE_NEW_CONSOLE, cmd /c start, etc.) failed silently from inside
+        # the asyncio loop because the spawned child inherited handles that
+        # got cleaned up when the parent died. The watchdog pattern moves the
+        # respawn responsibility OUT of the dying process.
+        #
+        # If the bot is launched with `python main.py` instead of
+        # `python run.py`, no watchdog is listening — the bot will exit and
+        # stay down. That's a one-time launch-command change for the user.
         await interaction.client.close()
+        os._exit(42)
 
 
 class AdminCog(commands.Cog):
