@@ -8,10 +8,7 @@ services.progression_service.get_pool to return db_pool.
 from __future__ import annotations
 
 import datetime
-import random
 from unittest.mock import patch
-
-import pytest
 
 from services import progression_service
 
@@ -174,7 +171,7 @@ async def test_progression_writes_log(db_pool):
 
     # Young player in growth phase — guaranteed delta > 0 (growth is +1 to +3)
     birth_date = datetime.date(2003, 1, 1)  # age 22
-    player_id = await _insert_test_player(
+    await _insert_test_player(
         db_pool,
         league_id,
         team_id,

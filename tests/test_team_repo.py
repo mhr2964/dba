@@ -7,8 +7,6 @@ team rows have a FK on leagues(id).
 """
 from __future__ import annotations
 
-import pytest
-
 from data.repositories import team_repo
 
 

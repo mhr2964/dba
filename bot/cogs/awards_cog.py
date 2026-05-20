@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import awards_embeds
-from core.errors import DBAError, PermissionError
+from core.errors import DBAError, PermissionError, safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo
@@ -16,7 +16,7 @@ from services import awards_service
 
 log = get_logger(__name__)
 
-_SINGLE_AWARDS = ["mvp", "dpoy", "roy", "6moy"]
+_SINGLE_AWARDS = ["mvp", "dpoy", "roy", "6moy", "finals_mvp"]
 _ALL_AWARD_CHOICES = [
     app_commands.Choice(name="MVP", value="mvp"),
     app_commands.Choice(name="DPOY", value="dpoy"),
@@ -24,6 +24,7 @@ _ALL_AWARD_CHOICES = [
     app_commands.Choice(name="6MOY", value="6moy"),
     app_commands.Choice(name="All-NBA", value="all_nba"),
     app_commands.Choice(name="All-Star", value="all_star"),
+    app_commands.Choice(name="Finals MVP", value="finals_mvp"),
 ]
 
 
@@ -112,7 +113,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         award_type: app_commands.Choice[str],
     ) -> None:
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         pool = await get_pool()
         season = league.current_season
@@ -183,7 +184,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
     @app_commands.command(name="vote", description="Cast your vote for an award")
     @app_commands.describe(
         award_type="Which award to vote for",
-        player_id="Player ID to vote for",
+        player="Player name to vote for (e.g. LeBron James)",
         rank="All-NBA team rank: 1=First, 2=Second, 3=Third (only for All-NBA)",
     )
     @app_commands.choices(award_type=_ALL_AWARD_CHOICES)
@@ -191,13 +192,21 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         self,
         interaction: discord.Interaction,
         award_type: app_commands.Choice[str],
-        player_id: int,
+        player: str,
         rank: Optional[int] = 1,
     ) -> None:
         league = await _require_league(interaction.guild_id)
         team = await _require_team_manager(interaction, league)
 
         pool = await get_pool()
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        if not matches:
+            raise DBAError(f"No player found matching '{player}'.")
+        if len(matches) > 1:
+            names = ", ".join(p.full_name for p in matches)
+            raise DBAError(f"Multiple players match '{player}': {names}. Be more specific.")
+        found_player = matches[0]
+        player_id = found_player.id
         value = award_type.value
 
         # Resolve the actual award_type string for All-NBA (rank determines which).
@@ -234,10 +243,8 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
             rank=rank or 1,
         )
 
-        player = await player_repo.get_by_id(pool, player_id)
-        player_name = player.full_name if player else f"Player #{player_id}"
         await interaction.response.send_message(
-            f"Your vote for **{player_name}** ({award_type.name}) has been recorded.",
+            f"Your vote for **{found_player.full_name}** ({award_type.name}) has been recorded.",
             ephemeral=True,
         )
 
@@ -250,7 +257,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         award_type: app_commands.Choice[str],
     ) -> None:
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         pool = await get_pool()
         value = award_type.value
@@ -421,7 +428,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
     @app_commands.command(name="all-star", description="Open All-Star voting for both conferences (commissioner only)")
     async def all_star(self, interaction: discord.Interaction) -> None:
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         pool = await get_pool()
         east_id, west_id = await awards_service.open_all_star_voting(league.id, league.current_season)

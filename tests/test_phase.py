@@ -91,6 +91,17 @@ def test_is_allowed_returns_false_for_invalid():
     assert is_allowed("sim_rivalry", "SETUP") is False
 
 
+def test_sim_games_allowed_same_phases_as_sim_rivalry():
+    """sim_games is allowed in the same phases as sim_rivalry (REGULAR_SEASON_ACTIVE and REGULAR_SEASON_POSTDEADLINE)."""
+    assert is_allowed("sim_games", "REGULAR_SEASON_ACTIVE") is True
+    assert is_allowed("sim_games", "REGULAR_SEASON_POSTDEADLINE") is True
+
+
+def test_sim_games_blocked_in_setup():
+    """sim_games is NOT allowed in SETUP — regression for the missing key bug."""
+    assert is_allowed("sim_games", "SETUP") is False
+
+
 # ---------------------------------------------------------------------------
 # transitions.allowed_phases_for
 # ---------------------------------------------------------------------------

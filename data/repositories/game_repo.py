@@ -209,7 +209,9 @@ async def mark_simmed(
     away_score: int,
     winner_id: int,
     seed: int,
+    quarters: dict | None = None,
 ) -> None:
+    q = quarters or {}
     await pool.execute(
         """
         UPDATE games
@@ -218,7 +220,17 @@ async def mark_simmed(
             away_score = $3,
             winner_team_id = $4,
             rng_seed = $5,
-            simmed_at = NOW()
+            simmed_at = NOW(),
+            q1_home = $6,
+            q1_away = $7,
+            q2_home = $8,
+            q2_away = $9,
+            q3_home = $10,
+            q3_away = $11,
+            q4_home = $12,
+            q4_away = $13,
+            ot_home = $14,
+            ot_away = $15
         WHERE id = $1
         """,
         game_id,
@@ -226,6 +238,16 @@ async def mark_simmed(
         away_score,
         winner_id,
         seed,
+        q.get("q1_home"),
+        q.get("q1_away"),
+        q.get("q2_home"),
+        q.get("q2_away"),
+        q.get("q3_home"),
+        q.get("q3_away"),
+        q.get("q4_home"),
+        q.get("q4_away"),
+        q.get("ot_home"),
+        q.get("ot_away"),
     )
 
 
@@ -421,9 +443,18 @@ async def update_standings(pool: asyncpg.Pool, league_id: int, season: int, game
 async def get_standings(pool: asyncpg.Pool, league_id: int, season: int) -> List[dict]:
     rows = await pool.fetch(
         """
-        SELECT * FROM standings_cache
-        WHERE league_id = $1 AND season = $2
-        ORDER BY conference ASC, wins DESC, losses ASC
+        SELECT sc.*, t.nba_team_code, t.city, t.name AS team_name,
+               CASE WHEN (sc.wins + sc.losses) > 0
+                    THEN sc.wins::float / (sc.wins + sc.losses)
+                    ELSE 0.0 END AS win_pct
+        FROM standings_cache sc
+        JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id = $1 AND sc.season = $2
+        ORDER BY t.conference ASC,
+                 -- Laplace-smoothed win%: (wins+1)/(wins+losses+2)
+                 -- Prevents a 2-0 team from outranking an 11-1 team at DB sort level.
+                 (sc.wins::float + 1) / (sc.wins + sc.losses + 2) DESC NULLS LAST,
+                 sc.wins DESC
         """,
         league_id,
         season,
@@ -467,6 +498,126 @@ async def reset_ready(pool: asyncpg.Pool, league_id: int) -> None:
     )
 
 
+async def get_game_by_index(
+    pool: asyncpg.Pool,
+    league_id: int,
+    season: int,
+    game_index: int,
+) -> Optional[dict]:
+    """Return game row enriched with home/away team codes and full names."""
+    row = await pool.fetchrow(
+        """
+        SELECT
+            g.id,
+            g.game_index,
+            g.scheduled_date,
+            g.status,
+            g.home_score,
+            g.away_score,
+            g.home_team_id,
+            g.away_team_id,
+            g.q1_home, g.q1_away,
+            g.q2_home, g.q2_away,
+            g.q3_home, g.q3_away,
+            g.q4_home, g.q4_away,
+            g.ot_home, g.ot_away,
+            ht.nba_team_code  AS home_code,
+            ht.city || ' ' || ht.name AS home_full_name,
+            at.nba_team_code  AS away_code,
+            at.city || ' ' || at.name AS away_full_name
+        FROM games g
+        JOIN teams ht ON ht.id = g.home_team_id
+        JOIN teams at ON at.id = g.away_team_id
+        WHERE g.league_id = $1
+          AND g.season = $2
+          AND g.game_index = $3
+        """,
+        league_id,
+        season,
+        game_index,
+    )
+    return dict(row) if row else None
+
+
+async def get_game_by_id(
+    pool: asyncpg.Pool,
+    league_id: int,
+    game_id: int,
+) -> Optional[dict]:
+    """Return game row by primary key, enriched with home/away team codes and full names.
+
+    Used to look up playoff games that are inserted with game_index=0 and are
+    therefore not findable via get_game_by_index.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT
+            g.id,
+            g.game_index,
+            g.scheduled_date,
+            g.status,
+            g.home_score,
+            g.away_score,
+            g.home_team_id,
+            g.away_team_id,
+            g.q1_home, g.q1_away,
+            g.q2_home, g.q2_away,
+            g.q3_home, g.q3_away,
+            g.q4_home, g.q4_away,
+            g.ot_home, g.ot_away,
+            ht.nba_team_code  AS home_code,
+            ht.city || ' ' || ht.name AS home_full_name,
+            at.nba_team_code  AS away_code,
+            at.city || ' ' || at.name AS away_full_name
+        FROM games g
+        JOIN teams ht ON ht.id = g.home_team_id
+        JOIN teams at ON at.id = g.away_team_id
+        WHERE g.id = $1
+          AND g.league_id = $2
+        """,
+        game_id,
+        league_id,
+    )
+    return dict(row) if row else None
+
+
+async def get_box_scores_for_game(
+    pool: asyncpg.Pool,
+    game_id: int,
+) -> list[dict]:
+    """
+    Return all player box score rows for a game (minutes > 0).
+    Ordered starters first (by lineup slot), then bench by points DESC.
+    Each row includes first_name, last_name, started, slot (nullable),
+    and all stat columns from game_box_scores.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT
+            b.*,
+            p.first_name,
+            p.last_name,
+            l.slot
+        FROM game_box_scores b
+        JOIN players p ON p.id = b.player_id
+        LEFT JOIN lineups l
+            ON l.player_id = b.player_id
+           AND l.team_id   = b.team_id
+           AND l.league_id = (
+               SELECT league_id FROM games WHERE id = $1
+           )
+        WHERE b.game_id = $1
+          AND b.minutes > 0
+        ORDER BY
+            b.started DESC,
+            COALESCE(l.slot, 999) ASC,
+            b.points DESC
+        """,
+        game_id,
+    )
+    return [dict(r) for r in rows]
+
+
 async def all_regular_season_games_complete(pool: asyncpg.Pool, league_id: int, season: int) -> bool:
     """Returns True if every regular season game is simmed (none remain scheduled)."""
     remaining = await pool.fetchval(
@@ -477,3 +628,45 @@ async def all_regular_season_games_complete(pool: asyncpg.Pool, league_id: int, 
         season,
     )
     return remaining == 0
+
+
+async def get_total_regular_season_games(pool: asyncpg.Pool, league_id: int, season: int) -> int:
+    """Return the total number of regular season games scheduled for this league/season."""
+    result = await pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM games
+        WHERE league_id = $1 AND season = $2 AND season_type = 'regular'
+        """,
+        league_id,
+        season,
+    )
+    return int(result or 0)
+
+
+async def get_deadline_game_index(pool: asyncpg.Pool, league_id: int, season: int) -> Optional[int]:
+    """
+    Return the game_index that marks the trade deadline (~67% through the season).
+    Uses the median of game_indices above the halfway point to approximate
+    the two-thirds mark without requiring a percentile aggregate extension.
+    """
+    result = await pool.fetchval(
+        """
+        SELECT MIN(game_index)
+        FROM (
+            SELECT game_index
+            FROM games
+            WHERE league_id = $1 AND season = $2 AND season_type = 'regular'
+            ORDER BY game_index
+            OFFSET (
+                SELECT (COUNT(*) * 2 / 3)::int
+                FROM games
+                WHERE league_id = $1 AND season = $2 AND season_type = 'regular'
+            )
+            LIMIT 1
+        ) sub
+        """,
+        league_id,
+        season,
+    )
+    return int(result) if result is not None else None

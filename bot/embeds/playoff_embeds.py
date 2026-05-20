@@ -16,7 +16,7 @@ _ROUND_LABELS: Dict[str, str] = {
     "r2_west": "West Second Round",
     "conference_finals_east": "Eastern Conference Finals",
     "conference_finals_west": "Western Conference Finals",
-    "nba_finals": "NBA Finals",
+    "nba_finals": "DBA Finals",
 }
 
 _ROUND_ORDER = [
@@ -95,7 +95,7 @@ def _render_bracket_text(series_list: List[Series], teams_by_id: Dict[int, Team]
         lines.append("")
 
     if "nba_finals" in by_round:
-        lines.append(f"{'NBA FINALS':^82}")
+        lines.append(f"{'DBA FINALS':^82}")
         for s in by_round["nba_finals"]:
             lines.append(f"  {_matchup_str(s, teams_by_id):^78}  ")
 
@@ -119,7 +119,9 @@ def bracket_embed(series_list: List[Series], teams_by_id: Dict[int, Team]) -> di
 
     if series_list:
         bracket_text = _render_bracket_text(series_list, teams_by_id)
-        embed.add_field(name="Bracket", value=bracket_text, inline=False)
+        # Use description (4096 limit) instead of a field (1024 limit) to prevent
+        # overflow crashes when all rounds are shown simultaneously.
+        embed.description = bracket_text
 
     return embed
 
@@ -177,8 +179,8 @@ def playin_embed(playin_series: List[Series], teams_by_id: Dict[int, Team]) -> d
 
 def champion_embed(team: Team) -> discord.Embed:
     embed = discord.Embed(
-        title="NBA Champion",
-        description=f"The **{team.full_name}** are NBA Champions!",
+        title="DBA Champion",
+        description=f"The **{team.full_name}** are DBA Champions!",
         color=0xFFD700,
     )
     embed.set_footer(text="Congratulations to the champions and their fans.")

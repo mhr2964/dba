@@ -120,8 +120,8 @@ async def process_extensions_for_season(
                     """
                     INSERT INTO contracts
                         (league_id, player_id, team_id, salary, years_remaining,
-                         total_years, contract_type, signed_in_season, is_active)
-                    VALUES ($1, $2, $3, $4, $5, $5, 'extension', $6, TRUE)
+                         total_years, contract_type, signed_in_season, is_active, signed_at)
+                    VALUES ($1, $2, $3, $4, $5, $5, 'extension', $6, TRUE, NOW())
                     """,
                     league_id,
                     player_id,

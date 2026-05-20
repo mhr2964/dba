@@ -25,7 +25,7 @@ def season_started_embed(
         for g in first_games:
             home_code = g.get("home_code", str(g.get("home_team_id", "?")))
             away_code = g.get("away_code", str(g.get("away_team_id", "?")))
-            user_marker = " [USER]" if g.get("is_user_matchup") else ""
+            user_marker = " [RIVAL]" if g.get("is_user_matchup") else ""
             lines.append(
                 f"Game #{g['game_index']} — {g['scheduled_date']}  "
                 f"`{away_code}` @ `{home_code}`{user_marker}"
@@ -56,10 +56,11 @@ def season_info_embed(
     def _standings_block(rows: list[dict[str, Any]]) -> str:
         lines = []
         for i, r in enumerate(rows, start=1):
-            team_id = r.get("team_id", "?")
+            abbr = r.get("nba_team_code") or r.get("team_name") or f"Team {r.get('team_id', '?')}"
             wins = r.get("wins", 0)
             losses = r.get("losses", 0)
-            lines.append(f"{i}. Team {team_id}: {wins}W – {losses}L")
+            pct = wins / (wins + losses) if (wins + losses) > 0 else 0.0
+            lines.append(f"{i}. **{abbr}** {wins}–{losses} ({pct:.3f})")
         return "\n".join(lines) if lines else "No data"
 
     embed.add_field(name="East Top 3", value=_standings_block(east_top3), inline=False)

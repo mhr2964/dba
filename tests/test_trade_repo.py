@@ -5,8 +5,6 @@ Uses db_pool directly. clean_db (autouse) truncates leagues CASCADE before each 
 """
 from __future__ import annotations
 
-import pytest
-
 from data.repositories import trade_repo
 
 

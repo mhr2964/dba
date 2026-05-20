@@ -132,8 +132,9 @@ async def record_game_result(
             new_wins_high = series.wins_high + (1 if is_high else 0)
             new_wins_low = series.wins_low + (0 if is_high else 1)
 
-            # Clinch threshold: first to this many wins takes the series
-            clinch = (series.games_needed // 2) + 1
+            # Play-in series (games_needed=2) are single-elimination — 1 win completes.
+            # All other series: first to ceil(games_needed/2) wins.
+            clinch = 1 if series.games_needed == 2 else (series.games_needed // 2) + 1
 
             winner: Optional[int] = None
             new_status = "active"

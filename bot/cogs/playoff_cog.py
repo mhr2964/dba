@@ -5,11 +5,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import playoff_embeds
-from core.errors import DBAError, PermissionError
+from core.errors import DBAError, PermissionError, safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, series_repo, team_repo
-from services import playoff_service
+from phase.states import Phase
+from services import league_service, playoff_service
 
 log = get_logger(__name__)
 
@@ -29,65 +30,46 @@ async def _require_commissioner(interaction: discord.Interaction):
     return league
 
 
-class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff management"):
+_PO_DEP_WARNED: set[int] = set()
 
-    @app_commands.command(name="seed", description="Seed the playoffs from final standings")
-    async def seed(self, interaction: discord.Interaction) -> None:
-        league = await _require_commissioner(interaction)
 
-        if league.current_phase != "REGULAR_SEASON_COMPLETE":
-            await interaction.response.send_message(
-                "Regular season must be complete before seeding playoffs. "
-                f"Current phase: `{league.current_phase}`",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer()
-
-        pool = await get_pool()
-        bracket = await playoff_service.seed_playoffs(league.id, league.current_season)
-
-        all_series = (
-            bracket["playin_east"]
-            + bracket["playin_west"]
-            + bracket["east_bracket"]
-            + bracket["west_bracket"]
-        )
-
-        teams = await team_repo.get_all(pool, league.id)
-        teams_by_id = {t.id: t for t in teams}
-
-        playin_series = bracket["playin_east"] + bracket["playin_west"]
-        playin_em = playoff_embeds.playin_embed(playin_series, teams_by_id)
-
-        r1_series = bracket["east_bracket"] + bracket["west_bracket"]
-        r1_embed = playoff_embeds.bracket_embed(r1_series, teams_by_id)
-
-        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
-        if news_channel_id:
-            channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
-                await channel.send(embed=playin_em)
-                await channel.send(embed=r1_embed)
-
+async def _send_po_dep_warning(
+    interaction: discord.Interaction,
+    old: str,
+    new: str,
+) -> None:
+    uid = interaction.user.id
+    if uid in _PO_DEP_WARNED:
+        return
+    _PO_DEP_WARNED.add(uid)
+    try:
         await interaction.followup.send(
-            f"Playoffs seeded for season {league.current_season}. "
-            f"Run `/playoffs sim-playin` to resolve the play-in tournament.",
-            embeds=[playin_em, r1_embed],
+            f"**Heads up:** `{old}` has moved to `{new}`. "
+            "The old path will be removed after the next season rollover.",
+            ephemeral=True,
         )
+    except Exception:
+        pass
 
-    @app_commands.command(name="sim-game", description="Sim the next game in a playoff series")
+
+class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff games"):
+    """Subgroup: /playoffs sim game|round|playin"""
+
+    @app_commands.command(name="game", description="Sim the next game in a playoff series")
     @app_commands.describe(series_id="ID of the series to advance")
-    async def sim_game(self, interaction: discord.Interaction, series_id: int) -> None:
+    async def game(self, interaction: discord.Interaction, series_id: int) -> None:
+        await safe_defer(interaction)
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
 
         pool = await get_pool()
 
-        outcome = await playoff_service.sim_series_game(
-            league.id, series_id, interaction.guild, league.current_season
-        )
+        try:
+            outcome = await playoff_service.sim_series_game(
+                league.id, series_id, interaction.guild, league.current_season
+            )
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
 
         series = outcome["series"]
         teams = await team_repo.get_all(pool, league.id)
@@ -101,16 +83,16 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
         if outcome["series_over"]:
             winner = teams_by_id.get(outcome["winner_team_id"])
+            series_em.title = f"Series Over — {winner.full_name if winner else 'Winner'} Advance"
             news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
                 if channel:
-                    await channel.send(
-                        f"**Series over!** {winner.full_name if winner else 'Winner'} advance!",
-                        embed=series_em,
-                    )
+                    await channel.send(embed=series_em)
 
-            next_round = await playoff_service.advance_playoff_round(league.id, league.current_season)
+            next_round = await playoff_service.advance_playoff_round(
+                league.id, league.current_season, guild=interaction.guild
+            )
 
             if next_round == "champion":
                 champ_embed = playoff_embeds.champion_embed(winner)
@@ -123,19 +105,103 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             elif next_round != "pending":
                 all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
                 bracket_em = playoff_embeds.bracket_embed(all_series, teams_by_id)
+                bracket_em.title = f"Round {next_round} — Updated Bracket"
                 if news_channel_id:
                     channel = interaction.guild.get_channel(news_channel_id)
                     if channel:
-                        await channel.send(
-                            f"Round **{next_round}** is set! Here is the updated bracket:",
-                            embed=bracket_em,
-                        )
+                        await channel.send(embed=bracket_em)
                 await interaction.followup.send(embed=bracket_em)
 
-    @app_commands.command(name="sim-playin", description="Sim the entire play-in tournament")
-    async def sim_playin(self, interaction: discord.Interaction) -> None:
+    @app_commands.command(name="round", description="Sim all remaining games in the current playoff round")
+    async def round(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+
+        pool = await get_pool()
+        teams = await team_repo.get_all(pool, league.id)
+        teams_by_id = {t.id: t for t in teams}
+
+        all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
+        pending = [s for s in all_series if s.status == "active"]
+        if not pending:
+            await interaction.followup.send("No active series to sim.", ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            f"Simming {len(pending)} series — game recaps will appear in #box-scores. "
+            "Full bracket posts when the round is complete.",
+            ephemeral=True,
+        )
+
+        games_simmed = 0
+        for series in pending:
+            while True:
+                try:
+                    outcome = await playoff_service.sim_series_game(
+                        league.id, series.id, interaction.guild, league.current_season
+                    )
+                except ValueError:
+                    break
+                games_simmed += 1
+                if outcome["series_over"]:
+                    break
+
+        next_round = await playoff_service.advance_playoff_round(
+            league.id, league.current_season, guild=interaction.guild
+        )
+
+        _ROUND_TO_PHASE = {
+            "r2_east": Phase.PLAYOFFS_R2,
+            "r2_west": Phase.PLAYOFFS_R2,
+            "conference_finals_east": Phase.CONFERENCE_FINALS,
+            "conference_finals_west": Phase.CONFERENCE_FINALS,
+            "nba_finals": Phase.NBA_FINALS,
+            "champion": Phase.OFFSEASON_AWARDS_CLOSED,
+        }
+        for key, phase in _ROUND_TO_PHASE.items():
+            if key in next_round:
+                try:
+                    await league_service.advance_phase(league.id, phase.value)
+                except Exception:
+                    pass
+                break
+
+        all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
+        bracket_em = playoff_embeds.bracket_embed(all_series, teams_by_id)
+
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+
+        if next_round == "champion":
+            winner_id = next(
+                (s.winner_team_id for s in all_series if s.round == "nba_finals"), None
+            )
+            winner = teams_by_id.get(winner_id) if winner_id else None
+            champ_em = playoff_embeds.champion_embed(winner)
+            if news_channel_id:
+                channel = interaction.guild.get_channel(news_channel_id)
+                if channel:
+                    try:
+                        await channel.send(embed=champ_em)
+                    except Exception:
+                        pass
+            await interaction.followup.send(
+                f"Round complete — {games_simmed} games simmed.", embed=champ_em
+            )
+        else:
+            bracket_em.title = f"Round Complete — {games_simmed} games simmed"
+            if news_channel_id:
+                channel = interaction.guild.get_channel(news_channel_id)
+                if channel:
+                    try:
+                        await channel.send(embed=bracket_em)
+                    except Exception:
+                        pass
+            await interaction.followup.send(embed=bracket_em)
+
+    @app_commands.command(name="playin", description="Sim the entire play-in tournament")
+    async def playin(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
 
@@ -168,6 +234,8 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             inline=True,
         )
 
+        await league_service.advance_phase(league.id, Phase.PLAYOFFS_R1.value)
+
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
@@ -175,6 +243,86 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
                 await channel.send(embed=result_embed)
 
         await interaction.followup.send(embed=result_embed)
+
+
+class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff management"):
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_command(PlayoffSimGroup())
+
+    @app_commands.command(name="seed", description="Seed the playoffs from final standings")
+    async def seed(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
+
+        league = await _require_commissioner(interaction)
+
+        if league.current_phase != "REGULAR_SEASON_COMPLETE":
+            await interaction.followup.send(
+                "Regular season must be complete before seeding playoffs. "
+                f"Current phase: `{league.current_phase}`",
+                ephemeral=True,
+            )
+            return
+
+        pool = await get_pool()
+        try:
+            bracket = await playoff_service.seed_playoffs(league.id, league.current_season)
+        except DBAError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+
+        teams = await team_repo.get_all(pool, league.id)
+        teams_by_id = {t.id: t for t in teams}
+
+        playin_series = bracket["playin_east"] + bracket["playin_west"]
+        playin_em = playoff_embeds.playin_embed(playin_series, teams_by_id)
+
+        r1_series = bracket["east_bracket"] + bracket["west_bracket"]
+        r1_embed = playoff_embeds.bracket_embed(r1_series, teams_by_id)
+
+        news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
+        if news_channel_id:
+            channel = interaction.guild.get_channel(news_channel_id)
+            if channel:
+                await channel.send(embed=playin_em)
+                await channel.send(embed=r1_embed)
+
+        await league_service.advance_phase(league.id, Phase.PLAYIN_ACTIVE.value)
+
+        await interaction.followup.send(
+            f"Playoffs seeded for season {league.current_season}. "
+            f"Run `/playoffs sim-playin` to resolve the play-in tournament.",
+            embeds=[playin_em, r1_embed],
+        )
+
+    @app_commands.command(name="sim-game", description="[MOVED] Use /playoffs sim game instead")
+    @app_commands.describe(series_id="ID of the series to advance")
+    async def sim_game(self, interaction: discord.Interaction, series_id: int) -> None:
+        await safe_defer(interaction)
+        await _send_po_dep_warning(
+            interaction, old="/playoffs sim-game", new="/playoffs sim game"
+        )
+        sim_sub: PlayoffSimGroup = self.get_command("sim")  # type: ignore[assignment]
+        await sim_sub.game.callback(sim_sub, interaction, series_id)
+
+    @app_commands.command(name="sim-round", description="[MOVED] Use /playoffs sim round instead")
+    async def sim_round(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
+        await _send_po_dep_warning(
+            interaction, old="/playoffs sim-round", new="/playoffs sim round"
+        )
+        sim_sub: PlayoffSimGroup = self.get_command("sim")  # type: ignore[assignment]
+        await sim_sub.round.callback(sim_sub, interaction)
+
+    @app_commands.command(name="sim-playin", description="[MOVED] Use /playoffs sim playin instead")
+    async def sim_playin(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
+        await _send_po_dep_warning(
+            interaction, old="/playoffs sim-playin", new="/playoffs sim playin"
+        )
+        sim_sub: PlayoffSimGroup = self.get_command("sim")  # type: ignore[assignment]
+        await sim_sub.playin.callback(sim_sub, interaction)
 
     @app_commands.command(name="bracket", description="Show the current playoff bracket")
     async def bracket(self, interaction: discord.Interaction) -> None:

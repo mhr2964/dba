@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import discord
 
@@ -160,4 +160,37 @@ def all_star_embed(
         value=roster_lines(west_team),
         inline=True,
     )
+    return embed
+
+
+def awards_race_embed(odds: dict, game_index: int = 0) -> Optional[discord.Embed]:
+    """
+    Build an Awards Races embed from AI-generated odds.
+    odds shape: {"mvp": [{"name": str, "pct": int}, ...], "dpoy": [...], "roy": [...], "6moy": [...]}
+    """
+    if not odds:
+        return None
+
+    _RACE_LABELS = {"mvp": "MVP Race", "dpoy": "DPOY Race", "roy": "ROY Race", "6moy": "6MOY Race"}
+    embed = discord.Embed(title="🏆 Award Races", color=discord.Color.gold())
+
+    has_any = False
+    for award_type, label in _RACE_LABELS.items():
+        candidates = odds.get(award_type, [])
+        if not candidates:
+            continue
+        has_any = True
+        lines = []
+        for c in candidates[:5]:
+            name = c.get("name", "?")
+            pct = int(c.get("pct", 0))
+            bar = "█" * (pct // 10)
+            lines.append(f"**{name}** — {pct}%  `{bar}`")
+        embed.add_field(name=label, value="\n".join(lines) or "—", inline=True)
+
+    if not has_any:
+        return None
+
+    suffix = f" · through game {game_index}" if game_index else ""
+    embed.set_footer(text=f"Award race odds{suffix}")
     return embed

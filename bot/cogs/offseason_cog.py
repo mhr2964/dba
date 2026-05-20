@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import history_embeds, hof_embeds, progression_embeds
-from core.errors import DBAError, PermissionError, PhaseError
+from core.errors import DBAError, PermissionError, PhaseError, safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import history_repo, hof_repo, league_repo, player_repo, team_repo
@@ -47,7 +47,7 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
     @app_commands.command(name="progression", description="Run player progression (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def progression(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await _require_commissioner(interaction)
 
@@ -75,7 +75,19 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
             for r in before_rows
         }
 
-        processed = await progression_service.run_progression(league.id, league.current_season)
+        try:
+            processed = await progression_service.run_progression(league.id, league.current_season)
+        except Exception as exc:
+            log.error(
+                "Progression failed for league %d season %d: %s",
+                league.id, league.current_season, exc,
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                f"Progression failed: {exc}\nCheck bot logs for the full stack trace.",
+                ephemeral=True,
+            )
+            return
 
         await league_service.advance_phase(league.id, Phase.FA_OPEN.value)
 
@@ -135,12 +147,17 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
     async def rollover(self, interaction: discord.Interaction) -> None:
         league = await _require_commissioner(interaction)
 
-        if league.current_phase != Phase.PROGRESSION_PENDING.value:
+        _ROLLOVER_ALLOWED = {
+            Phase.OFFSEASON_AWARDS_CLOSED.value,
+            Phase.DRAFT_LOTTERY_DONE.value,
+        }
+        if league.current_phase not in _ROLLOVER_ALLOWED:
             raise PhaseError(
-                f"Rollover requires PROGRESSION_PENDING phase. Current: {league.current_phase}"
+                f"Rollover requires OFFSEASON_AWARDS_CLOSED or DRAFT_LOTTERY_DONE phase. "
+                f"Current: {league.current_phase}"
             )
 
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         summary = await rollover_service.run_rollover(league.id)
 

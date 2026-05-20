@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import random
+from pathlib import Path
 from typing import Optional
 
 import asyncpg
@@ -237,7 +239,7 @@ async def advance_pick(
 
         # CPU team — auto-select best prospect with positional need weighting.
         best = _cpu_select(prospects, team)
-        selection = await draft_repo.record_selection(
+        await draft_repo.record_selection(
             pool,
             draft_id=draft.id,
             pick_number=pick_number,
@@ -308,7 +310,7 @@ async def make_pick(league_id: int, season: int, team_id: int, player_id: int) -
         raise DBAError("That player is no longer available.")
 
     round_number = ((pick_number - 1) // 30) + 1
-    selection = await draft_repo.record_selection(
+    await draft_repo.record_selection(
         pool,
         draft_id=draft.id,
         pick_number=pick_number,
@@ -343,10 +345,19 @@ async def make_pick(league_id: int, season: int, team_id: int, player_id: int) -
     }
 
 
+_SEEDS_DIR = Path(__file__).parent.parent / "data" / "seeds"
+
+
 async def ensure_draft_class(league_id: int, class_year: int) -> int:
     """
-    If no prospects exist for this league/year, generate a synthetic class.
-    Returns total count of available prospects.
+    If no prospects exist for this league/year, populate the class.
+
+    Load order:
+      1. Real/projected seed file  data/seeds/draft_class_{year}.json  (if present)
+         — skips any prospect whose external_id already exists in the league (active veteran).
+      2. Fallback: synthetic generator (years with no seed file).
+
+    Returns total count of available prospects after population.
     """
     pool = await get_pool()
 
@@ -358,6 +369,51 @@ async def ensure_draft_class(league_id: int, class_year: int) -> int:
     if count and count > 0:
         return int(count)
 
+    # -- Try real/projected seed first ------------------------------------------
+    seed_path = _SEEDS_DIR / f"draft_class_{class_year}.json"
+    if seed_path.exists():
+        try:
+            with open(seed_path, encoding="utf-8") as f:
+                raw_prospects: list[dict] = json.load(f)
+        except Exception as exc:
+            log.warning(f"ensure_draft_class: could not read {seed_path}: {exc} — falling back to synthetic")
+            raw_prospects = []
+
+        if raw_prospects:
+            # Determine the source value from the first row (all rows share same source).
+            source_value: str = raw_prospects[0].get("source", "generated")
+
+            # Build set of external_ids already active in this league to skip veterans.
+            existing_ext_ids: set[int] = set()
+            if source_value == "nba_real":
+                rows = await pool.fetch(
+                    "SELECT external_id FROM players WHERE league_id = $1 AND external_id IS NOT NULL",
+                    league_id,
+                )
+                existing_ext_ids = {int(r["external_id"]) for r in rows if r["external_id"]}
+
+            prospects_to_insert: list[dict] = []
+            for p in raw_prospects:
+                ext_id = p.get("external_id")
+                if ext_id is not None and int(ext_id) in existing_ext_ids:
+                    log.warning(
+                        f"ensure_draft_class: skipping {p.get('full_name', p.get('last_name', '?'))} "
+                        f"(external_id={ext_id}) — already active in league {league_id}"
+                    )
+                    continue
+                prospects_to_insert.append(p)
+
+            if prospects_to_insert:
+                inserted = await draft_repo.seed_draft_class(
+                    pool, league_id, class_year, prospects_to_insert, source=source_value
+                )
+                log.info(
+                    f"ensure_draft_class: loaded {inserted} prospects from seed file "
+                    f"for league {league_id} class year {class_year} (source={source_value})"
+                )
+                return inserted
+
+    # -- Fallback: synthetic generator ------------------------------------------
     from services.draft_class_generator import generate_draft_class
     prospects = generate_draft_class(class_year)
     inserted = await draft_repo.seed_draft_class(pool, league_id, class_year, prospects)
@@ -387,8 +443,8 @@ async def _assign_rookie_contract(
         """
         INSERT INTO contracts
             (league_id, player_id, team_id, salary, years_remaining, total_years,
-             contract_type, signed_in_season, is_active)
-        VALUES ($1, $2, $3, $4, 4, 4, 'rookie_scale', $5, TRUE)
+             contract_type, signed_in_season, is_active, signed_at)
+        VALUES ($1, $2, $3, $4, 4, 4, 'rookie_scale', $5, TRUE, NOW())
         """,
         league_id,
         player_id,

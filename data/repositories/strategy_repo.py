@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import asyncpg
 
 _DEFAULT_STRATEGY: dict = {
@@ -32,7 +30,7 @@ async def get_strategy(pool: asyncpg.Pool, league_id: int, team_id: int) -> dict
 
 async def set_strategy(pool: asyncpg.Pool, league_id: int, team_id: int, **fields) -> None:
     """Upsert strategy fields. Only provided fields are written."""
-    allowed = {"offensive_pace", "offensive_scheme", "defensive_scheme", "defensive_intensity", "star_usage"}
+    allowed = {"offensive_pace", "offensive_scheme", "defensive_scheme", "defensive_intensity", "star_usage", "coach_mode", "transition_aggression", "bench_leash"}
     filtered = {k: v for k, v in fields.items() if k in allowed}
     if not filtered:
         return
@@ -106,7 +104,7 @@ async def reset_player_minutes(pool: asyncpg.Pool, league_id: int, team_id: int)
 
 
 async def get_team_minutes_plan(
-    pool: asyncpg.Pool, league_id: int, team_id: int, player_ids: list[int]
+    pool: asyncpg.Pool, league_id: int, team_id: int, player_ids: list[int], game_seed: int = 0
 ) -> dict[int, float]:
     """
     Build the actual minutes allocation for a game.
@@ -141,7 +139,16 @@ async def get_team_minutes_plan(
     auto_players = [pid for pid in player_ids if pid not in plan]
 
     if auto_players:
-        weights = [float(ovr_by_id.get(pid, 50)) for pid in auto_players]
+        # Use (OVR - 60) weighting so stars get ~35+ min and deep bench gets ~5.
+        # Linear OVR produced too-flat distributions. Floor at 0.5 so no one gets zero.
+        weights = []
+        for pid in auto_players:
+            base = max(0.5, ((float(ovr_by_id.get(pid, 50)) - 50.0) / 10.0) ** 1.4)
+            # Per-player per-game noise ±20% — deterministic from player id + game seed
+            # so the same game always produces the same minutes (reproducible), but
+            # different games produce different distributions (realistic foul trouble, blowouts, rest).
+            noise = 1.0 + 0.20 * ((hash(pid ^ game_seed) % 100 - 50) / 50.0)
+            weights.append(base * noise)
         total_w = sum(weights) or 1.0
         for pid, w in zip(auto_players, weights):
             plan[pid] = remaining * w / total_w
@@ -150,12 +157,38 @@ async def get_team_minutes_plan(
         total_plan = sum(plan.values()) or 1.0
         scale = 240.0 / total_plan
         plan = {pid: m * scale for pid, m in plan.items()}
-        return plan
 
     # Normalize so the total is exactly 240.
     total = sum(plan.values())
     if total > 0 and abs(total - 240.0) > 0.01:
         scale = 240.0 / total
         plan = {pid: m * scale for pid, m in plan.items()}
+
+    # Clamp pass: no player exceeds 42 min (starters) or 30 min (bench).
+    # Iterate twice — first pass identifies starters as the top-5 by OVR.
+    starter_pids = set()
+    if ovr_by_id:
+        sorted_by_ovr = sorted(player_ids, key=lambda pid: ovr_by_id.get(pid, 0), reverse=True)
+        starter_pids = set(sorted_by_ovr[:5])
+
+    for _ in range(2):
+        overflow = 0.0
+        for pid in list(plan):
+            cap = 42.0 if pid in starter_pids else 30.0
+            if plan[pid] > cap:
+                overflow += plan[pid] - cap
+                plan[pid] = cap
+        if overflow > 0.0:
+            uncapped = [pid for pid in plan if plan[pid] < (42.0 if pid in starter_pids else 30.0)]
+            if uncapped:
+                share = overflow / len(uncapped)
+                for pid in uncapped:
+                    cap = 42.0 if pid in starter_pids else 30.0
+                    plan[pid] = min(plan[pid] + share, cap)
+            # If no uncapped players remain, overflow is irredistributable.
+            # Accept sum < 240 — per-player ceiling takes priority over total.
+
+    # Hard ceiling: no single player exceeds 48 minutes (one game).
+    plan = {pid: min(m, 48.0) for pid, m in plan.items()}
 
     return plan

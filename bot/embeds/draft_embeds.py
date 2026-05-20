@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import List
-
 import discord
 
 
@@ -77,18 +75,20 @@ def draft_complete_embed(selections_summary: list[dict]) -> discord.Embed:
             f"{s['player_name']} ({s['position']}, OVR {s['overall']})"
         )
 
+    def _add_chunked(label: str, picks: list[dict], chunk: int = 10) -> None:
+        for i in range(0, max(len(picks), 1), chunk):
+            batch = picks[i:i + chunk]
+            suffix = f" ({i + 1}–{min(i + chunk, len(picks))})" if len(picks) > chunk else ""
+            embed.add_field(
+                name=f"{label}{suffix}",
+                value="\n".join(_line(s) for s in batch) or "—",
+                inline=False,
+            )
+
     if round1:
-        embed.add_field(
-            name="First Round",
-            value="\n".join(_line(s) for s in round1),
-            inline=False,
-        )
+        _add_chunked("First Round", round1)
     if round2:
-        embed.add_field(
-            name="Second Round",
-            value="\n".join(_line(s) for s in round2),
-            inline=False,
-        )
+        _add_chunked("Second Round", round2)
 
     embed.set_footer(text=f"{len(selections_summary)} total picks recorded.")
     return embed

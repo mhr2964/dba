@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-18T20:46:48.932831", "decision_type": "propose", "header": "CPU [ORL] wants to PROPOSE -> [NOP]", "details": {"wanted": "Player A (OVR 83)", "offered": "Player B (OVR 80)", "score": "1.25"}, "user_action": "veto", "user_comment": null, "default_action": "approve"}

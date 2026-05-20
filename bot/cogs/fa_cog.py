@@ -5,9 +5,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import fa_embeds
+from core.errors import safe_defer
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import league_repo, team_repo
+from data.repositories import league_repo, player_repo, team_repo
 from services import fa_service, league_service
 
 log = get_logger(__name__)
@@ -22,7 +23,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
     @app_commands.command(name="open", description="Open free agency (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def fa_open(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -43,14 +44,14 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
 
     @app_commands.command(name="offer", description="Submit a free-agent offer (team manager only)")
     @app_commands.describe(
-        player_id="Player ID to offer",
+        player="Player name to offer (e.g. LeBron James)",
         salary="Annual salary in dollars (e.g. 10000000)",
         years="Contract length in years",
     )
     async def fa_offer(
         self,
         interaction: discord.Interaction,
-        player_id: int,
+        player: str,
         salary: int,
         years: int,
     ) -> None:
@@ -79,24 +80,39 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
             )
             return
 
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        fa_matches = [p for p in matches if p.team_id is None]
+        if not fa_matches:
+            await interaction.response.send_message(
+                f"No free agent found matching '{player}'.", ephemeral=True
+            )
+            return
+        if len(fa_matches) > 1:
+            names = ", ".join(p.full_name for p in fa_matches)
+            await interaction.response.send_message(
+                f"Multiple free agents match '{player}': {names}. Be more specific.", ephemeral=True
+            )
+            return
+        found_player = fa_matches[0]
+
         offer_id = await fa_service.submit_offer(
             league_id=league.id,
             season=league.current_season,
             team_id=team.id,
-            player_id=player_id,
+            player_id=found_player.id,
             salary=salary,
             years=years,
         )
 
         await interaction.response.send_message(
-            f"Offer submitted (ID: {offer_id}): ${salary:,}/yr × {years}yr to player {player_id}.",
+            f"Offer submitted (ID: {offer_id}): ${salary:,}/yr × {years}yr to **{found_player.full_name}**.",
             ephemeral=True,
         )
 
     @app_commands.command(name="advance", description="Process today's responses and advance to next FA day (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def fa_advance(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -182,7 +198,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
     @app_commands.command(name="close", description="Manually close free agency (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def fa_close(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -212,8 +228,8 @@ class WaiverGroup(app_commands.Group, name="waiver", description="Waiver wire co
         self.bot = bot
 
     @app_commands.command(name="claim", description="Claim a waived player (team manager only)")
-    @app_commands.describe(player_id="Player ID to claim off waivers")
-    async def claim(self, interaction: discord.Interaction, player_id: int) -> None:
+    @app_commands.describe(player="Player name to claim off waivers")
+    async def claim(self, interaction: discord.Interaction, player: str) -> None:
         league = await league_service.get_league(interaction.guild_id)
         if not league:
             await interaction.response.send_message("No active league found.", ephemeral=True)
@@ -227,9 +243,24 @@ class WaiverGroup(app_commands.Group, name="waiver", description="Waiver wire co
             )
             return
 
-        await fa_service.claim_waiver(league.id, team.id, player_id)
+        matches = await player_repo.search_by_name(pool, league.id, player)
+        waiver_matches = [p for p in matches if p.team_id is None]
+        if not waiver_matches:
+            await interaction.response.send_message(
+                f"No waived player found matching '{player}'.", ephemeral=True
+            )
+            return
+        if len(waiver_matches) > 1:
+            names = ", ".join(p.full_name for p in waiver_matches)
+            await interaction.response.send_message(
+                f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+            )
+            return
+        found_player = waiver_matches[0]
+
+        await fa_service.claim_waiver(league.id, team.id, found_player.id)
         await interaction.response.send_message(
-            f"Player {player_id} claimed off waivers and signed at the minimum ($1,100,000 / 1 yr).",
+            f"**{found_player.full_name}** claimed off waivers and signed at the minimum ($1,100,000 / 1 yr).",
             ephemeral=True,
         )
 

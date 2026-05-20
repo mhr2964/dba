@@ -1,14 +1,11 @@
 """
 Integration tests for services.rollover_service and data.repositories.history_repo.
 
-progression_service.run_progression is patched throughout — it requires
-real box scores and is covered by its own test suite.
+No external service patching required — progression_service.run_progression was
+removed from rollover_service in the 2026-05 refactor. run_rollover is now
+self-contained: it ages contracts, archives history, and calls hof_service.
 """
 from __future__ import annotations
-
-from unittest.mock import AsyncMock, patch
-
-import pytest
 
 from data.repositories import history_repo
 from services import rollover_service
@@ -98,14 +95,6 @@ async def _create_minimal_league(
     return league_id, team_id, player_id, contract_id
 
 
-def _patch_progression(return_value: int = 5):
-    """Patch progression so rollover tests don't need box scores."""
-    return patch(
-        "services.rollover_service.progression_service.run_progression",
-        new=AsyncMock(return_value=return_value),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -113,10 +102,11 @@ def _patch_progression(return_value: int = 5):
 
 async def test_contract_aging_decrements_years(db_pool):
     """_age_contracts reduces years_remaining by 1 for active contracts."""
+    # why: progression_service.run_progression removed from rollover in 2026-05 refactor;
+    #      no patch needed — run_rollover is now self-contained.
     league_id, team_id, player_id, contract_id = await _create_minimal_league(db_pool)
 
-    with _patch_progression():
-        await rollover_service.run_rollover(league_id)
+    await rollover_service.run_rollover(league_id)
 
     row = await db_pool.fetchrow(
         "SELECT years_remaining FROM contracts WHERE id = $1", contract_id
@@ -133,8 +123,7 @@ async def test_expired_contract_frees_player(db_pool):
         "UPDATE contracts SET years_remaining = 1 WHERE id = $1", contract_id
     )
 
-    with _patch_progression():
-        await rollover_service.run_rollover(league_id)
+    await rollover_service.run_rollover(league_id)
 
     contract_row = await db_pool.fetchrow(
         "SELECT is_active, years_remaining FROM contracts WHERE id = $1", contract_id
@@ -153,8 +142,7 @@ async def test_rollover_increments_season(db_pool):
     """run_rollover bumps current_season from 2025 to 2026."""
     league_id, _, _, _ = await _create_minimal_league(db_pool)
 
-    with _patch_progression():
-        await rollover_service.run_rollover(league_id)
+    await rollover_service.run_rollover(league_id)
 
     season = await db_pool.fetchval(
         "SELECT current_season FROM leagues WHERE id = $1", league_id
@@ -163,16 +151,17 @@ async def test_rollover_increments_season(db_pool):
 
 
 async def test_rollover_advances_phase(db_pool):
-    """run_rollover sets current_phase to PRESEASON_READY."""
+    """run_rollover sets current_phase to PROGRESSION_PENDING after rollover."""
+    # why: phase was changed to PROGRESSION_PENDING (not PRESEASON_READY) in
+    #      rollover_service — matches Phase.PROGRESSION_PENDING.value.
     league_id, _, _, _ = await _create_minimal_league(db_pool)
 
-    with _patch_progression():
-        await rollover_service.run_rollover(league_id)
+    await rollover_service.run_rollover(league_id)
 
     phase = await db_pool.fetchval(
         "SELECT current_phase FROM leagues WHERE id = $1", league_id
     )
-    assert phase == "PRESEASON_READY"
+    assert phase == "PROGRESSION_PENDING"
 
 
 async def test_rollover_clears_standings_cache(db_pool):
@@ -189,8 +178,7 @@ async def test_rollover_clears_standings_cache(db_pool):
         team_id,
     )
 
-    with _patch_progression():
-        await rollover_service.run_rollover(league_id)
+    await rollover_service.run_rollover(league_id)
 
     count = await db_pool.fetchval(
         "SELECT COUNT(*) FROM standings_cache WHERE league_id = $1", league_id
@@ -202,8 +190,7 @@ async def test_history_record_created(db_pool):
     """run_rollover inserts a history_seasons row for the completed season."""
     league_id, _, _, _ = await _create_minimal_league(db_pool)
 
-    with _patch_progression():
-        await rollover_service.run_rollover(league_id)
+    await rollover_service.run_rollover(league_id)
 
     record = await history_repo.get_season(db_pool, league_id, 2025)
     assert record is not None
@@ -226,15 +213,19 @@ async def test_get_all_seasons_ordered(db_pool):
 
 async def test_rollover_returns_summary_dict(db_pool):
     """run_rollover return value has the expected shape."""
+    # why: progression_service removed from rollover in 2026-05; summary dict no
+    #      longer includes 'players_progressed'. Now includes extensions_activated,
+    #      picks_seeded, and hof_inducted.
     league_id, _, _, _ = await _create_minimal_league(db_pool)
 
-    with _patch_progression(return_value=7):
-        summary = await rollover_service.run_rollover(league_id)
+    summary = await rollover_service.run_rollover(league_id)
 
     assert summary["season_archived"] == 2025
     assert summary["next_season"] == 2026
-    assert summary["players_progressed"] == 7
     assert isinstance(summary["contracts_expired"], int)
+    assert isinstance(summary["extensions_activated"], int)
+    assert isinstance(summary["picks_seeded"], int)
+    assert isinstance(summary["hof_inducted"], list)
 
 
 async def test_multiple_expired_contracts(db_pool):
@@ -266,25 +257,21 @@ async def test_multiple_expired_contracts(db_pool):
     )
     player2_id: int = player2_row["id"]
 
-    contract2_row = await db_pool.fetchrow(
+    await db_pool.execute(
         """
         INSERT INTO contracts (
             league_id, player_id, team_id,
             salary, years_remaining, total_years,
             contract_type, signed_in_season, is_active
         ) VALUES ($1, $2, $3, 3000000, 1, 4, 'standard', 2022, TRUE)
-        RETURNING id
         """,
         league_id,
         player2_id,
         team_id,
     )
-    contract2_id: int = contract2_row["id"]
-
     # Player 1 has 3 years left; player 2 has 1 year left
     # Only player 2 should expire
-    with _patch_progression():
-        summary = await rollover_service.run_rollover(league_id)
+    summary = await rollover_service.run_rollover(league_id)
 
     assert summary["contracts_expired"] == 1
 

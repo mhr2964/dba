@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import discord
+from services.team_intel import PHILOSOPHY_DESCRIPTIONS
 
 _PACE_LABELS: dict[str, str] = {
     "slow": "Slow (-6 pace, grind it out)",
@@ -33,12 +32,34 @@ _INTENSITY_LABELS: dict[str, str] = {
 }
 
 
-def strategy_embed(team: object, strategy: dict, modifiers: dict) -> discord.Embed:
+def strategy_embed(
+    team: object,
+    strategy: dict,
+    modifiers: dict,
+    philosophy: str | None = None,
+) -> discord.Embed:
+    """Build the strategy embed.
+
+    Optional `philosophy` arg: when present, prepends a Coach Philosophy field
+    at the top of the embed using PHILOSOPHY_DESCRIPTIONS for the one-line summary.
+    Callers that don't have philosophy handy can omit it — existing call sites are
+    unaffected.
+    """
     team_name = getattr(team, "full_name", None) or f"{team['city']} {team['name']}"  # type: ignore[index]
     embed = discord.Embed(
         title=f"{team_name} — Team Strategy",
         color=discord.Color.blue(),
     )
+
+    if philosophy:
+        phil_data = PHILOSOPHY_DESCRIPTIONS.get(philosophy, {})
+        emoji = phil_data.get("emoji", "")
+        summary = phil_data.get("summary", philosophy.replace("_", " ").title())
+        embed.add_field(
+            name="Coach Philosophy",
+            value=f"{emoji} **{philosophy.replace('_', ' ').title()}**\n{summary}",
+            inline=False,
+        )
 
     embed.add_field(
         name="Offensive Pace",
@@ -101,8 +122,9 @@ def minutes_embed(team: object, players: list[dict], minutes_plan: dict[int, flo
         planned = minutes_plan.get(pid, 0.0)
         target_label = str(target) if target > 0 else "Auto"
         target_total += target
+        name = p.get("full_name") or f"{p.get('first_name', '?')} {p.get('last_name', '')}".strip()
         rows.append(
-            f"`{p.get('position', '??'):2}` **{p.get('full_name', p.get('first_name', '?'))} {p.get('last_name', '')}** "
+            f"`{p.get('position', '??'):2}` **{name}** "
             f"OVR {p.get('overall', '?')} — Target: {target_label} | Planned: {planned:.1f}"
         )
 
@@ -146,7 +168,7 @@ def extension_list_embed(extensions: list[dict], players_by_id: dict[int, dict])
     lines: list[str] = []
     for ext in extensions:
         player = players_by_id.get(ext["player_id"], {})
-        name = player.get("full_name") or f"Player {ext['player_id']}"
+        name = player.get("full_name") or f"Player #{ext['player_id']}"
         lines.append(
             f"**{name}** — ${ext['new_salary']:,}/yr × {ext['new_years']}yr "
             f"(activates after season {ext['activates_after_season']})"

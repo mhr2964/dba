@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import collections
+import datetime
+
 import discord
 
 from data.repositories.trade_repo import Trade, TradeAsset
@@ -14,10 +17,22 @@ def trade_block_added_embed(
 ) -> discord.Embed:
     embed = discord.Embed(
         title="Trade Block — Player Listed",
-        description=f"**{player['full_name']}** (OVR {player.get('overall', '?')}) is now on the trade block.",
+        description=f"**{player['full_name']}** is now on the trade block.",
         color=discord.Color.orange(),
     )
     embed.add_field(name="Team", value=team.full_name, inline=True)
+    embed.add_field(name="OVR", value=str(player.get("overall", "?")), inline=True)
+    if player.get("position"):
+        embed.add_field(name="Position", value=player["position"], inline=True)
+    if player.get("age") is not None:
+        embed.add_field(name="Age", value=str(player["age"]), inline=True)
+    if player.get("salary") is not None:
+        yrs = player.get("years_remaining", "?")
+        embed.add_field(
+            name="Contract",
+            value=f"${player['salary']:,} / {yrs}yr{'s' if yrs != 1 else ''}",
+            inline=True,
+        )
     if asking_price is not None:
         embed.add_field(name="Asking Price", value=f"${asking_price:,}", inline=True)
     if note:
@@ -118,7 +133,7 @@ def _asset_line(asset: TradeAsset, players_by_id: dict, picks_by_id: dict) -> st
         if pick:
             return f"- {pick.get('season', '?')} Rd {pick.get('round', '?')} pick"
         return f"- Pick #{asset.pick_id}"
-    return f"- Unknown asset"
+    return "- Unknown asset"
 
 
 def trade_card(
@@ -203,6 +218,7 @@ def trade_grade_embed(
     team_a: Team,
     team_b: Team,
     rationale: str,
+    ai_reasoning: dict[str, str] | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"Trade #{trade.id} — Grades",
@@ -211,6 +227,13 @@ def trade_grade_embed(
     embed.add_field(name=team_a.full_name, value=f"**{grade_a}**", inline=True)
     embed.add_field(name=team_b.full_name, value=f"**{grade_b}**", inline=True)
     embed.add_field(name="Analysis", value=rationale, inline=False)
+    if ai_reasoning:
+        reasoning_a = ai_reasoning.get("team_a", "")
+        reasoning_b = ai_reasoning.get("team_b", "")
+        if reasoning_a:
+            embed.add_field(name=f"{team_a.nba_team_code} Analysis", value=reasoning_a, inline=False)
+        if reasoning_b:
+            embed.add_field(name=f"{team_b.nba_team_code} Analysis", value=reasoning_b, inline=False)
     return embed
 
 
@@ -272,6 +295,206 @@ def trade_history_embed(
 
     embed.description = "\n\n".join(lines)
     return embed
+
+
+def trade_why_embed(
+    trade: Trade,
+    context_signals: dict,
+    proposer_team: Team,
+    counterparty_team: Team,
+    player_names: dict[int, str],
+) -> discord.Embed:
+    """Embed for /trade why <trade_id> — shows per-player CPU reasoning signals.
+
+    player_names: player_id -> display name (e.g. "D. Mitchell")
+    context_signals: the JSONB blob from trades.context_signals
+    """
+    _ts_ago = ""
+    if trade.proposed_at:
+        delta = datetime.datetime.utcnow() - trade.proposed_at.replace(tzinfo=None)
+        days = delta.days
+        if days == 0:
+            _ts_ago = "today"
+        elif days == 1:
+            _ts_ago = "1 day ago"
+        else:
+            _ts_ago = f"{days} days ago"
+
+    status_label = _STATUS_LABELS.get(trade.status, trade.status)
+    color = _STATUS_COLORS.get(trade.status, discord.Color.blurple())
+
+    embed = discord.Embed(
+        title=f"Trade #{trade.id} — CPU Reasoning",
+        color=color,
+    )
+    embed.add_field(
+        name="Status",
+        value=f"{status_label} ({_ts_ago})" if _ts_ago else status_label,
+        inline=True,
+    )
+    embed.add_field(
+        name="Teams",
+        value=f"{proposer_team.nba_team_code} ↔ {counterparty_team.nba_team_code}",
+        inline=True,
+    )
+
+    per_player: dict = context_signals.get("per_player") or {}
+    mod_per_player: dict = context_signals.get("context_modifier_per_player") or {}
+
+    if not per_player:
+        embed.description = "No signal detail recorded for this trade."
+        embed.set_footer(text="Use /trade signals <team> for aggregate patterns.")
+        return embed
+
+    embed.description = "Signals that drove the CPU's decision:"
+
+    for pid_str, signals in per_player.items():
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            pid = -1
+        display_name = player_names.get(pid, f"Player #{pid_str}")
+        mod = mod_per_player.get(pid_str)
+        mod_str = f"  Total context modifier: {mod:.2f}" if mod is not None else ""
+
+        lines: list[str] = []
+        for sig in signals:
+            code = sig.get("code", "?")
+            delta = sig.get("delta", 0.0)
+            reason = sig.get("reason", "")
+            sign = "+" if delta >= 0 else ""
+            lines.append(f"• {code} [Δ{sign}{delta:.2f}] — {reason}")
+
+        field_value = "\n".join(lines)
+        if mod_str:
+            field_value += f"\n{mod_str}"
+        if not field_value.strip():
+            field_value = "(no signals fired)"
+
+        embed.add_field(name=display_name, value=field_value[:1024], inline=False)
+
+    computed_at = context_signals.get("computed_at", "")
+    footer_parts = ["Signals computed at trade evaluation time."]
+    if computed_at:
+        try:
+            _dt = datetime.datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
+            footer_parts.append(f"Computed {_dt.strftime('%Y-%m-%d %H:%M UTC')}.")
+        except Exception:
+            pass
+    footer_parts.append("Use /trade signals <team> for aggregate patterns.")
+    embed.set_footer(text=" ".join(footer_parts))
+    return embed
+
+
+def trade_signals_embed(
+    team: Team,
+    trade_count: int,
+    most_fired: list[tuple[str, int, float]],
+    top_positive: list[tuple[str, float]],
+    top_negative: list[tuple[str, float]],
+) -> discord.Embed:
+    """Embed for /trade signals <team_code> — aggregate signal patterns.
+
+    most_fired: list of (code, count, avg_delta) sorted by count desc
+    top_positive: list of (code, cumulative_delta) sorted by delta desc
+    top_negative: list of (code, cumulative_delta) sorted by delta asc (most negative first)
+    """
+    embed = discord.Embed(
+        title=f"{team.nba_team_code} — Recent Trade Signal Patterns",
+        description=f"Based on last {trade_count} trade(s) with signal data:",
+        color=discord.Color.blurple(),
+    )
+
+    if not most_fired and not top_positive and not top_negative:
+        embed.description = (
+            f"No signal data found for {team.nba_team_code}. "
+            "Signals tracking started 2026-05-20; trades before this date have no signal history."
+        )
+        embed.set_footer(text="Use /trade why <id> for full breakdown of a specific trade.")
+        return embed
+
+    if most_fired:
+        lines = []
+        for code, count, avg_delta in most_fired:
+            sign = "+" if avg_delta >= 0 else ""
+            lines.append(f"`{code}` ×{count}  (avg Δ{sign}{avg_delta:.2f})")
+        embed.add_field(
+            name="Most-fired signals",
+            value="\n".join(lines) or "(none)",
+            inline=False,
+        )
+
+    if top_positive:
+        lines = []
+        for code, cum_delta in top_positive:
+            lines.append(f"`{code}`  Σ +{cum_delta:.2f}")
+        embed.add_field(
+            name="Top positive drivers (cumulative Δ)",
+            value="\n".join(lines) or "(none)",
+            inline=True,
+        )
+
+    if top_negative:
+        lines = []
+        for code, cum_delta in top_negative:
+            lines.append(f"`{code}`  Σ {cum_delta:.2f}")
+        embed.add_field(
+            name="Top negative drivers (cumulative Δ)",
+            value="\n".join(lines) or "(none)",
+            inline=True,
+        )
+
+    embed.set_footer(text="Use /trade why <id> for full breakdown of any specific trade.")
+    return embed
+
+
+def _aggregate_signals(trade_rows: list[dict]) -> tuple[
+    list[tuple[str, int, float]],
+    list[tuple[str, float]],
+    list[tuple[str, float]],
+]:
+    """Aggregate signal statistics from a list of trade rows with context_signals.
+
+    Returns (most_fired, top_positive, top_negative) where:
+      most_fired   = [(code, count, avg_delta)] top-5 by frequency
+      top_positive = [(code, cumulative_delta)] top-3 by cumulative positive delta
+      top_negative = [(code, cumulative_delta)] top-3 most negative cumulative delta
+    """
+    code_counts: dict[str, int] = collections.Counter()
+    code_deltas: dict[str, list[float]] = collections.defaultdict(list)
+
+    for row in trade_rows:
+        signals_blob: dict = row.get("context_signals") or {}
+        per_player: dict = signals_blob.get("per_player") or {}
+        for _pid_str, sigs in per_player.items():
+            for sig in sigs:
+                code = sig.get("code", "")
+                delta = sig.get("delta", 0.0)
+                if not code:
+                    continue
+                code_counts[code] += 1
+                code_deltas[code].append(delta)
+
+    most_fired: list[tuple[str, int, float]] = []
+    for code, count in sorted(code_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+        deltas = code_deltas[code]
+        avg = sum(deltas) / len(deltas) if deltas else 0.0
+        most_fired.append((code, count, round(avg, 3)))
+
+    cumulative: dict[str, float] = {
+        code: round(sum(deltas), 3)
+        for code, deltas in code_deltas.items()
+    }
+    top_positive = sorted(
+        [(c, d) for c, d in cumulative.items() if d > 0],
+        key=lambda x: x[1], reverse=True,
+    )[:3]
+    top_negative = sorted(
+        [(c, d) for c, d in cumulative.items() if d < 0],
+        key=lambda x: x[1],
+    )[:3]
+
+    return most_fired, top_positive, top_negative
 
 
 def pending_queue(trades_list: list[dict]) -> discord.Embed:

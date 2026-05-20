@@ -1,0 +1,2 @@
+{"ts": "2026-05-19T21:51:35.167060+00:00", "event_type": "philosophy_assigned", "league_id": 116, "team_id": 3361, "team_code": "BOS", "philosophy": "tendency_respecter", "user_action": "accept", "user_comment": null}
+{"timestamp": "2026-05-19T17:51:35.168059", "decision_type": "propose", "header": "CPU [MIL] wants to PROPOSE \u2192 [PHX]", "details": {"offering": ["Giannis Antetokounmpo (OVR 97)"], "receiving": ["Devin Booker (OVR 90)", "2025 R1 pick"], "score_diff": "+4.2 (MIL favors)"}, "user_action": "approve", "user_comment": null, "default_action": "approve"}

@@ -151,7 +151,7 @@ async def test_assign_manager_already_owns_team_raises_dba_error(
 async def test_remove_manager_success(db_pool, mock_guild, mock_commissioner, mock_manager):
     """remove_manager() sets manager_user_id to NULL."""
     league = await _create_league(mock_guild, mock_commissioner, db_pool)
-    team = await league_service.assign_manager(
+    await league_service.assign_manager(
         guild=mock_guild, league=league, team_code="LAL", user=mock_manager
     )
 
