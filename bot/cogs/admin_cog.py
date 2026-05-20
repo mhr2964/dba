@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -774,6 +778,54 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             content=f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.",
             ephemeral=True,
         )
+
+
+    @app_commands.command(
+        name="restart",
+        description="Commissioner: restart the bot process",
+    )
+    async def restart_bot(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction, ephemeral=True)
+
+        league = await get_league_or_error(interaction.guild_id)
+        await require_commissioner(interaction, league)
+
+        await safe_respond(
+            interaction,
+            content="Restarting now — back in ~10 seconds.",
+            ephemeral=True,
+        )
+
+        log.warning(
+            f"Bot restart requested by {interaction.user} ({interaction.user.id})"
+        )
+
+        main_py = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "main.py")
+        )
+        workdir = os.path.dirname(main_py)
+
+        if sys.platform == "win32":
+            flags = subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
+            subprocess.Popen(
+                [sys.executable, main_py],
+                cwd=workdir,
+                creationflags=flags,
+                close_fds=True,
+            )
+        else:
+            subprocess.Popen(
+                [sys.executable, main_py],
+                cwd=workdir,
+                start_new_session=True,
+                close_fds=True,
+            )
+
+        # Give the new process a head start before the lock file disappears.
+        await asyncio.sleep(1.5)
+
+        # Clean shutdown — main.py's finally clause releases the lock.
+        await interaction.client.close()
 
 
 class AdminCog(commands.Cog):
