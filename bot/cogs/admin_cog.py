@@ -806,11 +806,13 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         workdir = os.path.dirname(main_py)
 
         if sys.platform == "win32":
-            flags = subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
+            # CREATE_NEW_CONSOLE alone — it already detaches the child from the
+            # parent console and gives it a new one. Combining with
+            # DETACHED_PROCESS raises ValueError (mutually exclusive flags).
             subprocess.Popen(
                 [sys.executable, main_py],
                 cwd=workdir,
-                creationflags=flags,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
                 close_fds=True,
             )
         else:
