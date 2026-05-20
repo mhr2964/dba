@@ -78,6 +78,17 @@ class PlayoffBoxScoreView(discord.ui.View):
         for opt in self.select_menu.options:
             opt.default = opt.value == chosen
         await interaction.response.edit_message(embed=embed, view=self)
+        self.message = interaction.message
+        self._reset_timeout()
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True  # type: ignore[attr-defined]
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
 
 class BoxScoreView(discord.ui.View):
@@ -121,3 +132,14 @@ class BoxScoreView(discord.ui.View):
         for opt in self.select_menu.options:
             opt.default = opt.value == chosen
         await interaction.response.edit_message(embed=embed, view=self)
+        self.message = interaction.message
+        self._reset_timeout()
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True  # type: ignore[attr-defined]
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass

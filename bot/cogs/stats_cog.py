@@ -393,12 +393,6 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
         embed = compare_embed(p_a, stats_a, p_b, stats_b)
         await safe_respond(interaction, embed=embed)
 
-
-class StatsCog(commands.Cog):
-    def __init__(self, bot: commands.Bot) -> None:
-        self.bot = bot
-        self.bot.tree.add_command(StatsGroup())
-
     @app_commands.command(name="power-rankings", description="Show current power rankings for all teams")
     @app_commands.describe(
         mode=(
@@ -549,6 +543,82 @@ class StatsCog(commands.Cog):
             recent_games=recent,
         )
         await safe_respond(interaction, embed=embed)
+
+
+_STATS_DEP_WARNED: set[int] = set()
+
+
+async def _send_stats_dep_warning(
+    interaction: discord.Interaction,
+    old: str,
+    new: str,
+) -> None:
+    uid = interaction.user.id
+    if uid in _STATS_DEP_WARNED:
+        return
+    if len(_STATS_DEP_WARNED) > 1000:
+        _STATS_DEP_WARNED.clear()
+    _STATS_DEP_WARNED.add(uid)
+    try:
+        await interaction.followup.send(
+            f"**Heads up:** `{old}` has moved to `{new}`. "
+            "The old path will be removed after the next season rollover.",
+            ephemeral=True,
+        )
+    except Exception:
+        pass
+
+
+class StatsCog(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.bot.tree.add_command(StatsGroup())
+
+    # ------------------------------------------------------------------
+    # Deprecation aliases — old top-level commands forwarded to /stats group
+    # Remove these after the next season rollover.
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="power-rankings",
+        description="[MOVED] Use /stats power-rankings instead",
+    )
+    @app_commands.describe(
+        mode=(
+            "Ranking mode: record (default, power score), "
+            "expected (projected wins), talent (roster OVR)"
+        ),
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Record (power score)", value="record"),
+        app_commands.Choice(name="Expected wins (posture)", value="expected"),
+        app_commands.Choice(name="Talent (roster OVR)", value="talent"),
+    ])
+    async def power_rankings_legacy(
+        self,
+        interaction: discord.Interaction,
+        mode: app_commands.Choice[str] = None,
+    ) -> None:
+        await safe_defer(interaction)
+        await _send_stats_dep_warning(interaction, old="/power-rankings", new="/stats power-rankings")
+        stats_group: StatsGroup = self.bot.tree.get_command("stats")  # type: ignore[assignment]
+        await stats_group.power_rankings.callback(stats_group, interaction, mode)
+
+    @app_commands.command(
+        name="h2h",
+        description="[MOVED] Use /stats h2h instead",
+    )
+    @app_commands.describe(team1_code="First team code (e.g. LAL)", team2_code="Second team code (e.g. BOS)")
+    async def h2h_legacy(
+        self,
+        interaction: discord.Interaction,
+        team1_code: str,
+        team2_code: str,
+    ) -> None:
+        await safe_defer(interaction)
+        await _send_stats_dep_warning(interaction, old="/h2h", new="/stats h2h")
+        stats_group: StatsGroup = self.bot.tree.get_command("stats")  # type: ignore[assignment]
+        await stats_group.h2h.callback(stats_group, interaction, team1_code, team2_code)
 
 
 async def setup(bot: commands.Bot) -> None:

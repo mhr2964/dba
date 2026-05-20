@@ -41,6 +41,8 @@ async def _send_po_dep_warning(
     uid = interaction.user.id
     if uid in _PO_DEP_WARNED:
         return
+    if len(_PO_DEP_WARNED) > 1000:
+        _PO_DEP_WARNED.clear()
     _PO_DEP_WARNED.add(uid)
     try:
         await interaction.followup.send(

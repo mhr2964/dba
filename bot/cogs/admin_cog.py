@@ -602,6 +602,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         # Delete any category whose name starts with the basketball emoji we use,
         # or contains "dba" (case-insensitive) to catch orphaned categories from
         # old sessions that pre-date the emoji naming convention.
+        _PROGRESS_EVERY = 10
         for category in list(guild.categories):
             name_lower = category.name.lower()
             if category.name.startswith("🏀") or "dba" in name_lower:
@@ -609,6 +610,13 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     try:
                         await ch.delete(reason="DBA purge-server")
                         deleted_channels += 1
+                        if deleted_channels % _PROGRESS_EVERY == 0:
+                            try:
+                                await interaction.edit_original_response(
+                                    content=f"Purging... deleted {deleted_channels} channels so far."
+                                )
+                            except Exception:
+                                pass
                     except discord.HTTPException:
                         pass
                 try:

@@ -101,7 +101,7 @@ class _ProspectSelect(discord.ui.Select):
             )
             return
 
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
         player_id = int(self.values[0])
 

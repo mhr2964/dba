@@ -19,6 +19,23 @@ from services import batch_sim_runner, league_service
 
 log = get_logger(__name__)
 
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _create_logged_task(coro) -> asyncio.Task:
+    """Schedule coro as a background task; log any exception it raises."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        exc = t.exception() if not t.cancelled() else None
+        if exc is not None:
+            log.error("Background task raised an exception", exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
 
 async def _target_index_for_n_more_per_team(pool, league_id: int, n_more: int) -> int:
     """
@@ -93,6 +110,8 @@ async def _send_sim_dep_warning(
     uid = interaction.user.id
     if uid in _SIM_DEP_WARNED:
         return
+    if len(_SIM_DEP_WARNED) > 1000:
+        _SIM_DEP_WARNED.clear()
     _SIM_DEP_WARNED.add(uid)
     try:
         await interaction.followup.send(
@@ -154,7 +173,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
     async def rivalry_legacy(self, interaction: discord.Interaction) -> None:
         await safe_defer(interaction)
         await _send_sim_dep_warning(interaction, old="/sim rivalry", new="/sim to-next-rival")
-        await self.to_next_rival(interaction)
+        await self.to_next_rival.callback(self, interaction)
 
     @app_commands.command(name="run", description="Sim until every team has played N more games")
     @app_commands.describe(
@@ -167,7 +186,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         count: int,
         force: bool = False,
     ) -> None:
-        await safe_defer(interaction)
+        await safe_defer(interaction, ephemeral=True)
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_games")
@@ -251,9 +270,9 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         count: int,
         force: bool = False,
     ) -> None:
-        await safe_defer(interaction)
+        await safe_defer(interaction, ephemeral=True)
         await _send_sim_dep_warning(interaction, old="/sim games", new="/sim run")
-        await self.run(interaction, count, force)
+        await self.run.callback(self, interaction, count, force)
 
     @app_commands.command(name="to-end", description="Sim to end of regular season")
     @app_commands.describe(force="Skip past user matchups without stopping")
@@ -322,7 +341,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                         )
                         await ch.send(embed=em)
 
-        asyncio.create_task(_run_sim_and_post())
+        _create_logged_task(_run_sim_and_post())
 
     @app_commands.command(name="season", description="[MOVED] Use /sim to-end instead")
     @app_commands.describe(force="Skip past user matchups without stopping")
@@ -333,7 +352,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
     ) -> None:
         await safe_defer(interaction)
         await _send_sim_dep_warning(interaction, old="/sim season", new="/sim to-end")
-        await self.to_end(interaction, force)
+        await self.to_end.callback(self, interaction, force)
 
     @app_commands.command(name="to-deadline", description="Sim to the trade deadline and open the trade window")
     @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
@@ -432,7 +451,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
     ) -> None:
         await safe_defer(interaction)
         await _send_sim_dep_warning(interaction, old="/sim deadline", new="/sim to-deadline")
-        await self.to_deadline(interaction, force)
+        await self.to_deadline.callback(self, interaction, force)
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +470,8 @@ async def _send_top_dep_warning(
     uid = interaction.user.id
     if uid in _TOP_LEVEL_DEP_WARNED:
         return
+    if len(_TOP_LEVEL_DEP_WARNED) > 1000:
+        _TOP_LEVEL_DEP_WARNED.clear()
     _TOP_LEVEL_DEP_WARNED.add(uid)
     try:
         await interaction.followup.send(

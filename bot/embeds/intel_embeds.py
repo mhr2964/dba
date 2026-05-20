@@ -12,6 +12,34 @@ import discord
 from services.team_intel import PHILOSOPHY_DESCRIPTIONS
 
 # ---------------------------------------------------------------------------
+# Text helpers
+# ---------------------------------------------------------------------------
+
+_FIELD_CHAR_LIMIT = 950
+_FIELD_HARD_LIMIT = 1000
+
+
+def _truncate_field(lines: list[str], limit: int = _FIELD_CHAR_LIMIT) -> str:
+    """Join lines; if result exceeds `limit` chars, truncate and append a count.
+
+    Discord embed field values cap at 1024 chars; staying under 1000 gives
+    Discord room for markdown rendering overhead.
+    """
+    text = "\n".join(lines)
+    if len(text) <= limit:
+        return text
+    # Binary-search for how many lines fit.
+    kept = []
+    for line in lines:
+        candidate = "\n".join(kept + [line])
+        if len(candidate) > limit:
+            break
+        kept.append(line)
+    remaining = len(lines) - len(kept)
+    return "\n".join(kept) + f"\n…({remaining} more)"
+
+
+# ---------------------------------------------------------------------------
 # Mode / urgency display mappings
 # ---------------------------------------------------------------------------
 
@@ -313,7 +341,7 @@ def philosophy_map_embed(
 _TREND_BADGE: dict[str, str] = {
     "rising":  "🚀 Rising",
     "cooling": "📉 Cooling",
-    "tanking": "🏳 Tanking",
+    "tanking": "🏳️ Tanking",
     "holding": "🔒 Holding",
 }
 
@@ -452,7 +480,7 @@ def league_digest_embed(
             lines.append(f"• **{mc['team_code']}**  {old} → {new}")
         embed.add_field(
             name=f"Mode shifts ({len(mode_changes)})",
-            value="\n".join(lines),
+            value=_truncate_field(lines),
             inline=False,
         )
     else:
@@ -468,7 +496,7 @@ def league_digest_embed(
             lines.append(f"• **{pp['team_code']}**  {old} → {new}")
         embed.add_field(
             name=f"Plan pivots ({len(plan_pivots)})",
-            value="\n".join(lines),
+            value=_truncate_field(lines),
             inline=False,
         )
     else:
@@ -483,11 +511,11 @@ def league_digest_embed(
             assigned_by = rs.get("assigned_by") or "cpu"
             by_label = "human override" if str(assigned_by).startswith("human:") else "CPU"
             lines.append(
-                f"• **{rs['player_name']}** → {role_str} ({rs['team_code']}, {by_label})"
+                f"• **{discord.utils.escape_markdown(str(rs['player_name']))}** → {role_str} ({rs['team_code']}, {by_label})"
             )
         embed.add_field(
             name=f"Notable role swaps ({len(role_swaps)})",
-            value="\n".join(lines),
+            value=_truncate_field(lines),
             inline=False,
         )
 
@@ -503,7 +531,7 @@ def league_digest_embed(
             lines.append(f"`{code}`  ×{count}  Σ {sign}{avg_delta}")
         embed.add_field(
             name="Most-fired signals",
-            value="\n".join(lines),
+            value=_truncate_field(lines),
             inline=False,
         )
 
@@ -520,7 +548,7 @@ def league_digest_embed(
                 lines.append(f"• {summary}")
         embed.add_field(
             name="Loudest trades",
-            value="\n".join(lines),
+            value=_truncate_field(lines),
             inline=False,
         )
 
@@ -612,8 +640,8 @@ def league_trades_embed(
         lines.append(header)
 
         # Asset summary — one compact line per direction, truncated if too long.
-        prop_assets = t.get("proposer_assets") or []
-        cp_assets = t.get("counterparty_assets") or []
+        prop_assets = [discord.utils.escape_markdown(str(a)) for a in (t.get("proposer_assets") or [])]
+        cp_assets = [discord.utils.escape_markdown(str(a)) for a in (t.get("counterparty_assets") or [])]
 
         def _summarize(assets: list[str], limit: int = 3) -> str:
             if not assets:

@@ -57,6 +57,8 @@ async def _send_lineup_dep_warning(
     uid = interaction.user.id
     if uid in _LINEUP_DEP_WARNED:
         return
+    if len(_LINEUP_DEP_WARNED) > 1000:
+        _LINEUP_DEP_WARNED.clear()
     _LINEUP_DEP_WARNED.add(uid)
     try:
         await interaction.followup.send(

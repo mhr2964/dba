@@ -275,7 +275,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         await require_phase(league, "trade_propose")
@@ -284,26 +284,31 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         proposer_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not proposer_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         cpu_team = await team_repo.get_by_code(pool, league.id, team_code.upper())
         if not cpu_team:
-            await interaction.followup.send(
-                f"No team found with code **{team_code.upper()}**.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"No team found with code **{team_code.upper()}**.",
+                ephemeral=True,
             )
             return
 
         if cpu_team.manager_user_id is not None:
-            await interaction.followup.send(
-                f"**{cpu_team.full_name}** is managed by a human. "
-                "Use `/trade propose` to send them a trade offer instead.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"**{cpu_team.full_name}** is managed by a human. "
+                    "Use `/trade propose` to send them a trade offer instead."
+                ),
                 ephemeral=True,
             )
             return
 
         if proposer_team.id == cpu_team.id:
-            await interaction.followup.send("You cannot trade with yourself.", ephemeral=True)
+            await safe_respond(interaction, content="You cannot trade with yourself.", ephemeral=True)
             return
 
         give_player_ids = _parse_ids(give_players) if give_players.strip() else []
@@ -326,9 +331,12 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         card = trade_embeds.trade_card(trade, assets, proposer_team, cpu_team, players_by_id, picks_by_id)
 
         if trade.status in ("declined", "rejected"):
-            await interaction.followup.send(
-                f"The CPU **{cpu_team.full_name}** declined the trade.\n"
-                f"Reason: {trade.cpu_rationale or 'No reason given.'}",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"The CPU **{cpu_team.full_name}** declined the trade.\n"
+                    f"Reason: {trade.cpu_rationale or 'No reason given.'}"
+                ),
                 ephemeral=True,
             )
             return
@@ -340,17 +348,21 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                 trade, counter_assets, cpu_team, proposer_team,
                 counter_players_by_id, counter_picks_by_id,
             )
-            await interaction.followup.send(
-                f"The CPU **{cpu_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
-                f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"The CPU **{cpu_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
+                    f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond."
+                ),
                 embed=counter_card,
             )
             return
 
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
 
-        await interaction.followup.send(
-            f"The CPU **{cpu_team.full_name}** accepted! Trade is now pending commissioner approval.",
+        await safe_respond(
+            interaction,
+            content=f"The CPU **{cpu_team.full_name}** accepted! Trade is now pending commissioner approval.",
             embed=card,
         )
         if transactions_channel_id:

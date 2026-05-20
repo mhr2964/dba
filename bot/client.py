@@ -90,6 +90,39 @@ class DBABot(commands.Bot):
         for cog in COGS:
             await self.load_extension(cog)
             log.info(f"Loaded cog: {cog}")
+
+        # Re-register persistent draft views so button/select interactions
+        # survive bot restarts.  DraftPickView uses timeout=None + stable
+        # custom_id — without add_view() the component callback is never
+        # dispatched after a restart.
+        try:
+            from bot.ui.draft_views import DraftPickView
+            rows = await pool.fetch(
+                """
+                SELECT d.league_id, d.season, d.current_pick_number
+                FROM drafts d
+                WHERE d.status = 'in_progress'
+                """
+            )
+            for row in rows:
+                # Register a shell view (no prospects needed — interaction
+                # routing only requires the view to be registered; actual
+                # picks resolve live data in the callback).
+                view = DraftPickView(
+                    league_id=row["league_id"],
+                    season=row["season"],
+                    team_id=0,
+                    prospects=[],
+                    bot=self,
+                )
+                self.add_view(view)
+                log.info(
+                    f"Registered persistent DraftPickView for league={row['league_id']} "
+                    f"season={row['season']}"
+                )
+        except Exception as exc:
+            log.error(f"Failed to register persistent draft views: {exc}", exc_info=True)
+
         await self.tree.sync()
         log.info("Slash commands synced")
         all_cmds = list(self.tree.walk_commands())

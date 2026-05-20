@@ -13,6 +13,9 @@ Deprecation aliases (one-cycle window, removed after next rollover):
   /coach assign-role  → /coach role assign
   /coach show-roles   → /coach role show
   /coach unlock       → /coach role unlock
+  /directive set      → /coach directive set
+  /directive view     → /coach directive view
+  /directive reset    → /coach directive reset
 
 Auth pattern mirrors strategy_cog: manager owns their team; commissioner can
 touch any team.
@@ -90,6 +93,8 @@ async def _send_deprecation_warning(
     uid = interaction.user.id
     if uid in _DEPRECATION_WARNED:
         return
+    if len(_DEPRECATION_WARNED) > 1000:
+        _DEPRECATION_WARNED.clear()
     _DEPRECATION_WARNED.add(uid)
     try:
         await interaction.followup.send(
@@ -1151,10 +1156,67 @@ class CoachGroup(app_commands.Group, name="coach", description="CPU role managem
             return []
 
 
+class _DirectiveLegacyGroup(app_commands.Group, name="directive", description="[MOVED] Use /coach directive instead"):
+    """Top-level /directive group kept for one-cycle backward compatibility.
+
+    /directive set  → /coach directive set
+    /directive view → /coach directive view
+    /directive reset → /coach directive reset
+
+    Remove after the next season rollover.
+    """
+
+    @app_commands.command(name="set", description="[MOVED] Use /coach directive set instead")
+    @app_commands.describe(
+        player="Player name (e.g. LeBron James)",
+        category="Category: shot_diet / usage / defense / role / clutch",
+        value="New value for that category",
+    )
+    async def set_legacy(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        category: str,
+        value: str,
+    ) -> None:
+        await safe_defer(interaction, ephemeral=True)
+        await _send_deprecation_warning(interaction, old="/directive set", new="/coach directive set")
+        coach_group: CoachGroup = interaction.client.tree.get_command("coach")  # type: ignore[assignment]
+        directive_sub = coach_group.get_command("directive")
+        await directive_sub.set_directive.callback(directive_sub, interaction, player, category, value)
+
+    @app_commands.command(name="view", description="[MOVED] Use /coach directive view instead")
+    @app_commands.describe(team="Team code (e.g. LAL), defaults to your team")
+    async def view_legacy(
+        self,
+        interaction: discord.Interaction,
+        team: str = None,
+    ) -> None:
+        await safe_defer(interaction, ephemeral=True)
+        await _send_deprecation_warning(interaction, old="/directive view", new="/coach directive view")
+        coach_group: CoachGroup = interaction.client.tree.get_command("coach")  # type: ignore[assignment]
+        directive_sub = coach_group.get_command("directive")
+        await directive_sub.view_directives.callback(directive_sub, interaction, team)
+
+    @app_commands.command(name="reset", description="[MOVED] Use /coach directive reset instead")
+    @app_commands.describe(player="Player name to reset directives for")
+    async def reset_legacy(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+    ) -> None:
+        await safe_defer(interaction, ephemeral=True)
+        await _send_deprecation_warning(interaction, old="/directive reset", new="/coach directive reset")
+        coach_group: CoachGroup = interaction.client.tree.get_command("coach")  # type: ignore[assignment]
+        directive_sub = coach_group.get_command("directive")
+        await directive_sub.reset_directive.callback(directive_sub, interaction, player)
+
+
 class CoachCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.bot.tree.add_command(CoachGroup())
+        self.bot.tree.add_command(_DirectiveLegacyGroup())
 
 
 async def setup(bot: commands.Bot) -> None:

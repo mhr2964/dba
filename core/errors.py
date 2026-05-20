@@ -18,6 +18,9 @@ async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False) 
     """
     try:
         await interaction.response.defer(ephemeral=ephemeral)
+    except discord.InteractionResponded:
+        # Already responded (e.g. legacy alias deferred before calling canonical handler).
+        pass
     except (discord.NotFound, discord.HTTPException) as exc:
         log.warning(f"defer() failed for interaction {interaction.id} ({exc}) — continuing")
 
@@ -62,7 +65,22 @@ async def safe_respond(
         else:
             # Not deferred — send a fresh response
             await interaction.response.send_message(ephemeral=ephemeral, **kwargs)
-    except (discord.NotFound, discord.HTTPException) as exc:
+    except discord.HTTPException as exc:
+        log.warning(f"safe_respond failed for interaction {interaction.id} ({exc}) — attempting fallback")
+        # If the payload was too large (400/50035), the placeholder is still
+        # showing "DBA is thinking…".  Resolve it to a plain error message so
+        # the user isn't left staring at a spinner indefinitely.
+        if exc.status == 400 and exc.code == 50035:
+            try:
+                await interaction.edit_original_response(
+                    content="Result too large to display — check logs or narrow your query.",
+                    embed=None,
+                    embeds=None,
+                    view=None,
+                )
+            except Exception as inner:
+                log.warning(f"safe_respond fallback also failed for interaction {interaction.id} ({inner})")
+    except discord.NotFound as exc:
         log.warning(f"safe_respond failed for interaction {interaction.id} ({exc}) — continuing")
 
 

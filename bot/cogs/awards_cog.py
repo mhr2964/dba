@@ -16,6 +16,26 @@ from services import awards_service
 
 log = get_logger(__name__)
 
+# Tracked background tasks — prevents GC cancelling in-flight coroutines and
+# captures exceptions that would otherwise be silently swallowed.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _create_logged_task(coro) -> asyncio.Task:
+    """Schedule coro as a background task; log any exception it raises."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        exc = t.exception() if not t.cancelled() else None
+        if exc is not None:
+            log.error("Background task raised an exception", exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 _SINGLE_AWARDS = ["mvp", "dpoy", "roy", "6moy", "finals_mvp"]
 _ALL_AWARD_CHOICES = [
     app_commands.Choice(name="MVP", value="mvp"),
@@ -112,8 +132,8 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         interaction: discord.Interaction,
         award_type: app_commands.Choice[str],
     ) -> None:
-        league = await _require_commissioner(interaction)
         await safe_defer(interaction)
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
         season = league.current_season
@@ -132,7 +152,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
                 }
                 embed = awards_embeds.voting_open_embed(voting_row, at, candidates)
                 await _post_to_news(interaction.guild, league.id, pool, embed)
-                asyncio.create_task(
+                _create_logged_task(
                     awards_service.generate_cpu_votes(vid, league.id, season)
                 )
             await safe_respond(
@@ -157,7 +177,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
                 }
                 embed = awards_embeds.voting_open_embed(voting_row, at, candidates)
                 await _post_to_news(interaction.guild, league.id, pool, embed)
-                asyncio.create_task(
+                _create_logged_task(
                     awards_service.generate_cpu_votes(vid, league.id, season)
                 )
             await safe_respond(
@@ -178,7 +198,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         }
         embed = awards_embeds.voting_open_embed(voting_row, value, candidates)
         await _post_to_news(interaction.guild, league.id, pool, embed)
-        asyncio.create_task(
+        _create_logged_task(
             awards_service.generate_cpu_votes(voting_id, league.id, season)
         )
         await safe_respond(
@@ -201,6 +221,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         player: str,
         rank: Optional[int] = 1,
     ) -> None:
+        await safe_defer(interaction, ephemeral=True)
         league = await _require_league(interaction.guild_id)
         team = await _require_team_manager(interaction, league)
 
@@ -249,8 +270,9 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
             rank=rank or 1,
         )
 
-        await interaction.response.send_message(
-            f"Your vote for **{found_player.full_name}** ({award_type.name}) has been recorded.",
+        await safe_respond(
+            interaction,
+            content=f"Your vote for **{found_player.full_name}** ({award_type.name}) has been recorded.",
             ephemeral=True,
         )
 
@@ -262,8 +284,8 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         interaction: discord.Interaction,
         award_type: app_commands.Choice[str],
     ) -> None:
-        league = await _require_commissioner(interaction)
         await safe_defer(interaction)
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
         value = award_type.value
@@ -433,8 +455,8 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
 
     @app_commands.command(name="all-star", description="Open All-Star voting for both conferences (commissioner only)")
     async def all_star(self, interaction: discord.Interaction) -> None:
-        league = await _require_commissioner(interaction)
         await safe_defer(interaction)
+        league = await _require_commissioner(interaction)
 
         pool = await get_pool()
         east_id, west_id = await awards_service.open_all_star_voting(league.id, league.current_season)
@@ -450,7 +472,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
             }
             embed = awards_embeds.voting_open_embed(voting_row, at, candidates)
             await _post_to_news(interaction.guild, league.id, pool, embed)
-            asyncio.create_task(
+            _create_logged_task(
                 awards_service.generate_cpu_votes(vid, league.id, league.current_season)
             )
 

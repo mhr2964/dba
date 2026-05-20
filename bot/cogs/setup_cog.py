@@ -942,7 +942,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         ready_ids = set(await game_repo.get_ready_teams(pool, league.id))
         if human_teams and all(t.id in ready_ids for t in human_teams):
             await interaction.channel.send(
-                "All managers are ready! Commissioner can run `/sim rivalry` to continue."
+                "All managers are ready! Commissioner can run `/sim to-next-rival` to continue."
             )
 
 
