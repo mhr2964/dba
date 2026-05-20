@@ -276,6 +276,35 @@ async def _create_locked(
             ch = await category.create_text_channel(role_name)
             channel_ids[role_name] = ch.id
 
+        # Per-channel duplicate sweep: discord.py retries on transients can
+        # cause each create_text_channel call to land twice on Discord's
+        # side, leaving two same-named channels in our category. For each
+        # role we tracked, find ALL channels in our category with that
+        # name and keep only the one we stored; delete the rest before the
+        # user sees them.
+        try:
+            in_category = [
+                c for c in await guild.fetch_channels()
+                if isinstance(c, discord.TextChannel)
+                and getattr(c, "category_id", None) == category.id
+            ]
+            kept_ids = set(channel_ids.values())
+            for role_name in CHANNEL_ROLES:
+                same_name = [c for c in in_category if c.name == role_name]
+                for dup in same_name:
+                    if dup.id in kept_ids:
+                        continue
+                    log.warning(
+                        f"League {league.id}: per-channel sweep found duplicate "
+                        f"#{role_name} id={dup.id} (kept id={channel_ids[role_name]}) — deleting"
+                    )
+                    try:
+                        await dup.delete(reason="DBA per-channel duplicate sweep")
+                    except Exception as exc:
+                        log.warning(f"  per-channel delete failed for {dup.id}: {exc}")
+        except Exception as exc:
+            log.warning(f"League {league.id}: per-channel sweep failed: {exc}")
+
         commissioner_role = await guild.create_role(
             name="DBA Commissioner",
             color=discord.Color.gold(),
