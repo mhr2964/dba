@@ -274,15 +274,22 @@ async def generate_awards_race_odds(
     pool,
     league_id: int,
     season: int,
+    prefetched_leaders: dict | None = None,
 ) -> dict | None:
     """
     Returns AI-generated odds dict shaped:
       {"mvp": [{"name": str, "pct": int}, ...], "dpoy": [...], "roy": [...], "6moy": [...]}
     or None if not enough data or Claude fails.
+
+    prefetched_leaders: pass the result of get_race_leaders(top_n=5) to avoid a
+    redundant DB round-trip when the caller already fetched it this batch tick.
     """
     import anthropic
 
-    leaders = await get_race_leaders(pool, league_id, season, top_n=5)
+    if prefetched_leaders is not None:
+        leaders = prefetched_leaders
+    else:
+        leaders = await get_race_leaders(pool, league_id, season, top_n=5)
 
     # Gate: need at least one award with candidates having 25+ games.
     has_enough = any(

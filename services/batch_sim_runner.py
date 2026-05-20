@@ -1030,18 +1030,35 @@ def _is_blockbuster_trade(assets: list, player_ovrs: dict[int, int]) -> bool:
     return False
 
 
+async def _fetch_race_leaders_once(pool, league_id: int, season: int) -> dict:
+    """Fetch award race leaders (top 5 per award) once per batch tick.
+
+    Called at the batch flush site and forwarded to both _maybe_post_columnist and
+    _maybe_post_potm so _get_eligible_players runs 4x per tick instead of 8x.
+    Returns an empty dict on any failure so callers fall back gracefully.
+    """
+    try:
+        return await awards_service.get_race_leaders(pool, league_id, season, top_n=5)
+    except Exception as exc:
+        log.warning(f"_fetch_race_leaders_once: failed for league={league_id}: {exc}")
+        return {}
+
+
 async def _maybe_post_awards_races(
     pool,
     league_id: int,
     season: int,
     news_channel: Optional[discord.TextChannel],
     current_game_index: int = 0,
+    prefetched_leaders: dict | None = None,
 ) -> None:
     """Post award race odds. Called from _maybe_post_potm so it fires once per simulated month."""
     try:
         if not news_channel:
             return
-        odds = await awards_service.generate_awards_race_odds(pool, league_id, season)
+        odds = await awards_service.generate_awards_race_odds(
+            pool, league_id, season, prefetched_leaders=prefetched_leaders
+        )
         if not odds:
             return
         embed = awards_embeds.awards_race_embed(odds, game_index=current_game_index)
@@ -1058,6 +1075,7 @@ async def _maybe_post_potm(
     season: int,
     current_game_date: Optional[str],
     current_game_index: int = 0,
+    prefetched_race_leaders: dict | None = None,
 ) -> None:
     """Post Player of the Month awards if a new month has elapsed since the last award.
 
@@ -1145,6 +1163,7 @@ async def _maybe_post_potm(
         await _maybe_post_awards_races(
             pool, league_id, season, news_channel,
             current_game_index=current_game_index,
+            prefetched_leaders=prefetched_race_leaders,
         )
     except Exception as exc:
         log.warning(f"_maybe_post_potm failed: {exc}", exc_info=True)
@@ -1299,6 +1318,7 @@ async def _maybe_post_columnist(
     batch_end_index: int = 0,
     total_regular_games: int = 0,
     force: bool = False,
+    prefetched_race_leaders: dict | None = None,
 ) -> None:
     """
     Post a columnist article after each batch, rotating through _COLUMNIST_ROTATION.
@@ -1612,8 +1632,17 @@ async def _maybe_post_columnist(
         log.warning(f"_maybe_post_columnist: trade enrichment failed: {_trade_exc}")
 
     # 1d: Add award race leaders for topic variety.
+    # Use pre-fetched leaders from the batch tick (top_n=5 fetched once) to avoid
+    # a redundant DB round-trip. Fall back to fetching directly if not provided.
     try:
-        _race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=3)
+        if prefetched_race_leaders is not None:
+            # Slice each award to top 3 candidates for the columnist context.
+            _race_leaders = {
+                award: candidates[:3]
+                for award, candidates in prefetched_race_leaders.items()
+            }
+        else:
+            _race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=3)
         _race_player_ids = [
             p["player_id"]
             for candidates in _race_leaders.values()
@@ -2317,15 +2346,17 @@ async def sim_until_rival(
                     await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
                 except (discord.HTTPException, Exception) as exc:
                     log.warning(f"channel send failed: {exc}")
+            _race_leaders = await _fetch_race_leaders_once(pool, league_id, season)
             await _maybe_post_columnist(
                 pool, league_id, season, batch_results, guild,
                 batch_start_index=first_game_idx,
                 batch_end_index=last_game_idx,
                 total_regular_games=total_regular_games,
+                prefetched_race_leaders=_race_leaders,
             )
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
-            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
+            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
             # Mid-batch: skip block refresh — fires once at the final flush below.
             await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=False)
             await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
@@ -2348,15 +2379,17 @@ async def sim_until_rival(
                 await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
+        _race_leaders = await _fetch_race_leaders_once(pool, league_id, season)
         await _maybe_post_columnist(
             pool, league_id, season, batch_results, guild,
             batch_start_index=first_game_idx,
             batch_end_index=last_game_idx,
             total_regular_games=total_regular_games,
+            prefetched_race_leaders=_race_leaders,
         )
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
-        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
+        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
         # Final flush: run block refresh now (only time it fires this sim call).
         await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=True)
         await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
@@ -2473,16 +2506,18 @@ async def sim_range(
                     await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
                 except (discord.HTTPException, Exception) as exc:
                     log.warning(f"channel send failed: {exc}")
+            _race_leaders = await _fetch_race_leaders_once(pool, league_id, season)
             await _maybe_post_columnist(
                 pool, league_id, season, batch_results, guild,
                 batch_start_index=first_game_idx,
                 batch_end_index=last_game_idx,
                 total_regular_games=total_regular_games,
                 force=force,
+                prefetched_race_leaders=_race_leaders,
             )
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
-            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
+            await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
             # Mid-batch: skip block refresh — fires once at the final flush below.
             await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=False)
             await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
@@ -2505,16 +2540,18 @@ async def sim_range(
                 await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
             except (discord.HTTPException, Exception) as exc:
                 log.warning(f"channel send failed: {exc}")
+        _race_leaders = await _fetch_race_leaders_once(pool, league_id, season)
         await _maybe_post_columnist(
             pool, league_id, season, batch_results, guild,
             batch_start_index=first_game_idx,
             batch_end_index=last_game_idx,
             total_regular_games=total_regular_games,
             force=force,
+            prefetched_race_leaders=_race_leaders,
         )
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
-        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
+        await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
         # Final flush: run block refresh now (only time it fires this sim call).
         await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=True)
         await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from data.repositories import article_repo
 from services.personas import PERSONAS
@@ -53,6 +54,51 @@ def _format_signals_block(context_signals_per_player: dict) -> str:
     if not lines:
         return ""
     return "CPU evaluation signals (what drove this trade decision):\n" + "\n".join(lines)
+
+
+def _tolerant_json_parse(raw: str, persona_id: str, category: str) -> dict | None:
+    """Parse LLM output tolerantly, handling common failure modes.
+
+    Attempts in order:
+    1. Strip markdown code fences (```json ... ```)
+    2. Extract outermost {…} block to strip leading/trailing prose
+    3. Drop trailing commas before } or ] (common LLM quirk)
+    4. Standard json.loads
+
+    Returns a dict on success, None if all attempts fail.
+    """
+    text = raw.strip()
+
+    # 1. Strip markdown code fences.
+    if "```" in text:
+        # Match ```json ... ``` or ``` ... ```
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        if fence_match:
+            text = fence_match.group(1).strip()
+
+    # 2. Extract outermost {...} block to discard prose before/after JSON.
+    brace_match = re.search(r"\{[\s\S]*\}", text)
+    if brace_match:
+        text = brace_match.group(0)
+
+    # 3. Drop trailing commas before } or ] (e.g. {"a": 1,} or [1, 2,]).
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+        log.warning(
+            "columnist_service: parsed JSON is not a dict for %s/%s — type: %s",
+            persona_id, category, type(result).__name__,
+        )
+        return None
+    except json.JSONDecodeError as exc:
+        log.warning(
+            "columnist_service: _tolerant_json_parse failed for %s/%s: %s | cleaned text: %r",
+            persona_id, category, exc, text[:120],
+        )
+        return None
 
 
 async def generate(  # noqa: PLR0912, PLR0915
@@ -302,22 +348,19 @@ async def generate(  # noqa: PLR0912, PLR0915
         )
         raw = message.content[0].text.strip()
 
-        # Strip markdown code fences if the model wraps its JSON output.
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        parsed = _tolerant_json_parse(raw, _persona_id, _category)
 
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
+        if parsed is None:
+            # All structured parsing failed — wrap raw text and return something.
             log.warning(
-                "columnist_service: JSON parse failed for %s/%s — falling back to truncated plain text | raw: %r",
+                "columnist_service: JSON parse failed for %s/%s — using prose fallback | raw: %r",
                 _persona_id, _category, raw[:120],
             )
-            headline = f"{_category.replace('_', ' ').title()} Report"
-            body = raw[:200].strip()
+            persona_display = persona.display_name
+            first_line = raw.split("\n")[0].strip()[:80]
+            headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
+            rest = raw[len(first_line):].strip()[:300]
+            body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
             await article_repo.insert(
                 pool, league_id=league_id, season=season,
                 persona_id=_persona_id, category=_category,
@@ -327,30 +370,46 @@ async def generate(  # noqa: PLR0912, PLR0915
             )
             return {"headline": headline, "body": body}
 
-        required_keys = {"headline", "lede", "key_stats", "bullets", "verdict"}
-        if not isinstance(parsed, dict) or not required_keys.issubset(parsed.keys()):
-            log.warning(
-                "columnist_service: unexpected JSON shape from %s — missing keys; got: %r",
-                _persona_id, list(parsed.keys()) if isinstance(parsed, dict) else raw[:120],
+        # Accept old {"headline","body"} shape if it slips through.
+        if "headline" in parsed and "body" in parsed and "lede" not in parsed:
+            headline = str(parsed["headline"]).strip()
+            body = str(parsed["body"]).strip()[:1400]
+            await article_repo.insert(
+                pool, league_id=league_id, season=season,
+                persona_id=_persona_id, category=_category,
+                headline=headline, body=body,
+                subject_team_ids=_subject_team_ids,
+                subject_player_ids=_subject_player_ids,
             )
-            # Graceful fallback: if old shape {"headline","body"} slips through, accept it
-            if isinstance(parsed, dict) and "headline" in parsed and "body" in parsed:
-                headline = str(parsed["headline"]).strip()
-                body = str(parsed["body"]).strip()[:1400]
-                await article_repo.insert(
-                    pool, league_id=league_id, season=season,
-                    persona_id=_persona_id, category=_category,
-                    headline=headline, body=body,
-                    subject_team_ids=_subject_team_ids,
-                    subject_player_ids=_subject_player_ids,
-                )
-                return {"headline": headline, "body": body}
-            return None
+            return {"headline": headline, "body": body}
 
-        headline = str(parsed["headline"]).strip()
-        if not headline:
-            log.warning("columnist_service: empty headline from %s", _persona_id)
-            return None
+        # Require only headline + lede; fill optional fields with empty defaults.
+        headline = str(parsed.get("headline", "")).strip()
+        lede = str(parsed.get("lede", "")).strip()
+        if not headline or not lede:
+            log.warning(
+                "columnist_service: missing required fields (headline/lede) from %s — prose fallback | got keys: %r",
+                _persona_id, list(parsed.keys()),
+            )
+            persona_display = persona.display_name
+            raw_preview = raw[:380].strip()
+            first_line = raw_preview.split("\n")[0].strip()[:80]
+            headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
+            rest = raw_preview[len(first_line):].strip()[:300]
+            body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
+            await article_repo.insert(
+                pool, league_id=league_id, season=season,
+                persona_id=_persona_id, category=_category,
+                headline=headline, body=body,
+                subject_team_ids=_subject_team_ids,
+                subject_player_ids=_subject_player_ids,
+            )
+            return {"headline": headline, "body": body}
+
+        # Inject empty defaults for optional fields so _assemble_article never KeyErrors.
+        parsed.setdefault("key_stats", [])
+        parsed.setdefault("bullets", [])
+        parsed.setdefault("verdict", "")
 
         persona_display = persona.display_name
         body = _assemble_article(parsed, persona_display)
