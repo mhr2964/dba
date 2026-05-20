@@ -40,7 +40,7 @@ _FORM_CACHE_TTL = 60.0  # seconds
 # incoming side contains a young, quality player — they're buying age, not value.
 _REBUILD_MODES: frozenset[str] = frozenset({"rebuilding", "soft_rebuild", "developing"})
 DEFAULT_FLEECING_FLOOR: float = 0.85
-REBUILD_BUYS_YOUNG_FLOOR: float = 0.70
+REBUILD_BUYS_YOUNG_FLOOR: float = 0.78
 
 # OVR normalization constant so OVR 80 anchors at 40.0 in player_trade_value.
 # Derived: 80 ** 1.45 = 488.94  →  _OVR_NORM = 488.94 / 40 = 12.2236
@@ -68,8 +68,16 @@ def _effective_fleecing_floor(
         return DEFAULT_FLEECING_FLOOR, False
     has_young_buy = any(
         a.get("asset_type") == "player"
-        and (a.get("player") or {}).get("age", 99) <= 25
-        and (a.get("player") or {}).get("overall", 0) >= 75
+        and (
+            (
+                (a.get("player") or {}).get("age", 99) <= 23
+                and (a.get("player") or {}).get("overall", 0) >= 78
+            )
+            or (
+                (a.get("player") or {}).get("age", 99) <= 24
+                and (a.get("player") or {}).get("overall", 0) >= 80
+            )
+        )
         for a in assets_receiving
     )
     if has_young_buy:
@@ -1330,7 +1338,7 @@ async def cpu_should_accept(
         ovr_gap = max_giving_ovr - max_receiving_ovr
         age_gap = avg_receiving_age - avg_giving_age  # positive = receiving older
 
-        if ovr_gap >= 3 and age_gap >= 2.0:
+        if (ovr_gap >= 3 and age_gap >= 2.0) or (ovr_gap >= 2 and age_gap >= 1.0):
             return False, (
                 f"hard reject: parting with OVR {max_giving_ovr} (avg age {avg_giving_age:.1f}) "
                 f"for OVR {max_receiving_ovr} (avg age {avg_receiving_age:.1f}) — selling low on younger asset"

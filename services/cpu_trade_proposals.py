@@ -2196,7 +2196,8 @@ async def _maybe_auto_approve(
 
     assets = await trade_repo.get_assets(pool, trade.id)
 
-    # Rebuild value scores for both sides.
+    # Value scores are needed for the ride-along panel display only.
+    # Fairness gating already ran upstream in cpu_should_accept — no second gate here.
     proposer_value = 0.0
     counterparty_value = 0.0
 
@@ -2246,46 +2247,6 @@ async def _maybe_auto_approve(
                     proposer_value += v
                 else:
                     counterparty_value += v
-
-    # Second lopsided-trade guard: even if the proposal got through, don't auto-approve
-    # a trade where one side's value exceeds the other by more than 50%.
-    # This catches edge cases where target_value was 0 at proposal time (contract lookup
-    # failure) but the actual values are computable here.
-    max_side = max(proposer_value, counterparty_value)
-    min_side = min(proposer_value, counterparty_value)
-    if max_side > 0 and min_side < max_side * 0.50:
-        log.info(
-            f"CPU-to-CPU trade {trade.id} blocked at auto-approve: lopsided "
-            f"(proposer_value={proposer_value:.1f}, counterparty_value={counterparty_value:.1f}) "
-            f"— leaving as pending_commissioner"
-        )
-        return
-
-    # OVR sanity guard at auto-approve: salary-weighted value can mask huge OVR gaps
-    # (e.g. Luka OVR 93 on a $41M contract appears equal to a cheaper OVR 79 player).
-    # Collect each side's best OVR and reject if one side's best player is 10+ OVR
-    # above the other side's best player.
-    proposer_ovrs: list[int] = []
-    counterparty_ovrs: list[int] = []
-    for asset in assets:
-        if asset.asset_type == "player" and asset.player_id:
-            p_row = await pool.fetchrow("SELECT overall FROM players WHERE id = $1", asset.player_id)
-            if p_row:
-                if asset.from_team_id == trade.proposer_team_id:
-                    proposer_ovrs.append(p_row["overall"])
-                else:
-                    counterparty_ovrs.append(p_row["overall"])
-    if proposer_ovrs and counterparty_ovrs:
-        best_prop_ovr = max(proposer_ovrs)
-        best_counter_ovr = max(counterparty_ovrs)
-        ovr_gap = abs(best_prop_ovr - best_counter_ovr)
-        if ovr_gap >= 10:
-            log.info(
-                f"CPU-to-CPU trade {trade.id} blocked at auto-approve: OVR gap "
-                f"(proposer best OVR={best_prop_ovr}, counterparty best OVR={best_counter_ovr}) "
-                f"— leaving as pending_commissioner"
-            )
-            return
 
     # ── Ride-along hook (c): Commissioner auto-approve ────────────────────────
     # After both lopsided guards pass, before the approval transaction commits.
