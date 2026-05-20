@@ -244,6 +244,34 @@ async def _create_locked(
         log.info(f"League {league.id}: calling guild.create_category({category_name!r})")
         category = await guild.create_category(category_name)
         log.info(f"League {league.id}: created Discord category id={category.id}")
+
+        # Pre-emptive sweep: Discord's API sometimes processes our category
+        # create twice when discord.py retries on a transient. If a duplicate
+        # of our category name exists already (other than the one we just
+        # tracked), delete it NOW — while it's still empty — so we don't have
+        # to delete its child channels later and the user never sees the
+        # doubled state. Final sweep below catches any duplicates that show
+        # up after our child-channel creates.
+        try:
+            existing = await guild.fetch_channels()
+            early_dupes = [
+                c for c in existing
+                if isinstance(c, discord.CategoryChannel)
+                and c.name == category_name
+                and c.id != category.id
+            ]
+            for dup in early_dupes:
+                log.warning(
+                    f"League {league.id}: pre-emptive sweep found duplicate "
+                    f"category id={dup.id} (kept id={category.id}) — deleting now"
+                )
+                try:
+                    await dup.delete(reason="DBA pre-emptive duplicate sweep")
+                except Exception as exc:
+                    log.warning(f"  pre-emptive delete failed for {dup.id}: {exc}")
+        except Exception as exc:
+            log.warning(f"League {league.id}: pre-emptive sweep failed: {exc}")
+
         for role_name in CHANNEL_ROLES:
             ch = await category.create_text_channel(role_name)
             channel_ids[role_name] = ch.id
