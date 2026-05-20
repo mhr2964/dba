@@ -215,22 +215,23 @@ async def generate(  # noqa: PLR0912, PLR0915
         user_content_parts += ["", memory_block]
     user_content_parts += [
         "",
-        'Return ONLY valid JSON: {"headline": "...", "body": "..."}',
+        "Return ONLY valid JSON matching this EXACT shape — no other keys, no prose:",
+        json.dumps({
+            "headline": "punchy ≤80 chars",
+            "lede": "ONE sentence, the take, ≤25 words",
+            "key_stats": [
+                {"label": "what the number means", "value": "the number with units"},
+            ],
+            "bullets": [
+                "ONE line each, ≤18 words, lead with a number or proper noun when possible",
+            ],
+            "verdict": "ONE sentence closing take, ≤20 words",
+        }),
+        "",
+        "Constraints: key_stats must have 2-4 entries. bullets must have 2-3 entries.",
         "No markdown, no code fences.",
     ]
     user_content = "\n".join(user_content_parts)
-
-    # Prepend a hard score-accuracy rule before the persona's own voice notes.
-    # This fires before any context so the model cannot later "forget" it.
-    length_rule = (
-        "LENGTH RULE (mandatory): Your article body must be 90-130 words. No more. No less.\n"
-        "STRUCTURE (mandatory — follow exactly):\n"
-        "1. One-sentence lede: state your take directly. Bold the key name or verdict.\n"
-        "2. 2-3 bullets using the • character (not -). Each bullet: one line only. "
-        "Lead with the number or stat, then the beat. Example: '• **24/8/5 on .604 TS** — career year amid chaos.'\n"
-        "3. One-sentence close: verdict or forward hook. No filler.\n"
-        "No paragraph blocks. No walls of text. Discord-native formatting only.\n\n"
-    )
 
     score_accuracy_rule = (
         "SCORE ACCURACY RULE (mandatory, overrides everything else): "
@@ -244,39 +245,6 @@ async def generate(  # noqa: PLR0912, PLR0915
         "Cover team stories, matchup dynamics, and multiple players. "
         "The best articles zoom out to team and league context, not just stat lines. "
         "Use standings, streaks, and recent results from the context to build a wider story.\n\n"
-    )
-
-    quote_guidance = (
-        "PLAYER QUOTES: When you mention a player, include 1-2 short in-character quotes. "
-        "Keep each quote under 15 words. Quote personalities:\n"
-        "- SGA: understated, team-first ('We just focused on executing')\n"
-        "- Luka: dramatic, confident ('I want to be the best, simple')\n"
-        "- Jokic: dry, humble ('I don't think about stats, I play basketball')\n"
-        "- Tatum: intense, growth-focused ('I had to earn every minute')\n"
-        "- Giannis: philosophical, energetic ('I don't care about records, only winning')\n"
-        "- LeBron: legacy-aware ('This is about history, about what we leave behind')\n"
-        "- Curry: sharp, confident ('We know what we can do when we're locked in')\n"
-        "- KD: direct, no-nonsense ('I do my job, I let my game speak')\n"
-        "- Trae: fiery, brash ('Put some respect on it')\n"
-        "- Chet: humble, cerebral ('I just try to be smart out there')\n"
-        "- Ant: explosive, passionate ('I felt that one, I had to go get it')\n"
-        "All other players: use 1 generic quote that fits the context emotionally.\n\n"
-    )
-
-    format_freedom_rule = (
-        "DISCORD FORMATTING (mandatory): Use • bullets for any 2+ discrete points. "
-        "Bold (**) player names, verdicts, and key numbers — not entire phrases. "
-        "One blank line between sections. No paragraph walls. No filler openers "
-        "('As we look at...', 'In a matchup that...', etc.).\n\n"
-    )
-
-    custom_stats_rule = (
-        "CUSTOM STATS: You are encouraged to reference or invent insightful combinations of stats from the context. Examples:\n"
-        "- 'OKC is 8-2 when SGA plays 35+ minutes' (if standings + game data supports this)\n"
-        "- 'The Lakers defense allows 18 more points in the 4th quarter than any other team'\n"
-        "- 'Jokić's teams are 14-4 when he logs a triple-double'\n"
-        "Only use facts you can derive from the context — do not invent win-loss records or scores. "
-        "But you CAN frame context data in creative ways (ratios, per-game splits, etc.).\n\n"
     )
 
     # Prevent hallucination of 3-team trades: only describe a trade as 3-team
@@ -300,10 +268,26 @@ async def generate(  # noqa: PLR0912, PLR0915
         "Do not just repeat the label verbatim. Translate it into natural basketball language.\n\n"
     )
 
+    output_shape_rule = (
+        "OUTPUT SHAPE (mandatory — the only acceptable response format):\n"
+        "You must return a JSON object with exactly these keys: "
+        "headline, lede, key_stats, bullets, verdict.\n"
+        "key_stats is an array of {label, value} objects (2-4 entries).\n"
+        "bullets is an array of strings (2-3 entries).\n"
+        "All other fields are strings.\n"
+        "Example:\n"
+        '{"headline": "OKC Stands Alone at the Top", '
+        '"lede": "SGA dropped 34 on 62% shooting and OKC won their 8th straight.", '
+        '"key_stats": [{"label": "SGA points", "value": "34 pts"}, {"label": "OKC streak", "value": "8 straight W"}], '
+        '"bullets": ["OKC outscored GSW by 22 in the paint — a size mismatch the Warriors had no answer for.", '
+        '"SGA has gone 30+ in 5 of the last 6 games, all wins."], '
+        '"verdict": "Until someone slows SGA down, this OKC run is far from over."}\n\n'
+    )
+
     system_prompt = (
-        length_rule + score_accuracy_rule + three_team_rule +
-        narrative_rule + player_style_rule + quote_guidance +
-        format_freedom_rule + custom_stats_rule + persona.voice_notes
+        score_accuracy_rule + three_team_rule +
+        narrative_rule + player_style_rule + output_shape_rule +
+        persona.voice_notes
     )
 
     try:
@@ -312,7 +296,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         client = anthropic.AsyncAnthropic(api_key=api_key)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
+            max_tokens=400,
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -325,20 +309,51 @@ async def generate(  # noqa: PLR0912, PLR0915
                 raw = raw[4:]
             raw = raw.strip()
 
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict) or "headline" not in parsed or "body" not in parsed:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
             log.warning(
-                f"columnist_service: unexpected JSON shape from {_persona_id}: {raw[:120]!r}"
+                "columnist_service: JSON parse failed for %s/%s — falling back to truncated plain text | raw: %r",
+                _persona_id, _category, raw[:120],
             )
+            headline = f"{_category.replace('_', ' ').title()} Report"
+            body = raw[:200].strip()
+            await article_repo.insert(
+                pool, league_id=league_id, season=season,
+                persona_id=_persona_id, category=_category,
+                headline=headline, body=body,
+                subject_team_ids=_subject_team_ids,
+                subject_player_ids=_subject_player_ids,
+            )
+            return {"headline": headline, "body": body}
+
+        required_keys = {"headline", "lede", "key_stats", "bullets", "verdict"}
+        if not isinstance(parsed, dict) or not required_keys.issubset(parsed.keys()):
+            log.warning(
+                "columnist_service: unexpected JSON shape from %s — missing keys; got: %r",
+                _persona_id, list(parsed.keys()) if isinstance(parsed, dict) else raw[:120],
+            )
+            # Graceful fallback: if old shape {"headline","body"} slips through, accept it
+            if isinstance(parsed, dict) and "headline" in parsed and "body" in parsed:
+                headline = str(parsed["headline"]).strip()
+                body = str(parsed["body"]).strip()[:1400]
+                await article_repo.insert(
+                    pool, league_id=league_id, season=season,
+                    persona_id=_persona_id, category=_category,
+                    headline=headline, body=body,
+                    subject_team_ids=_subject_team_ids,
+                    subject_player_ids=_subject_player_ids,
+                )
+                return {"headline": headline, "body": body}
             return None
 
         headline = str(parsed["headline"]).strip()
-        body = str(parsed["body"]).strip()
-        if not headline or not body:
-            log.warning(f"columnist_service: empty headline or body from {_persona_id}")
+        if not headline:
+            log.warning("columnist_service: empty headline from %s", _persona_id)
             return None
-        if len(body) > 1400:
-            body = body[:1397] + "[…]"
+
+        persona_display = persona.display_name
+        body = _assemble_article(parsed, persona_display)
 
         await article_repo.insert(
             pool,
@@ -363,3 +378,47 @@ async def generate(  # noqa: PLR0912, PLR0915
             f"| response preview: {raw_preview!r}"
         )
         return None
+
+
+def _assemble_article(parsed: dict, persona: str) -> str:
+    """Assemble Discord markdown from structured LLM output.
+
+    Format is guaranteed by code — the LLM provides semantic content only.
+    Returns a string suitable for use as an embed description.
+    """
+    lede = str(parsed.get("lede", "")).strip()
+    key_stats: list[dict] = parsed.get("key_stats", []) or []
+    bullets: list[str] = parsed.get("bullets", []) or []
+    verdict = str(parsed.get("verdict", "")).strip()
+
+    parts: list[str] = []
+
+    if lede:
+        parts.append(lede)
+
+    if key_stats:
+        parts.append("")
+        parts.append("__Key Numbers__")
+        for stat in key_stats[:4]:
+            label = str(stat.get("label", "")).strip()
+            value = str(stat.get("value", "")).strip()
+            if label and value:
+                parts.append(f"> • **{label}**: {value}")
+
+    if bullets:
+        parts.append("")
+        parts.append("__The Read__")
+        for bullet in bullets[:3]:
+            text = str(bullet).strip()
+            if text:
+                parts.append(f"• {text}")
+
+    if verdict:
+        parts.append("")
+        parts.append(f"**Verdict:** {verdict}")
+
+    if persona:
+        parts.append("")
+        parts.append(f"— *{persona}*")
+
+    return "\n".join(parts)
