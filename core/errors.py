@@ -55,12 +55,19 @@ async def handle_app_command_error(
             msg = cause.message
         else:
             log.error(f"Unhandled error in /{interaction.command}: {cause}", exc_info=cause)
+            # If the command already sent a response, the user saw the real result.
+            # Sending a second "Something went wrong" followup would be confusing —
+            # suppress the user-visible message and rely on the log above.
+            if interaction.response.is_done():
+                return
     elif isinstance(error, app_commands.CommandOnCooldown):
         msg = f"Slow down — try again in {error.retry_after:.1f}s."
     elif isinstance(error, app_commands.MissingPermissions):
         msg = "You don't have permission to do that."
     else:
         log.error(f"App command error: {error}", exc_info=error)
+        if interaction.response.is_done():
+            return
 
     if msg is None:
         return
