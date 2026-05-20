@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -154,6 +155,8 @@ async def _get_eligible_players(
             p.is_rookie,
             p.position,
             p.defense,
+            p.birth_date,
+            pr.role                                                     AS role_tag,
             COUNT(b.id)                                                 AS games_played,
             SUM(CASE WHEN b.started THEN 1 ELSE 0 END)                 AS games_started,
             AVG(b.points)                                               AS ppg,
@@ -161,6 +164,7 @@ async def _get_eligible_players(
             AVG(b.assists)                                              AS apg,
             AVG(b.steals)                                               AS spg,
             AVG(b.blocks)                                               AS bpg,
+            AVG(b.fouls)                                                AS fouls_per_game,
             CASE WHEN SUM(b.fga) > 0
                  THEN SUM(b.fgm)::REAL / SUM(b.fga) ELSE 0 END         AS fg_pct,
             CASE WHEN (SUM(b.fga) + 0.44 * SUM(b.fta)) > 0
@@ -170,11 +174,15 @@ async def _get_eligible_players(
         FROM players p
         JOIN game_box_scores b ON b.player_id = p.id
         JOIN games g ON g.id = b.game_id
+        LEFT JOIN player_roles pr
+               ON pr.player_id = p.id
+              AND pr.league_id  = $1
+              AND pr.season     = $2
         WHERE g.league_id = $1
           AND g.season    = $2
           AND g.season_type = 'regular'
           AND p.league_id = $1
-        GROUP BY p.id
+        GROUP BY p.id, pr.role
         HAVING COUNT(b.id) > 20
         """,
         league_id,
@@ -201,6 +209,13 @@ async def _get_eligible_players(
             continue
         if award_type == "dpoy" and (row_dict.get("defense") or 0) < 65:
             continue
+        # No 38+ player has won DPOY historically; hard-gate before scoring.
+        if award_type == "dpoy":
+            birth = row_dict.get("birth_date")
+            if birth is not None:
+                age = (datetime.date(season, 10, 1) - birth).days / 365.25
+                if age > 37:
+                    continue
 
         eligible.append(row_dict)
 
@@ -223,6 +238,25 @@ def _mvp_score(p: dict) -> float:
     rpg = float(p["rpg"] or 0)
     ts_pct = float(p.get("ts_pct") or 0)
     return ppg * 1.0 + apg * 0.6 + rpg * 0.4 + ts_pct * 10
+
+
+def _mvp_team_adjustments(win_pct: float, wins: int) -> float:
+    """Return the team-record component of MVP scoring.
+
+    Separated so cpu_voter and any future callers can import one source of truth.
+
+    win_pct * 32 — wider spread between contenders and lottery teams than the
+    old *20 multiplier (contender +19.5 vs lottery +7.8 instead of +12.2 / +4.9).
+
+    Sub-.500 penalty: shaves additional points off bad-team candidates.
+    Tank-team hard cap at 35: a player on a <25-win team cannot exceed this
+    ceiling regardless of stats, keeping them below realistic MVP candidates
+    (who sit in the 45-55 range).
+    """
+    base = win_pct * 32
+    if win_pct < 0.500:
+        base -= (0.500 - win_pct) * 25
+    return base
 
 
 async def get_race_leaders(
@@ -549,9 +583,11 @@ async def generate_cpu_votes(
             }
             team_rec = records_by_team.get(p["team_id"] or 0, {"wins": 0, "losses": 0})
             # Enrich player dict with DPOY-specific context so the scorer can use it.
+            # birth_date, role_tag, and fouls_per_game come from the eligible query.
             p_scored = dict(p)
             p_scored["_team_def_boost"] = 5 if p.get("team_id") in dpoy_def_team_ids else 0
             p_scored["_team_losses"] = team_rec.get("losses", 0)
+            p_scored["_season"] = season
             score = score_player_for_award(p_scored, stats, team_rec, award_type, profile)
             if score > best_score:
                 best_score = score
