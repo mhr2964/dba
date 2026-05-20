@@ -16,13 +16,32 @@ async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False) 
     token is still valid for followup.send() calls, so we log a warning and
     continue rather than propagating the exception and aborting the handler.
     """
+    # Measure how old the interaction is by the time we try to defer.
+    # Discord's 3-second ack window starts at interaction.created_at, so an
+    # interaction arriving at >2.5s is doomed regardless of our handler speed.
+    from datetime import datetime, timezone
+    age_ms: float | None = None
+    try:
+        age_ms = (datetime.now(timezone.utc) - interaction.created_at).total_seconds() * 1000
+    except Exception:
+        pass
+
     try:
         await interaction.response.defer(ephemeral=ephemeral)
+        if age_ms is not None and age_ms > 1500:
+            log.warning(
+                f"defer() OK but interaction {interaction.id} was already "
+                f"{age_ms:.0f}ms old on arrival (3000ms window) — gateway lag"
+            )
     except discord.InteractionResponded:
         # Already responded (e.g. legacy alias deferred before calling canonical handler).
         pass
     except (discord.NotFound, discord.HTTPException) as exc:
-        log.warning(f"defer() failed for interaction {interaction.id} ({exc}) — continuing")
+        age_str = f"{age_ms:.0f}ms" if age_ms is not None else "?"
+        log.warning(
+            f"defer() failed for interaction {interaction.id} ({exc}) — "
+            f"age at defer attempt: {age_str} (3000ms window) — continuing"
+        )
 
 
 async def safe_respond(
