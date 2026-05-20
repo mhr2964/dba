@@ -805,11 +805,27 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             f"Bot restart requested by {interaction.user} ({interaction.user.id})"
         )
 
-        # Skip defer/respond entirely — Discord's gateway delivery is often
-        # laggy enough that the 3-second ack window expires before we can
-        # reply, and a half-failed ack shows "Something went wrong" to the
-        # user. Just exit fast; Discord shows "Application did not respond"
-        # for a few seconds while the watchdog respawns us.
+        # Best-effort ack. When Discord's gateway is responsive, this sends
+        # a clean ephemeral. When it's not, the interaction has already
+        # expired and we silently fall back to a regular channel message so
+        # the user always sees at least one "yes the restart is happening"
+        # message — Discord's own "Application did not respond" might still
+        # show alongside but the context is clear.
+        ack_msg = "Restarting now — back in ~5 seconds."
+        sent_ack = False
+        try:
+            await interaction.response.send_message(ack_msg, ephemeral=True)
+            sent_ack = True
+        except discord.HTTPException:
+            pass
+
+        if not sent_ack and interaction.channel is not None:
+            try:
+                await interaction.channel.send(
+                    f"{interaction.user.mention} restarting now — back in ~5 seconds."
+                )
+            except discord.HTTPException:
+                pass
 
         # Exit with code 42 — run.py watchdog sees this and respawns main.py.
         # All the previous self-spawn approaches (subprocess.Popen with
