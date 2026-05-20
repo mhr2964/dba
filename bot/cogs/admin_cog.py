@@ -783,49 +783,46 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Bot owner: restart the bot process",
     )
     async def restart_bot(self, interaction: discord.Interaction) -> None:
-        # Bot-level admin: check Discord application owner OR commissioner of
-        # any league in this guild. This is a process-restart, not a
-        # league-state action, so it shouldn't require a league to exist.
+        # Defer IMMEDIATELY — this MUST be the first await. Discord's
+        # 3-second ack window starts when the user clicks, not when we
+        # receive the gateway event, so we have ~150ms of bot-side
+        # budget if Discord's delivery was responsive. Anything before
+        # this (is_owner, DB lookups) eats into that budget.
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            # Interaction already expired before we could ack. Discord
+            # will show "Application did not respond" — nothing we can
+            # do; restart still proceeds.
+            pass
+
+        # Permission check (after defer so it doesn't eat ack budget).
         bot = interaction.client
         is_owner = await bot.is_owner(interaction.user)
         if not is_owner:
             league = await league_repo.get_by_guild(await get_pool(), interaction.guild_id)
             if not league or interaction.user.id != league.commissioner_user_id:
-                # Permission denied — respond cleanly before bailing.
                 try:
-                    await interaction.response.send_message(
-                        "Only the bot owner or league commissioner can restart the bot.",
-                        ephemeral=True,
+                    await interaction.edit_original_response(
+                        content="Only the bot owner or league commissioner can restart the bot."
                     )
                 except discord.HTTPException:
                     pass
                 return
 
-        log.warning(
-            f"Bot restart requested by {interaction.user} ({interaction.user.id})"
-        )
-
-        # Best-effort ack. When Discord's gateway is responsive, this sends
-        # a clean ephemeral. When it's not, the interaction has already
-        # expired and we silently fall back to a regular channel message so
-        # the user always sees at least one "yes the restart is happening"
-        # message — Discord's own "Application did not respond" might still
-        # show alongside but the context is clear.
-        ack_msg = "Restarting now — back in ~5 seconds."
-        sent_ack = False
+        # Replace the "DBA is thinking..." placeholder with the restart
+        # message. Uses the same interaction token (valid for 15 minutes
+        # post-defer), so this works even if the defer itself was slow.
         try:
-            await interaction.response.send_message(ack_msg, ephemeral=True)
-            sent_ack = True
+            await interaction.edit_original_response(
+                content="Restarting now — back in ~5 seconds."
+            )
         except discord.HTTPException:
             pass
 
-        if not sent_ack and interaction.channel is not None:
-            try:
-                await interaction.channel.send(
-                    f"{interaction.user.mention} restarting now — back in ~5 seconds."
-                )
-            except discord.HTTPException:
-                pass
+        log.warning(
+            f"Bot restart requested by {interaction.user} ({interaction.user.id})"
+        )
 
         # Exit with code 42 — run.py watchdog sees this and respawns main.py.
         # All the previous self-spawn approaches (subprocess.Popen with
