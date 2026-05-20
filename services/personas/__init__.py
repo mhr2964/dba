@@ -1,36 +1,26 @@
+"""Persona registry — auto-discovers every sibling module.
+
+Adding a new persona:
+1. Create ``services/personas/<name>.py`` defining a Persona instance
+   and calling ``register_persona(Persona(...))``
+2. That's it — no edits to this file needed
+"""
 from __future__ import annotations
 
+import importlib
+import pkgutil
+from pathlib import Path
+
 from services.personas.base import Persona
-from services.personas.maya_chen import maya_chen
-from services.personas.marcus_brooks import marcus_brooks
-from services.personas.marcus_cole import marcus_cole
-from services.personas.ren_takahashi import ren_takahashi
-from services.personas.jordan_rivera import jordan_rivera
-from services.personas.keisha_williams import keisha_williams
-from services.personas.hot_take_hour import hot_take_hour
-from services.personas.pat_chen import pat_chen
+from services.personas._registry import REGISTRY, register_persona
 
-# Registry keyed by persona id — used by columnist_service for lookups.
-PERSONAS: dict[str, Persona] = {
-    maya_chen.id: maya_chen,
-    marcus_brooks.id: marcus_brooks,
-    marcus_cole.id: marcus_cole,
-    ren_takahashi.id: ren_takahashi,
-    jordan_rivera.id: jordan_rivera,
-    keisha_williams.id: keisha_williams,
-    hot_take_hour.id: hot_take_hour,
-    pat_chen.id: pat_chen,
-}
+_pkg_path = Path(__file__).parent
+for _, modname, _ in pkgutil.iter_modules([str(_pkg_path)]):
+    if modname.startswith("_"):
+        continue
+    importlib.import_module(f"{__name__}.{modname}")
 
-__all__ = [
-    "Persona",
-    "PERSONAS",
-    "maya_chen",
-    "marcus_brooks",
-    "marcus_cole",
-    "ren_takahashi",
-    "jordan_rivera",
-    "keisha_williams",
-    "hot_take_hour",
-    "pat_chen",
-]
+# Public alias — preserves all existing ``from services.personas import PERSONAS`` callers.
+PERSONAS: dict[str, Persona] = REGISTRY
+
+__all__ = ["Persona", "PERSONAS", "register_persona"]

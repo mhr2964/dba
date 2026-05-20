@@ -430,8 +430,8 @@ async def _insert_contract_row(
         """
         INSERT INTO contracts (
             league_id, player_id, team_id, salary, years_remaining,
-            total_years, contract_type, signed_in_season, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+            total_years, contract_type, signed_in_season, is_active, signed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NULL)
         """,
         league_id, player_id, team_id, salary, years, years, contract_type, current_season,
     )
@@ -443,8 +443,52 @@ async def _generate_lineup(
     team_id: int,
     player_ids_by_overall: list[tuple[int, int]],
 ) -> None:
-    for i, (pid, _ovr) in enumerate(player_ids_by_overall[:15]):
-        slot = i + 1
+    if not player_ids_by_overall:
+        return
+
+    # Fetch positions for all players on this team.
+    pids = [pid for pid, _ in player_ids_by_overall]
+    rows = await pool.fetch(
+        "SELECT id, position FROM players WHERE id = ANY($1::int[])", pids
+    )
+    pos_map = {r["id"]: r["position"] for r in rows}
+
+    # Fill exactly one starter per position slot, in order PG → SG → SF → PF → C.
+    # Within each slot, pick the highest-OVR eligible player not already used.
+    # If no player fits the required position, fall back to highest-OVR remaining.
+    starter_positions = ["PG", "SG", "SF", "PF", "C"]
+    starters: list[int] = []
+    used_ids: set[int] = set()
+
+    all_players = [(pid, ovr) for pid, ovr in player_ids_by_overall]
+
+    for pos in starter_positions:
+        # Best player at the required position, by OVR descending.
+        best = max(
+            ((pid, ovr) for pid, ovr in all_players if pid not in used_ids and pos_map.get(pid) == pos),
+            key=lambda x: x[1],
+            default=None,
+        )
+        if best is None:
+            # No player at this position — use best overall remaining.
+            best = max(
+                ((pid, ovr) for pid, ovr in all_players if pid not in used_ids),
+                key=lambda x: x[1],
+                default=None,
+            )
+        if best is not None:
+            starters.append(best[0])
+            used_ids.add(best[0])
+
+    # Bench: remaining players in OVR order, up to 10 bench slots.
+    bench = [pid for pid, _ in player_ids_by_overall if pid not in used_ids][:10]
+
+    all_slots = (
+        [(pid, True, slot + 1) for slot, pid in enumerate(starters)]
+        + [(pid, False, slot + 6) for slot, pid in enumerate(bench)]
+    )
+
+    for pid, is_starter, slot in all_slots:
         await pool.execute(
             """
             INSERT INTO lineups (league_id, team_id, is_starter, slot, player_id)
@@ -453,7 +497,7 @@ async def _generate_lineup(
                 SET player_id = EXCLUDED.player_id,
                     is_starter = EXCLUDED.is_starter
             """,
-            league_id, team_id, slot <= 5, slot, pid,
+            league_id, team_id, is_starter, slot, pid,
         )
 
 

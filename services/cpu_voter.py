@@ -37,16 +37,29 @@ def score_player_for_award(
     wins = team_record.get("wins", 0)
 
     if award_type == "dpoy":
-        # All profiles converge on defensive stats; profile adds a small tiebreaker.
-        base = spg * 3.0 + bpg * 2.5
+        # Eligibility: players with defense < 65 are excluded upstream in
+        # _get_eligible_players. Defense attribute is passed via player dict.
+        defense_attr = player.get("defense", 75)
+        defense_boost = (defense_attr / 99) * 8
+        # Center positional penalty: real DPOY almost always goes to a wing or
+        # rim protector, not a center who isn't elite defensively.
+        position = (player.get("position") or "").upper()
+        position_penalty = -3 if position == "C" else 0
+        base = spg * 2.5 + bpg * 2.0 + defense_boost + position_penalty
+        # Team defensive rating boost: added by caller when team is top-10 in
+        # points allowed; the voter profiles add small profile-specific tiebreakers.
+        team_def_boost = player.get("_team_def_boost", 0)
+        base += team_def_boost
         if profile == VoterProfile.SCORER:
             return base + ppg * 0.05
         if profile == VoterProfile.EFFICIENCY:
-            return base + ts_pct * 5
+            return base + ts_pct * 0.5
         if profile == VoterProfile.DEFENSE:
-            return base * 1.3
+            return base * 1.1
         # WINNING
-        return base + wins * 0.1
+        total_games = (wins + player.get("_team_losses", 0)) or 1
+        win_pct = wins / total_games
+        return base + win_pct * 0.5
 
     if award_type == "roy":
         # ROY: ppg-centric; eligibility (is_rookie) enforced upstream
@@ -66,12 +79,19 @@ def score_player_for_award(
             return base + wins * 0.15
         return base
 
-    # MVP / All-NBA / All-Star — all use MVP weights
+    # MVP / All-NBA / All-Star — all profiles use the canonical MVP composite as
+    # the base so race leaders and final vote agree on top candidates.
+    # Canonical: ppg*1.0 + apg*0.6 + rpg*0.4 + team_win_pct*20 + ts_pct*10
+    rpg = box_score_stats.get("rpg", 0.0)
+    total_games = (wins + team_record.get("losses", 0)) or 1
+    win_pct = wins / total_games
+    base_mvp = ppg * 1.0 + apg * 0.6 + rpg * 0.4 + win_pct * 20 + ts_pct * 10
+    # Profile adds a small tiebreaker (5% swing) without overriding rankings.
     if profile == VoterProfile.SCORER:
-        return ppg * 0.5 + apg * 0.2 + wins * 0.3
+        return base_mvp + ppg * 0.05
     if profile == VoterProfile.EFFICIENCY:
-        return ts_pct * 50 + apg * 0.3 + wins * 0.2
+        return base_mvp + ts_pct * 0.5
     if profile == VoterProfile.DEFENSE:
-        return spg * 2.0 + bpg * 1.5 + wins * 0.3 + ppg * 0.1
+        return base_mvp + (spg + bpg) * 0.1
     # WINNING
-    return wins * 0.6 + ppg * 0.2 + apg * 0.2
+    return base_mvp + win_pct * 0.5

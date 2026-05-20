@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import discord
 import pytest
 
 from bot.cogs.setup_cog import LeagueGroup, TeamGroup
@@ -73,7 +72,10 @@ async def test_league_create_calls_service_with_correct_args(mock_interaction):
     """
     fake_league = _make_fake_league()
 
-    with patch("bot.cogs.setup_cog.league_service.create", new=AsyncMock(return_value=fake_league)) as mock_create, \
+    # why: _supported_seasons() is lru_cached and filesystem-backed; 2025 may not
+    #      be in the local BDL cache. Patch to return [2025] so the season check passes.
+    with patch("bot.cogs.setup_cog._supported_seasons", return_value=[2025]), \
+         patch("bot.cogs.setup_cog.league_service.create", new=AsyncMock(return_value=fake_league)) as mock_create, \
          patch("bot.cogs.setup_cog.league_repo.get_channel", new=AsyncMock(return_value=None)):
 
         group = LeagueGroup()
@@ -95,10 +97,13 @@ async def test_league_create_dba_error_replies_ephemeral(mock_interaction):
     exception (the app-command error handler converts it to an ephemeral reply).
     We verify the exception escapes the handler — the cog does not swallow it.
     """
-    with patch(
-        "bot.cogs.setup_cog.league_service.create",
-        new=AsyncMock(side_effect=DBAError("already exists")),
-    ):
+    # why: season validation runs before service call; must patch _supported_seasons
+    #      so the DBAError from the service (not the season check) is what's tested.
+    with patch("bot.cogs.setup_cog._supported_seasons", return_value=[2025]), \
+         patch(
+             "bot.cogs.setup_cog.league_service.create",
+             new=AsyncMock(side_effect=DBAError("already exists")),
+         ):
         group = LeagueGroup()
         with pytest.raises(DBAError, match="already exists"):
             await group.create.callback(group, mock_interaction, name="Dupe League", season=2025)
@@ -115,7 +120,8 @@ async def test_league_create_posts_to_league_news_when_channel_exists(mock_inter
 
     mock_interaction.guild.get_channel = MagicMock(return_value=fake_channel)
 
-    with patch("bot.cogs.setup_cog.league_service.create", new=AsyncMock(return_value=fake_league)), \
+    with patch("bot.cogs.setup_cog._supported_seasons", return_value=[2025]), \
+         patch("bot.cogs.setup_cog.league_service.create", new=AsyncMock(return_value=fake_league)), \
          patch("bot.cogs.setup_cog.league_repo.get_channel", new=AsyncMock(return_value=200)):
 
         group = LeagueGroup()
@@ -134,7 +140,8 @@ async def test_league_create_skips_news_when_channel_missing(mock_interaction):
     fake_league = _make_fake_league()
     mock_interaction.guild.get_channel = MagicMock(return_value=None)
 
-    with patch("bot.cogs.setup_cog.league_service.create", new=AsyncMock(return_value=fake_league)), \
+    with patch("bot.cogs.setup_cog._supported_seasons", return_value=[2025]), \
+         patch("bot.cogs.setup_cog.league_service.create", new=AsyncMock(return_value=fake_league)), \
          patch("bot.cogs.setup_cog.league_repo.get_channel", new=AsyncMock(return_value=200)):
 
         group = LeagueGroup()

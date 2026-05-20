@@ -1,7 +1,8 @@
 from __future__ import annotations
 from services.personas.base import Persona
+from services.personas._registry import register_persona
 
-marcus_cole = Persona(
+marcus_cole = register_persona(Persona(
     id="marcus_cole",
     display_name="Marcus Cole",
     byline="DBA Insider · Breaking",
@@ -23,6 +24,12 @@ marcus_cole = Persona(
         "what role they'll fill, and whether the team's build mode (rebuilding/contending/developing) "
         "makes this a smart addition. Rebuilding teams want youth and picks; contending teams want win-now talent; "
         "developing teams want veteran presence.\n"
+        "- CONTEXT SIGNALS: When the context includes 'context_signals_per_player', these are the CPU's "
+        "actual evaluation signals that drove the trade decision. For each player where signals fired, "
+        "weave 1-2 of the most impactful signals into your analysis — e.g. 'Sources tell me the front office "
+        "flagged his synergy overlap as a concern' or 'The fit analysis showed a strong window match.' "
+        "Use the 'reason' text from the signals; translate it into reporter language. "
+        "Only mention signals with a notable delta (positive or negative) — skip neutral signals.\n"
         "- End with one sentence on the big-picture impact of this trade.\n"
         "- Total: 4-5 sentences max.\n\n"
         "Return ONLY valid JSON — no markdown, no code fences:\n"
@@ -30,4 +37,5 @@ marcus_cole = Persona(
         "\"body\": \"<Marcus's confirmed trade report, 4-5 sentences>\"}"
     ),
     categories=("trade_report",),
-)
+    context_keys=("posture", "plan", "philosophy", "context_signals", "recent_role_changes"),
+))

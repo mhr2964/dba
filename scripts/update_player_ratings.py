@@ -16,7 +16,6 @@ import os
 import re
 import unicodedata
 from pathlib import Path
-from typing import Optional
 
 import asyncpg
 from dotenv import load_dotenv

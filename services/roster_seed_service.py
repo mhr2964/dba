@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Roster-year consistency reconciler (Slices 3 & 4).
 
 Responsible for diffing a live league's roster against a season seed file and
@@ -11,6 +9,7 @@ Public surface:
     diff_league_against_seed(pool, league_id, season) -> dict
     apply_reseed(pool, league_id, season, *, dry_run) -> dict
 """
+from __future__ import annotations
 
 import json
 import os
@@ -50,9 +49,63 @@ _position_avgs_cache: dict[int, dict[str, dict[str, float]]] = {}
 # Keyed by season int -> {bdl_player_id: record}
 _bdl_base_cache: dict[int, dict[int, dict]] = {}
 
-_BDL_CACHE_DIR = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
+_BDL_CACHE_DIR     = pathlib.Path(__file__).parent.parent / "data" / "bdl_cache"
+_TEND_CACHE_DIR    = pathlib.Path(__file__).parent.parent / "data" / "tendency_cache"
 _TENDENCY_STATS = ("ast", "reb", "stl", "blk")
 _DEFAULT_TENDENCIES = {"blk_tendency": 50, "stl_tendency": 50, "ast_tendency": 50, "reb_tendency": 50, "usage_weight": 50}
+
+# Pre-built tendency snapshots keyed by season -> {normalized_name: tendency dict}
+_tend_snapshot_cache: dict[int, dict[str, dict]] = {}
+
+# Nickname / shortened-name → BDL canonical name overrides (applied after normalization)
+_TEND_NAME_ALIASES: dict[str, str] = {
+    "alex sarr":      "alexandre sarr",
+    "nic claxton":    "nicolas claxton",
+    "bones hyland":   "nahshon hyland",
+    "bub carrington": "carlton carrington",
+}
+
+
+def _load_tend_snapshot(season: int) -> dict[str, dict]:
+    """Load data/tendency_cache/season_{season}.json into module cache."""
+    if season in _tend_snapshot_cache:
+        return _tend_snapshot_cache[season]
+    path = _TEND_CACHE_DIR / f"season_{season}.json"
+    if not path.exists():
+        _tend_snapshot_cache[season] = {}
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        _tend_snapshot_cache[season] = data
+        return data
+    except (json.JSONDecodeError, OSError):
+        _tend_snapshot_cache[season] = {}
+        return {}
+
+
+def _norm_for_tend(name: str) -> str:
+    """Normalize player name for tendency snapshot lookup."""
+    normalized = " ".join(
+        unicodedata.normalize("NFKD", name)
+        .encode("ascii", "ignore")
+        .decode()
+        .lower()
+        .replace(".", "")
+        .replace("'", "")
+        .strip()
+        .split()
+    )
+    return _TEND_NAME_ALIASES.get(normalized, normalized)
+
+
+def _tendencies_from_snapshot(full_name: str, season: int) -> dict | None:
+    """Return tendency dict from pre-built snapshot, or None if not found."""
+    snapshot = _load_tend_snapshot(season)
+    if not snapshot:
+        return None
+    key = _norm_for_tend(full_name)
+    return snapshot.get(key)
 
 # 2024 NBA Draft class — used to set is_rookie=TRUE for the 2024-25 season.
 # Normalized (accent-stripped, lowercase) names are compared; the set uses
@@ -152,10 +205,45 @@ def _get_position_avgs(season: int, by_id: dict[int, dict]) -> dict[str, dict[st
     return avgs
 
 
+def _tendencies_from_attrs(attrs: dict, position: str) -> dict[str, int]:
+    """Derive tendency values from player DB attribute ratings when BDL data is absent."""
+    playmaking = float(attrs.get("playmaking", 50) or 50)
+    speed = float(attrs.get("speed", 50) or 50)
+    iq = float(attrs.get("iq", 50) or 50)
+    rebounding = float(attrs.get("rebounding", 50) or 50)
+    overall = float(attrs.get("overall", 70) or 70)
+    pos = (position or "SF").upper()
+
+    ast_tendency = int(max(15, min(95, round(25 + (playmaking / 99) * 65))))
+
+    stl_avg = (speed + iq) / 2.0
+    stl_tendency = int(max(15, min(95, round(20 + (stl_avg / 99) * 55))))
+
+    if pos in ("C", "PF"):
+        blk_attr = rebounding
+    else:
+        blk_attr = iq
+    blk_tendency = int(max(15, min(95, round(15 + (blk_attr / 99) * 65))))
+
+    reb_tendency = int(max(15, min(95, round(20 + (rebounding / 99) * 70))))
+
+    scoring_tendency = int(max(15, min(95, round(30 + (overall / 99) * 60))))
+
+    return {
+        "blk_tendency": blk_tendency,
+        "stl_tendency": stl_tendency,
+        "ast_tendency": ast_tendency,
+        "reb_tendency": reb_tendency,
+        "usage_weight": scoring_tendency,
+        "defense_tendency": 50,
+    }
+
+
 def _compute_stat_tendencies(
     external_id: "int | str | None",
     season: int,
     position: str,
+    player_attrs: "dict | None" = None,
 ) -> dict[str, int]:
     """Return tendency + usage fields derived from BDL per-game stats.
 
@@ -179,16 +267,50 @@ def _compute_stat_tendencies(
 
     Falls back to all-50 defaults if the player is not found or the cache
     file is missing — existing rows without BDL data are unaffected.
+
+    Priority:
+      1. Pre-built tendency snapshot (data/tendency_cache/season_{season}.json) keyed
+         by normalized player name — accurate, no ID mismatch issues.
+      2. Legacy BDL ID lookup — kept for backwards compatibility but rarely succeeds
+         since DB external_ids are NBA-API IDs, not BDL IDs.
+      3. Attribute-derived fallback via _tendencies_from_attrs.
     """
+    # Priority 1: pre-built snapshot (name-based, always accurate)
+    player_name = ""
+    if player_attrs:
+        fn = player_attrs.get("first_name", "")
+        ln = player_attrs.get("last_name", "")
+        player_name = f"{fn} {ln}".strip()
+    if player_name:
+        snap = _tendencies_from_snapshot(player_name, season)
+        if snap:
+            return {
+                "blk_tendency":     snap.get("blk_tendency", 50),
+                "stl_tendency":     snap.get("stl_tendency", 50),
+                "ast_tendency":     snap.get("ast_tendency", 50),
+                "reb_tendency":     snap.get("reb_tendency", 50),
+                "defense_tendency": snap.get("defense_tendency", 50),
+                "usage_weight":     snap.get("usage_weight", 50),
+                "tendency_3pt":     snap.get("tendency_3pt", 50),
+                "tendency_drive":   snap.get("tendency_drive", 50),
+                "tendency_pass":    snap.get("tendency_pass", 50),
+            }
+
     if external_id is None:
+        if player_attrs:
+            return _tendencies_from_attrs(player_attrs, position)
         return dict(_DEFAULT_TENDENCIES)
 
     by_id = _load_bdl_base(season)
     if not by_id:
+        if player_attrs:
+            return _tendencies_from_attrs(player_attrs, position)
         return dict(_DEFAULT_TENDENCIES)
 
     bdl_id = int(external_id) if str(external_id).isdigit() else None
     if bdl_id is None or bdl_id not in by_id:
+        if player_attrs:
+            return _tendencies_from_attrs(player_attrs, position)
         return dict(_DEFAULT_TENDENCIES)
 
     rec = by_id[bdl_id]
@@ -216,25 +338,54 @@ def _compute_stat_tendencies(
     stl_tendency = _tend("stl")
     blk_tendency = _tend("blk")
 
-    # defense_tendency: weighted composite of stl+blk relative to position average.
-    # Stl contributes 60%, blk 40% (steals are a better proxy for active defense).
+    # defense_tendency: position-aware weighted composite of stl+blk relative to
+    # position average.  Block-heavy weighting for bigs (rim protection is their
+    # primary defensive value); steal-heavy for guards (perimeter disruption).
+    # C/PF (F bucket): 30% stl + 70% blk — Gobert/Wemby/AD profile
+    # SF/SG (F bucket, wings): 50%/50% — Anunoby, OG two-way profile
+    # PG/SG (G bucket): 70% stl + 30% blk — Holiday/Marcus Smart profile
     # Capped at 85 so no player is a lockdown god in the sim.
     stl_val = float(stats.get("stl") or 0.0)
     blk_val = float(stats.get("blk") or 0.0)
     stl_avg = p_avgs.get("stl") or 1.0
     blk_avg = p_avgs.get("blk") or 1.0
+    if pos == "C":
+        _def_stl_w, _def_blk_w = 0.30, 0.70
+    elif pos == "F":
+        _def_stl_w, _def_blk_w = 0.50, 0.50
+    else:  # G
+        _def_stl_w, _def_blk_w = 0.70, 0.30
     defense_raw = round(
-        ((stl_val / stl_avg) * 0.60 + (blk_val / blk_avg) * 0.40) * 50
+        ((stl_val / stl_avg) * _def_stl_w + (blk_val / blk_avg) * _def_blk_w) * 50
     )
     defense_tendency = max(5, min(85, defense_raw))
 
+    fga = float(stats.get("fga") or 0.0)
+    tpa = float(stats.get("tpa") or 0.0)
+    fta = float(stats.get("fta") or 0.0)
+    ast_val = float(stats.get("ast") or 0.0)
+
+    # tendency_3pt: 3PA as % of FGA, scaled to 0–100, clamped [5, 95]
+    three_rate = min(tpa / max(fga, 1.0), 1.0)
+    tendency_3pt = max(5, min(95, round(three_rate * 100)))
+
+    # tendency_drive: FTA as proxy for drives, scaled to 0–80, clamped [5, 95]
+    drive_rate = min(fta / max(fga, 1.0), 1.0)
+    tendency_drive = max(5, min(95, round(drive_rate * 80)))
+
+    # tendency_pass: ast-to-scoring ratio, clamped [5, 95]
+    tendency_pass = max(5, min(95, round(min(ast_val / max(pts / 10, 0.5), 1.0) * 80)))
+
     return {
-        "blk_tendency": blk_tendency,
-        "stl_tendency": stl_tendency,
-        "ast_tendency": _tend("ast"),
-        "reb_tendency": reb_tendency,
+        "blk_tendency":   blk_tendency,
+        "stl_tendency":   stl_tendency,
+        "ast_tendency":   _tend("ast"),
+        "reb_tendency":   reb_tendency,
         "defense_tendency": defense_tendency,
-        "usage_weight": usage_weight,
+        "usage_weight":   usage_weight,
+        "tendency_3pt":   tendency_3pt,
+        "tendency_drive": tendency_drive,
+        "tendency_pass":  tendency_pass,
     }
 
 
@@ -628,7 +779,7 @@ async def apply_reseed(
             await mark_players_seeded(pool, [player_id], season)
 
             tendencies = _compute_stat_tendencies(
-                seed_row.get("external_id"), season, position
+                seed_row.get("external_id"), season, position, player_attrs=player_data
             )
             await pool.execute(
                 """
@@ -638,8 +789,11 @@ async def apply_reseed(
                     ast_tendency      = $3,
                     reb_tendency      = $4,
                     usage_weight      = $5,
-                    defense_tendency  = $6
-                WHERE id = $7
+                    defense_tendency  = $6,
+                    tendency_3pt      = $7,
+                    tendency_drive    = $8,
+                    tendency_pass     = $9
+                WHERE id = $10
                 """,
                 tendencies["blk_tendency"],
                 tendencies["stl_tendency"],
@@ -647,6 +801,9 @@ async def apply_reseed(
                 tendencies["reb_tendency"],
                 tendencies["usage_weight"],
                 tendencies.get("defense_tendency", 50),
+                tendencies.get("tendency_3pt", 50),
+                tendencies.get("tendency_drive", 50),
+                tendencies.get("tendency_pass", 50),
                 player_id,
             )
 
@@ -682,7 +839,14 @@ async def apply_reseed(
             await bulk_set_team(pool, league_id, [player_id], new_team_id)
             await terminate_contract(pool, league_id, player_id)
 
-            overall = db_player.get("overall") or _overall_from_ratings_file(
+            full_player_row = await pool.fetchrow(
+                "SELECT id, overall, position, playmaking, speed, iq, rebounding, external_id "
+                "FROM players WHERE id = $1",
+                player_id,
+            )
+            full_player_attrs = dict(full_player_row) if full_player_row else db_player
+
+            overall = full_player_attrs.get("overall") or _overall_from_ratings_file(
                 season, full_name
             )
             salary, contract_type, years = import_service._contract_salary(
@@ -694,9 +858,9 @@ async def apply_reseed(
             )
             await mark_players_seeded(pool, [player_id], season)
 
-            move_position = db_player.get("position", "")
-            move_ext_id = db_player.get("external_id") or seed_row.get("external_id")
-            tendencies = _compute_stat_tendencies(move_ext_id, season, move_position)
+            move_position = full_player_attrs.get("position", "")
+            move_ext_id = full_player_attrs.get("external_id") or seed_row.get("external_id")
+            tendencies = _compute_stat_tendencies(move_ext_id, season, move_position, player_attrs=full_player_attrs)
             await pool.execute(
                 """
                 UPDATE players
@@ -705,8 +869,11 @@ async def apply_reseed(
                     ast_tendency      = $3,
                     reb_tendency      = $4,
                     usage_weight      = $5,
-                    defense_tendency  = $6
-                WHERE id = $7
+                    defense_tendency  = $6,
+                    tendency_3pt      = $7,
+                    tendency_drive    = $8,
+                    tendency_pass     = $9
+                WHERE id = $10
                 """,
                 tendencies["blk_tendency"],
                 tendencies["stl_tendency"],
@@ -714,6 +881,9 @@ async def apply_reseed(
                 tendencies["reb_tendency"],
                 tendencies["usage_weight"],
                 tendencies.get("defense_tendency", 50),
+                tendencies.get("tendency_3pt", 50),
+                tendencies.get("tendency_drive", 50),
+                tendencies.get("tendency_pass", 50),
                 player_id,
             )
 

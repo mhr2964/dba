@@ -78,7 +78,7 @@ def _generate_for_game(game: dict, teams_by_id: dict, rng: random.Random) -> str
     loser_name = teams_by_id.get(loser_id, {}).get("name", f"Team {loser_id}")
 
     all_box: list[dict] = game.get("home_box", []) + game.get("away_box", [])
-    top_scorer = max(all_box, key=lambda l: l.get("points", 0), default=None)
+    top_scorer = max(all_box, key=lambda row: row.get("points", 0), default=None)
 
     # Always show winner score first so "X-Y" means winner-loser, never a confusing tie.
     winner_score = home_score if winner_id == home_team_id else away_score
@@ -181,7 +181,7 @@ def _build_game_summary(game: dict, teams_by_id: dict) -> Optional[str]:
     loser = away_name if winner_id == home_id else home_name
 
     all_box = game.get("home_box", []) + game.get("away_box", [])
-    top_players = sorted(all_box, key=lambda l: l.get("points", 0), reverse=True)[:3]
+    top_players = sorted(all_box, key=lambda row: row.get("points", 0), reverse=True)[:3]
     stat_parts = []
     for p in top_players:
         name = p.get("player_name") or f"Player#{p.get('player_id','?')}"
@@ -244,8 +244,8 @@ async def generate_storylines_ai(
                 raw = raw[4:]
             raw = raw.strip()
         lines = json.loads(raw)
-        if isinstance(lines, list) and all(isinstance(l, str) for l in lines):
-            return [l for l in lines if l][:max_storylines]
+        if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
+            return [line for line in lines if line][:max_storylines]
     except Exception as exc:
         raw_preview = locals().get("raw", "<no response>")[:120]
         log.warning(f"AI storylines failed, falling back to templates: {exc} | response preview: {raw_preview!r}")

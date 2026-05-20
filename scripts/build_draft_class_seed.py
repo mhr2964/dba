@@ -338,8 +338,6 @@ def build_historical(year: int, dry_run: bool) -> list[dict]:
         person_id = int(row.get("PERSON_ID", 0) or 0)
         player_name = str(row.get("PLAYER_NAME", "") or "").strip()
         organization = str(row.get("ORGANIZATION", "") or "").strip()
-        round_number = int(row.get("ROUND_NUMBER", 1) or 1)
-        round_pick = int(row.get("ROUND_PICK", 0) or 0)
         overall_pick = int(row.get("OVERALL_PICK", 0) or 0)
 
         if person_id == 0 or not player_name:
@@ -501,7 +499,7 @@ def build_projected(year: int, dry_run: bool) -> list[dict]:
         hidden = _hidden_fields(ovr)
         prospects.append({
             "external_id": None,
-            "first_name": f"Prospect",
+            "first_name": "Prospect",
             "last_name": f"{overall_pick}",
             "full_name": f"Prospect {overall_pick}",
             "position": position,

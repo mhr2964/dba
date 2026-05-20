@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 from random import Random
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from data.db import get_pool
 from data.repositories import game_repo, team_repo
@@ -48,24 +48,78 @@ def _balance_pairs(pairs: List[Tuple[int, int]], rng: Random) -> List[Tuple[int,
     return result
 
 
-def _build_pairs(teams: List[team_repo.Team]) -> List[Tuple[int, int, int]]:
+def _add_makeup_games(
+    pair_counts: Dict[Tuple[int, int], int],
+    teams: List[team_repo.Team],
+    target: int = 82,
+) -> None:
     """
-    Return list of (home_id, away_id, game_number_within_series) for all 82-game matchups.
-    Game counts per pair:
-      - Division opponents:              4 games
-      - Same-conf, different division:   3 or 4 games (alternated to hit ~36 in-conf total)
-      - Cross-conference:                2 games
-    For each pair count N, we generate ceil(N/2) home and floor(N/2) away games for the
-    alphabetically-first team, alternating the direction each game so home/away is balanced.
+    Adjust pair_counts in place so that every team ends up with exactly `target`
+    game appearances.  Cross-conference pairs with only 2 games are preferred
+    as makeup candidates because bumping them to 3 is least disruptive.
+
+    Safety cap of 200 iterations prevents infinite loops if a degenerate schedule
+    configuration makes it impossible to reach the target.
+    """
+    team_ids = [t.id for t in teams]
+    for _ in range(200):
+        appearances: Dict[int, int] = {tid: 0 for tid in team_ids}
+        for (lo, hi), count in pair_counts.items():
+            appearances[lo] += count
+            appearances[hi] += count
+
+        under = [tid for tid in team_ids if appearances[tid] < target]
+        if not under:
+            break
+
+        # Pick the team furthest under target.
+        target_tid = min(under, key=lambda tid: appearances[tid])
+
+        # Among that team's pairs, pick the one with the fewest games (ties broken
+        # by preferring cross-conference pairs, which start at 2).
+        best_pair: Optional[Tuple[int, int]] = None
+        min_count = float("inf")
+        for (lo, hi), count in pair_counts.items():
+            if lo == target_tid or hi == target_tid:
+                if count < min_count:
+                    min_count = count
+                    best_pair = (lo, hi)
+
+        if best_pair is not None:
+            pair_counts[best_pair] += 1
+
+
+def _build_pairs(teams: List[team_repo.Team], rng: Optional[Random] = None) -> List[Tuple[int, int]]:
+    """
+    Return list of (home_id, away_id) for all 82-game matchups.
+
+    NBA exact formula — every team plays exactly 82 games:
+      - 4 games vs each of the 4 other division opponents           = 16
+      - 4 games vs 6 of the 10 other same-conf opponents (rotating) = 24
+      - 3 games vs the remaining 4 same-conf opponents              = 12
+      - 2 games vs each of the 15 inter-conference opponents         = 30
+      Total: 82
+
+    For each pair with N games we generate ceil(N/2) games with the
+    lower-id team at home and floor(N/2) with the higher-id team at home,
+    keeping home/away balanced.
+
+    Same-conf cross-div design guarantee:
+      Each conference has 3 divisions of 5.  Each team plays 10 cross-div
+      opponents across 2 other divisions (5 opponents each).  We assign
+      exactly 3 of those 5 opponents per opposite division as 4-game and 2
+      as 3-game, giving 3+3=6 four-game and 2+2=4 three-game cross-div
+      opponents: 6×4+4×3=36 cross-div games, guaranteed per team.
+
+      Within each (div_A vs div_B) pair we use a rng-seeded cyclic shift to
+      select which 3 of the 5 opposing teams get the 4-game treatment.
+      The shift is applied from both sides, so the 4-game set is symmetric:
+      if A plays B four times, B plays A four times.
     """
     by_conf: Dict[str, Dict[str, List[team_repo.Team]]] = {}
     for t in teams:
         by_conf.setdefault(t.conference, {}).setdefault(t.division, []).append(t)
 
-    # Map team_id -> Team for quick lookup
-    team_by_id = {t.id: t for t in teams}
-
-    # Build pair -> game_count mapping
     pair_counts: Dict[Tuple[int, int], int] = {}
 
     def add_pair(a_id: int, b_id: int, count: int) -> None:
@@ -75,27 +129,42 @@ def _build_pairs(teams: List[team_repo.Team]) -> List[Tuple[int, int, int]]:
     for conf, divisions in by_conf.items():
         div_names = sorted(divisions.keys())
 
-        # Division games: each intra-division pair plays 4x
+        # Division games: 4 per intra-division pair → 4 opponents × 4 = 16 per team.
         for div_name, div_teams in divisions.items():
             for i, ta in enumerate(div_teams):
                 for tb in div_teams[i + 1:]:
                     add_pair(ta.id, tb.id, 4)
 
-        # Same-conf, different-division: iterate PAIRS of divisions (forward only)
-        # so each cross-div pair is added exactly once.
-        # Target: ~36 cross-div same-conf games per team (10 opponents, mix of 3 and 4).
+        # Same-conf cross-div: for each ordered (div_a, div_b) pairing we assign
+        # exactly 3 four-game and 2 three-game opponents per team on each side.
+        # We do this by choosing a cyclic shift s ∈ {0,1,2,3,4} (rng or 0) and
+        # marking the 3 pairs (ta[i], tb[(i+s) % 5]), (ta[i], tb[(i+s+1) % 5]),
+        # (ta[i], tb[(i+s+2) % 5]) as 4-game for each ta[i].
+        # Equivalently: pair (ta[i], tb[j]) is 4-game iff (j - i - s) % 5 < 3.
+        # This is symmetric: (j-i-s)%5 < 3 iff (i-j-(-s))%5 in {2,3,4}... wait,
+        # symmetry requires that when we flip sides (tb[j] looking at ta[i]):
+        # (i - j - s) % 5 < 3. That's a different condition, so we cannot use a
+        # simple shift for symmetric 4-game sets.
+        #
+        # Correct symmetric construction: for each pair (ta[i], tb[j]) we assign
+        # 4 games iff (i + j + shift) % 5 < 3. Each ta[i] has j=0..4, and
+        # (i+j+shift)%5 < 3 is satisfied for exactly 3 values of j (since
+        # residues 0,1,2,3,4 each appear once as j varies over 0..4). Symmetric
+        # because the condition is the same when roles are swapped.
         for i, div_a in enumerate(div_names):
             for div_b in div_names[i + 1:]:
-                for ta in divisions[div_a]:
-                    for tb in divisions[div_b]:
-                        # Alternate 4/3 by id parity so each team gets roughly
-                        # half opponents at 4 games and half at 3 → avg 3.5 × 10 = 35.
-                        # Cross-conf is 30, div is 16 → total ≈ 81 (one game shy of 82;
-                        # the NBA solves this with a full-graph LP — close enough here).
-                        count = 4 if (ta.id + tb.id) % 2 == 0 else 3
-                        add_pair(ta.id, tb.id, count)
+                teams_a = divisions[div_a]
+                teams_b = divisions[div_b]
+                # Pick a per-div-pair shift for schedule variety across seasons/leagues.
+                shift = rng.randint(0, 4) if rng is not None else 0
+                for ai, ta in enumerate(teams_a):
+                    for bi, tb in enumerate(teams_b):
+                        if (ai + bi + shift) % 5 < 3:
+                            add_pair(ta.id, tb.id, 4)
+                        else:
+                            add_pair(ta.id, tb.id, 3)
 
-    # Cross-conference pairs: 2 games each
+    # Cross-conference: 2 games per pair, 15 opponents × 2 = 30 per team. ✓
     conf_list = list(by_conf.keys())
     if len(conf_list) == 2:
         conf_a, conf_b = conf_list[0], conf_list[1]
@@ -105,8 +174,8 @@ def _build_pairs(teams: List[team_repo.Team]) -> List[Tuple[int, int, int]]:
             for tb in teams_b:
                 add_pair(ta.id, tb.id, 2)
 
-    # Expand pair_counts into (home_id, away_id) game list
-    # For N games between A and B: ceil(N/2) with A at home, floor(N/2) with B at home
+    # Expand pair_counts into (home_id, away_id) game list.
+    # For N games between A and B: ceil(N/2) with lower-id at home, floor(N/2) away.
     games: List[Tuple[int, int]] = []
     for (id_lo, id_hi), count in pair_counts.items():
         home_count = (count + 1) // 2
@@ -199,13 +268,11 @@ async def generate_season(league_id: int, season: int) -> int:
     rng_seed = hash((league_id, season, "schedule")) & 0x7FFFFFFFFFFFFFFF
     rng = Random(rng_seed)
 
-    pairs = _build_pairs(teams)
+    pairs = _build_pairs(teams, rng=rng)
     pairs = _balance_pairs(pairs, rng)
 
     scheduled = _assign_dates(rng, pairs, season)
     scheduled.sort(key=lambda x: x[2])
-
-    b2b_set = _find_back_to_backs(scheduled)
 
     # Track per-team game_index (1-82)
     team_game_index: Dict[int, int] = {t.id: 0 for t in teams}

@@ -10,7 +10,7 @@ from discord.ext import commands
 from bot.embeds import sim_embeds
 from bot.embeds.sim_embeds import box_score_summary_embed, box_score_team_embed
 from bot.ui.box_score_views import BoxScoreView
-from core.errors import DBAError, PermissionError
+from core.errors import safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, team_repo
@@ -82,6 +82,28 @@ async def _target_index_for_n_more_per_team(pool, league_id: int, n_more: int) -
     return last_idx
 
 
+_SIM_DEP_WARNED: set[int] = set()
+
+
+async def _send_sim_dep_warning(
+    interaction: discord.Interaction,
+    old: str,
+    new: str,
+) -> None:
+    uid = interaction.user.id
+    if uid in _SIM_DEP_WARNED:
+        return
+    _SIM_DEP_WARNED.add(uid)
+    try:
+        await interaction.followup.send(
+            f"**Heads up:** `{old}` has moved to `{new}`. "
+            "The old path will be removed after the next season rollover.",
+            ephemeral=True,
+        )
+    except Exception:
+        pass
+
+
 class SimGroup(app_commands.Group, name="sim", description="Advance the league simulation"):
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -89,9 +111,9 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         self.bot = bot
 
 
-    @app_commands.command(name="rivalry", description="Sim CPU games until the next user matchup")
-    async def rivalry(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+    @app_commands.command(name="to-next-rival", description="Sim CPU games until the next user matchup")
+    async def to_next_rival(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_rivalry")
@@ -121,25 +143,31 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         if next_game:
             embed.add_field(
                 name="Next",
-                value="Both managers `/ready`, then `/sim rivalry` again to play your matchup.",
+                value="When all managers are `/team ready`, `/sim to-next-rival` will play through your matchup.",
                 inline=False,
             )
         await interaction.followup.send(embed=embed)
-        if summary["games_simmed"] > 0:
+        if summary.get("user_matchups_simmed", 0) > 0:
             await game_repo.reset_ready(pool, league.id)
 
-    @app_commands.command(name="games", description="Sim until every team has played N more games")
+    @app_commands.command(name="rivalry", description="[MOVED] Use /sim to-next-rival instead")
+    async def rivalry_legacy(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
+        await _send_sim_dep_warning(interaction, old="/sim rivalry", new="/sim to-next-rival")
+        await self.to_next_rival(interaction)
+
+    @app_commands.command(name="run", description="Sim until every team has played N more games")
     @app_commands.describe(
         count="Number of games for each team to play (1–20)",
         force="Skip the ready check and user-matchup warning (does not override phase restrictions)",
     )
-    async def games(
+    async def run(
         self,
         interaction: discord.Interaction,
         count: int,
         force: bool = False,
     ) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_games")
@@ -208,16 +236,32 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         if summary.get("season_complete"):
             embed.add_field(name="Season Status", value="Regular season is now complete.", inline=False)
         await interaction.followup.send(embed=embed)
-        await game_repo.reset_ready(pool, league.id)
+        if summary.get("user_matchups_simmed", 0) > 0:
+            await game_repo.reset_ready(pool, league.id)
 
-    @app_commands.command(name="season", description="Sim to end of regular season")
+    @app_commands.command(name="games", description="[MOVED] Use /sim run instead")
+    @app_commands.describe(
+        count="Number of games for each team to play (1–20)",
+        force="Skip the ready check and user-matchup warning",
+    )
+    async def games_legacy(
+        self,
+        interaction: discord.Interaction,
+        count: int,
+        force: bool = False,
+    ) -> None:
+        await safe_defer(interaction)
+        await _send_sim_dep_warning(interaction, old="/sim games", new="/sim run")
+        await self.run(interaction, count, force)
+
+    @app_commands.command(name="to-end", description="Sim to end of regular season")
     @app_commands.describe(force="Skip past user matchups without stopping")
-    async def season(
+    async def to_end(
         self,
         interaction: discord.Interaction,
         force: bool = False,
     ) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_season")
@@ -274,17 +318,27 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                         )
                         await ch.send(embed=em)
 
-        import asyncio as _asyncio
-        _asyncio.create_task(_run_sim_and_post())
+        asyncio.create_task(_run_sim_and_post())
 
-    @app_commands.command(name="deadline", description="Sim to the trade deadline and open the trade window")
-    @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
-    async def deadline(
+    @app_commands.command(name="season", description="[MOVED] Use /sim to-end instead")
+    @app_commands.describe(force="Skip past user matchups without stopping")
+    async def season_legacy(
         self,
         interaction: discord.Interaction,
         force: bool = False,
     ) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
+        await _send_sim_dep_warning(interaction, old="/sim season", new="/sim to-end")
+        await self.to_end(interaction, force)
+
+    @app_commands.command(name="to-deadline", description="Sim to the trade deadline and open the trade window")
+    @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
+    async def to_deadline(
+        self,
+        interaction: discord.Interaction,
+        force: bool = False,
+    ) -> None:
+        await safe_defer(interaction)
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
         await require_phase(league, "sim_deadline")
@@ -332,6 +386,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             league.current_season,
             deadline_index,
             bot=self.bot,
+            force=force,
         )
 
         if summary.get("warning"):
@@ -359,79 +414,114 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         )
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="deadline", description="[MOVED] Use /sim to-deadline instead")
+    @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
+    async def deadline_legacy(
+        self,
+        interaction: discord.Interaction,
+        force: bool = False,
+    ) -> None:
+        await safe_defer(interaction)
+        await _send_sim_dep_warning(interaction, old="/sim deadline", new="/sim to-deadline")
+        await self.to_deadline(interaction, force)
 
-@app_commands.command(name="ready", description="Mark yourself as ready for the next matchup")
+
+# ---------------------------------------------------------------------------
+# Deprecation aliases for top-level commands moved to groups
+# (remove after next season rollover)
+# ---------------------------------------------------------------------------
+
+_TOP_LEVEL_DEP_WARNED: set[int] = set()
+
+
+async def _send_top_dep_warning(
+    interaction: discord.Interaction,
+    old: str,
+    new: str,
+) -> None:
+    uid = interaction.user.id
+    if uid in _TOP_LEVEL_DEP_WARNED:
+        return
+    _TOP_LEVEL_DEP_WARNED.add(uid)
+    try:
+        await interaction.followup.send(
+            f"**Heads up:** `{old}` has moved to `{new}`. "
+            "The old path will be removed after the next season rollover.",
+            ephemeral=True,
+        )
+    except Exception:
+        pass
+
+
+@app_commands.command(name="ready", description="[MOVED] Use /team ready instead")
 async def ready_command(interaction: discord.Interaction) -> None:
+    await safe_defer(interaction, ephemeral=True)
+    await _send_top_dep_warning(interaction, old="/ready", new="/team ready")
     pool = await get_pool()
     league = await league_repo.get_by_guild(pool, interaction.guild_id)
     if not league:
-        await interaction.response.send_message("No active league.", ephemeral=True)
+        await interaction.followup.send("No active league.", ephemeral=True)
         return
 
     await require_phase(league, "ready")
 
     team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
     if not team:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "You don't manage a team in this league.", ephemeral=True
         )
         return
 
     await game_repo.set_ready(pool, league.id, team.id, interaction.user.id, True)
-    await interaction.response.send_message("Ready.", ephemeral=True)
+    await interaction.followup.send("Ready.", ephemeral=True)
 
     teams = await team_repo.get_all(pool, league.id)
     human_teams = [t for t in teams if t.manager_user_id is not None]
     ready_ids = set(await game_repo.get_ready_teams(pool, league.id))
     if human_teams and all(t.id in ready_ids for t in human_teams):
-        current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
-        next_games = await pool.fetch(
-            "SELECT * FROM games WHERE league_id=$1 AND season=$2 AND game_index=$3",
-            league.id, league.current_season, current_index + 1,
+        await interaction.channel.send(
+            "All managers are ready! Commissioner can run `/sim to-next-rival` to continue."
         )
-        next_game = dict(next_games[0]) if next_games else None
-
-        if next_game and next_game.get("is_user_matchup") and next_game.get("status") == "scheduled":
-            # User vs user game — fire auto-sim in background, no commissioner needed
-            asyncio.create_task(_auto_sim_and_advance(league, interaction.guild, pool))
-        else:
-            # CPU vs CPU next — batch-sim to the next rivalry
-            asyncio.create_task(_batch_advance(league, interaction.guild))
 
 
-@app_commands.command(name="forceready", description="Commissioner: mark all managers as ready (testing)")
+@app_commands.command(name="forceready", description="[MOVED] Use /admin force-ready instead")
 async def force_ready_command(interaction: discord.Interaction) -> None:
+    await safe_defer(interaction, ephemeral=True)
+    await _send_top_dep_warning(interaction, old="/forceready", new="/admin force-ready")
     pool = await get_pool()
     league = await league_repo.get_by_guild(pool, interaction.guild_id)
     if not league:
-        await interaction.response.send_message("No active league.", ephemeral=True)
+        await interaction.followup.send("No active league.", ephemeral=True)
         return
 
     if interaction.user.id != league.commissioner_user_id:
-        await interaction.response.send_message("Only the commissioner can force-ready.", ephemeral=True)
+        await interaction.followup.send("Only the commissioner can force-ready.", ephemeral=True)
         return
 
     teams = await team_repo.get_all(pool, league.id)
     human_teams = [t for t in teams if t.manager_user_id is not None]
 
     if not human_teams:
-        await interaction.response.send_message("No managers to ready up.", ephemeral=True)
+        await interaction.followup.send("No managers to ready up.", ephemeral=True)
         return
 
     for team in human_teams:
         await game_repo.set_ready(pool, league.id, team.id, team.manager_user_id, True)
 
-    await interaction.response.send_message(
-        f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.", ephemeral=True
+    await interaction.followup.send(
+        f"Force-readied {len(human_teams)} manager(s). Now run `/sim to-next-rival` to advance.",
+        ephemeral=True,
     )
 
 
-@app_commands.command(name="standings", description="Show current standings")
+@app_commands.command(name="standings", description="[MOVED] Use /season standings instead")
 async def standings_command(interaction: discord.Interaction) -> None:
+    await safe_defer(interaction, ephemeral=True)
+    await _send_top_dep_warning(interaction, old="/standings", new="/season standings")
     pool = await get_pool()
     league = await league_repo.get_by_guild(pool, interaction.guild_id)
     if not league:
-        await interaction.response.send_message("No active league.", ephemeral=True)
+        await interaction.followup.send("No active league.", ephemeral=True)
         return
 
     rows = await game_repo.get_standings(pool, league.id, league.current_season)
@@ -439,7 +529,6 @@ async def standings_command(interaction: discord.Interaction) -> None:
     teams_by_id = {t.id: t for t in teams}
 
     if not rows:
-        # Pre-season: synthesise 0-0 rows from the teams table so standings is useful from day 1.
         rows = [
             {"team_id": t.id, "wins": 0, "losses": 0, "conference": t.conference,
              "division": t.division, "streak": 0, "last_10_wins": 0, "last_10_losses": 0}
@@ -447,32 +536,34 @@ async def standings_command(interaction: discord.Interaction) -> None:
         ]
 
     embed = sim_embeds.standings_embed(rows, teams_by_id)
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
-@app_commands.command(name="schedule", description="Show a team's next 10 scheduled games")
+@app_commands.command(name="schedule", description="[MOVED] Use /season schedule instead")
 @app_commands.describe(team_code="NBA team code (e.g. LAL) — defaults to your team")
 async def schedule_command(
     interaction: discord.Interaction,
     team_code: Optional[str] = None,
 ) -> None:
+    await safe_defer(interaction, ephemeral=True)
+    await _send_top_dep_warning(interaction, old="/schedule", new="/season schedule")
     pool = await get_pool()
     league = await league_repo.get_by_guild(pool, interaction.guild_id)
     if not league:
-        await interaction.response.send_message("No active league.", ephemeral=True)
+        await interaction.followup.send("No active league.", ephemeral=True)
         return
 
     if team_code:
         team = await team_repo.get_by_code(pool, league.id, team_code)
         if not team:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"No team found with code **{team_code.upper()}**.", ephemeral=True
             )
             return
     else:
         team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not team:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You don't manage a team. Provide a `team_code` argument.", ephemeral=True
             )
             return
@@ -496,7 +587,7 @@ async def schedule_command(
     )
 
     if not rows:
-        await interaction.response.send_message("No upcoming games found.", ephemeral=True)
+        await interaction.followup.send("No upcoming games found.", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -508,17 +599,17 @@ async def schedule_command(
         is_home = r["home_team_id"] == team.id
         opp_code = r["away_code"] if is_home else r["home_code"]
         venue = "vs" if is_home else "@"
-        user_marker = " [USER]" if r["is_user_matchup"] else ""
+        user_marker = " [RIVAL]" if r["is_user_matchup"] else ""
         lines.append(
             f"Game #{r['game_index']} — {r['scheduled_date']}  {venue} **{opp_code}**{user_marker}"
         )
     embed.description = "\n".join(lines)
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
-@app_commands.command(name="box-score", description="Show full box score for a simmed game")
+@app_commands.command(name="box-score", description="[MOVED] Use /season box-score instead")
 @app_commands.describe(
-    game="Game number from /schedule or recap footers (regular season)",
+    game="Game number from /season schedule or recap footers (regular season)",
     game_id="Game ID from playoff recap footer (use this for playoff games)",
 )
 async def box_score_command(
@@ -526,7 +617,8 @@ async def box_score_command(
     game: Optional[int] = None,
     game_id: Optional[int] = None,
 ) -> None:
-    await interaction.response.defer(ephemeral=True)
+    await safe_defer(interaction, ephemeral=True)
+    await _send_top_dep_warning(interaction, old="/box-score", new="/season box-score")
 
     if game is None and game_id is None:
         await interaction.followup.send(
@@ -554,7 +646,7 @@ async def box_score_command(
     box_rows = await game_repo.get_box_scores_for_game(pool, game_row["id"])
     if not box_rows:
         await interaction.followup.send(
-            f"No box score data found for game #{game}.", ephemeral=True
+            f"No box score data found for game {lookup_label}.", ephemeral=True
         )
         return
 
@@ -563,7 +655,6 @@ async def box_score_command(
     away_code    = game_row["away_code"]
     home_code    = game_row["home_code"]
 
-    # Attach team_code to each row for top-performers labeling
     for row in box_rows:
         row["team_code"] = away_code if row["team_id"] == away_team_id else home_code
 

@@ -132,7 +132,7 @@ async def check_and_update_records(
             _winner_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", winner_team_id)
             _winner_code = _winner_row["nba_team_code"] if _winner_row else "???"
             # Derive loser team from box score team IDs.
-            _all_team_ids = list({l.get("team_id") for l in all_box if l.get("team_id")})
+            _all_team_ids = list({box.get("team_id") for box in all_box if box.get("team_id")})
             _loser_team_id = next((tid for tid in _all_team_ids if tid != winner_team_id), None)
             if _loser_team_id:
                 _loser_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", _loser_team_id)
@@ -206,12 +206,13 @@ async def _check_all_time_records(
                 game_id=game_id,
                 season_set=season,
             )
-            _pid = best_line["player_id"]
-            _row = await pool.fetchrow("SELECT first_name, last_name FROM players WHERE id = $1", _pid)
-            _name = f"{_row['first_name']} {_row['last_name']}" if _row else f"Player #{_pid}"
-            at_announcements.append(
-                f"\U0001f3db️ ALL-TIME RECORD: {_name} scored {best_pts} points — new franchise high in league history!"
-            )
+            if best_pts > _RECORD_FLOORS["most_pts_game_player"]:
+                _pid = best_line["player_id"]
+                _row = await pool.fetchrow("SELECT first_name, last_name FROM players WHERE id = $1", _pid)
+                _name = f"{_row['first_name']} {_row['last_name']}" if _row else f"Player #{_pid}"
+                at_announcements.append(
+                    f"\U0001f3db️ ALL-TIME RECORD: {_name} scored {best_pts} points — new franchise high in league history!"
+                )
 
     # Highest team score (all-time)
     high_score = max(home_score, away_score)
@@ -229,11 +230,12 @@ async def _check_all_time_records(
             game_id=game_id,
             season_set=season,
         )
-        _team_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", high_team_id)
-        _team_code = _team_row["nba_team_code"] if _team_row else "???"
-        at_announcements.append(
-            f"\U0001f3db️ ALL-TIME RECORD: {_team_code} dropped {high_score} points — highest team score in league history!"
-        )
+        if high_score > _RECORD_FLOORS["highest_team_score"]:
+            _team_row = await pool.fetchrow("SELECT nba_team_code FROM teams WHERE id = $1", high_team_id)
+            _team_code = _team_row["nba_team_code"] if _team_row else "???"
+            at_announcements.append(
+                f"\U0001f3db️ ALL-TIME RECORD: {_team_code} dropped {high_score} points — highest team score in league history!"
+            )
 
     # Biggest blowout (all-time) — only announce at or above the 20-point floor to
     # suppress trivial early-season blowout records from small margins.

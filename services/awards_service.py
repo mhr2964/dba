@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import logging
+import os
+from collections import Counter
 from typing import Optional
 
 import asyncpg
@@ -96,6 +100,7 @@ async def get_season_stats(
             AVG(b.assists)                                              AS apg,
             AVG(b.steals)                                               AS spg,
             AVG(b.blocks)                                               AS bpg,
+            AVG(b.minutes)                                              AS mpg,
             CASE WHEN SUM(b.fga) > 0
                  THEN SUM(b.fgm)::REAL / SUM(b.fga) ELSE 0 END         AS fg_pct,
             CASE WHEN (SUM(b.fga) + 0.44 * SUM(b.fta)) > 0
@@ -123,6 +128,7 @@ async def get_season_stats(
             "apg": 0.0,
             "spg": 0.0,
             "bpg": 0.0,
+            "mpg": 0.0,
             "fg_pct": 0.0,
             "ts_pct": 0.0,
         }
@@ -146,6 +152,8 @@ async def _get_eligible_players(
             p.id                                                        AS player_id,
             p.team_id,
             p.is_rookie,
+            p.position,
+            p.defense,
             COUNT(b.id)                                                 AS games_played,
             SUM(CASE WHEN b.started THEN 1 ELSE 0 END)                 AS games_started,
             AVG(b.points)                                               AS ppg,
@@ -191,6 +199,8 @@ async def _get_eligible_players(
             continue
         if award_type in _ALL_NBA_AWARDS and not majority_starter:
             continue
+        if award_type == "dpoy" and (row_dict.get("defense") or 0) < 65:
+            continue
 
         eligible.append(row_dict)
 
@@ -199,6 +209,20 @@ async def _get_eligible_players(
         f"Candidate player_ids: {[p['player_id'] for p in eligible[:10]]}"
     )
     return eligible
+
+
+def _mvp_score(p: dict) -> float:
+    """Canonical MVP composite for in-season race ranking.
+
+    team_win_pct is excluded here because standings are not always available
+    in the race-leader context. The scorer formula (ppg/apg/rpg/ts_pct) is
+    consistent with the full voter formula which adds win_pct on top.
+    """
+    ppg = float(p["ppg"] or 0)
+    apg = float(p["apg"] or 0)
+    rpg = float(p["rpg"] or 0)
+    ts_pct = float(p.get("ts_pct") or 0)
+    return ppg * 1.0 + apg * 0.6 + rpg * 0.4 + ts_pct * 10
 
 
 async def get_race_leaders(
@@ -210,7 +234,7 @@ async def get_race_leaders(
     """Return top-N candidates per award race (mvp, dpoy, roy, 6moy) for odds generation."""
     result = {}
     sort_keys = {
-        "mvp":  lambda p: float(p["ppg"] or 0) + 0.4 * float(p["rpg"] or 0) + 0.6 * float(p["apg"] or 0),
+        "mvp":  _mvp_score,
         "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.1 * float(p["rpg"] or 0),
         "roy":  lambda p: float(p["ppg"] or 0) + 0.3 * float(p["rpg"] or 0) + 0.3 * float(p["apg"] or 0),
         "6moy": lambda p: float(p["ppg"] or 0) + 0.3 * float(p["apg"] or 0),
@@ -235,7 +259,6 @@ async def generate_awards_race_odds(
       {"mvp": [{"name": str, "pct": int}, ...], "dpoy": [...], "roy": [...], "6moy": [...]}
     or None if not enough data or Claude fails.
     """
-    import os, json
     import anthropic
 
     leaders = await get_race_leaders(pool, league_id, season, top_n=5)
@@ -309,7 +332,7 @@ async def generate_awards_race_odds(
 
     # Compute positional rank per award (rank among the award's candidates).
     award_sort_keys = {
-        "mvp":  lambda p: float(p["ppg"] or 0) + 0.4 * float(p["rpg"] or 0) + 0.6 * float(p["apg"] or 0),
+        "mvp":  _mvp_score,
         "dpoy": lambda p: float(p["bpg"] or 0) + float(p["spg"] or 0) + 0.1 * float(p["rpg"] or 0),
         "roy":  lambda p: float(p["ppg"] or 0) + 0.3 * float(p["rpg"] or 0) + 0.3 * float(p["apg"] or 0),
         "6moy": lambda p: float(p["ppg"] or 0) + 0.3 * float(p["apg"] or 0),
@@ -360,9 +383,13 @@ async def generate_awards_race_odds(
     prompt = (
         "You are an NBA writer setting awards-race odds. For each award below, output "
         "the percentage chance each candidate wins, summing to 100% per award. "
-        "Weight criteria in this order: (1) team success — wins and losses matter; "
-        "(2) recent form — last 20 games trend; (3) overall season stats vs position peers "
-        "(positional rank shown as #N); (4) games played / availability. "
+        "MANDATORY: For MVP, the canonical ranking formula is "
+        "ppg*1.0 + apg*0.6 + rpg*0.4 + team_win_pct*20 + ts_pct*10. "
+        "The candidates are already sorted by this formula (positional rank #N). "
+        "You must not deviate dramatically from this ordering — the player ranked #1 "
+        "should have the highest win probability unless recent form strongly indicates otherwise. "
+        "Weight criteria in this order: (1) canonical formula rank (mandatory anchor); "
+        "(2) recent form — last 20 games trend; (3) games played / availability. "
         "Round to whole percentages.\n\n"
         + "\n\n".join(sections)
         + "\n\nReturn ONLY valid JSON, no markdown, no code fences:\n"
@@ -410,7 +437,6 @@ async def generate_awards_race_odds(
                     valid[k] = normalized
         return valid if valid else None
     except Exception as exc:
-        import logging
         logging.getLogger(__name__).warning(f"Awards race odds generation failed: {exc}")
         return None
 
@@ -463,6 +489,36 @@ async def generate_cpu_votes(
         r["team_id"]: {"wins": r["wins"], "losses": r["losses"]} for r in record_rows
     }
 
+    # For DPOY: identify top-10 teams by fewest points allowed per game.
+    # We approximate from game_box_scores: average opponent points per game.
+    dpoy_def_team_ids: set[int] = set()
+    if award_type == "dpoy":
+        try:
+            def_rows = await pool.fetch(
+                """
+                SELECT t.team_id,
+                       AVG(opp.total_pts) AS pts_allowed_pg
+                FROM (
+                    SELECT home_team_id AS team_id, away_score AS total_pts, id AS game_id
+                    FROM games
+                    WHERE league_id = $1 AND season = $2 AND season_type = 'regular' AND status = 'simmed'
+                    UNION ALL
+                    SELECT away_team_id AS team_id, home_score AS total_pts, id AS game_id
+                    FROM games
+                    WHERE league_id = $1 AND season = $2 AND season_type = 'regular' AND status = 'simmed'
+                ) opp
+                JOIN standings_cache t ON t.team_id = opp.team_id AND t.league_id = $1 AND t.season = $2
+                GROUP BY t.team_id
+                ORDER BY pts_allowed_pg ASC
+                LIMIT 10
+                """,
+                league_id,
+                season,
+            )
+            dpoy_def_team_ids = {r["team_id"] for r in def_rows}
+        except Exception as exc:
+            log.warning(f"DPOY defensive team lookup failed: {exc}")
+
     already_voted = set(
         r["voter_team_id"]
         for r in await pool.fetch(
@@ -492,7 +548,11 @@ async def generate_cpu_votes(
                 "ts_pct": float(p["ts_pct"] or 0),
             }
             team_rec = records_by_team.get(p["team_id"] or 0, {"wins": 0, "losses": 0})
-            score = score_player_for_award(p, stats, team_rec, award_type, profile)
+            # Enrich player dict with DPOY-specific context so the scorer can use it.
+            p_scored = dict(p)
+            p_scored["_team_def_boost"] = 5 if p.get("team_id") in dpoy_def_team_ids else 0
+            p_scored["_team_losses"] = team_rec.get("losses", 0)
+            score = score_player_for_award(p_scored, stats, team_rec, award_type, profile)
             if score > best_score:
                 best_score = score
                 best_player_id = p["player_id"]
@@ -543,7 +603,6 @@ async def close_voting(voting_id: int) -> list[dict]:
         # For All-NBA: tally all votes across the three award_type sessions together.
         # Each session (all_nba_1/2/3) tallies its own votes independently —
         # top 5 by vote count in each session map to their respective team.
-        from collections import Counter
         counts: Counter = Counter(r["player_id"] for r in vote_rows)
         ranked = counts.most_common()
         results: list[dict] = []
@@ -557,7 +616,6 @@ async def close_voting(voting_id: int) -> list[dict]:
             })
     else:
         # Single-winner and All-Star: rank by vote count.
-        from collections import Counter
         counts = Counter(r["player_id"] for r in vote_rows)
         ranked = counts.most_common()
         results = []

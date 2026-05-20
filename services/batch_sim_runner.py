@@ -2,18 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import json
+import os
+import random
+import re
+import time as _time
+from collections import Counter, defaultdict
 from typing import List, Optional
 
 import discord
 
+from bot.embeds import awards_embeds, sim_embeds
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import game_repo, league_repo, player_repo, strategy_repo, team_repo
+from data.repositories import game_repo, gameplan_repo, league_repo, player_repo, strategy_repo, team_repo, trade_repo
 from phase.states import Phase
-from services import awards_service, columnist_service, cpu_trade_service, league_service, potm_service, records_service, sim_engine, strategy_service
+from services import awards_service, columnist_service, cpu_coach_service, cpu_trade_service, franchise_plan_service, league_service, notifier_service, potm_service, records_service, sim_engine, strategy_service, team_intel
 from services.personas import PERSONAS as _PERSONAS
-from bot.embeds import awards_embeds, sim_embeds
+from services.player_style_service import context_summary as _player_style_context
+from services.role_service import ROLE_REGISTRY, get_or_derive_roles
+
+_HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
 _SEVERITY_LABELS: dict[str, str] = {
     "day_to_day":    "day-to-day",
@@ -38,8 +46,17 @@ _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 # Tracks games processed so Marcus Brooks fires every ~200 games (every 20 batches of 10).
 _marcus_game_counter: int = 0
 
-# Columnist rotation — cycles through these personas on every batch.
-_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen"]
+# Tracks games processed so Darius Cole fires every ~50 games.
+_darius_game_counter: int = 0
+
+# Tracks games processed so Quinn Park (coach_beat) fires every ~50 games (offset from Marcus).
+_coach_beat_game_counter: int = 0
+
+# Tracks the game index of the last columnist article so the 50-game fallback works.
+_last_columnist_game_index: int = 0
+
+# Columnist rotation — cycles through these personas on every batch (subject to reactive gate).
+_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole"]
 _columnist_rotation_index: int = 0
 
 # Hot Take Hour season-long running narratives.  Seeded on first HTH article of the
@@ -50,6 +67,108 @@ _HTH_NARRATIVES: dict[int, dict] = {}
 # Playoff columnist rotation — cycles through recap-capable personas for post-game coverage.
 _PLAYOFF_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams"]
 _playoff_rotation_index: int = 0
+
+# POTM month-gate: keyed by league_id, stores the last "YYYY-MM" for which
+# _maybe_post_potm was allowed to call through to potm_service.  Batches within
+# the same simulated calendar month are skipped without touching the DB.
+_potm_last_checked_month: dict[int, str] = {}
+
+# Columnist force-mode cadence: minimum game-index gap between articles when
+# force=True.  70 games ≈ 7 game-days of 10 games each.
+_COLUMNIST_FORCE_MIN_GAP: int = 70
+
+# ---------------------------------------------------------------------------
+# Role cache — Phase 2: touch-share flows from player_roles, not usage_weight.
+# Keyed by (league_id, team_id, season).  60-second TTL matches compute_form_map.
+# ---------------------------------------------------------------------------
+
+_ROLE_CACHE: dict[tuple[int, int, int], list[dict]] = {}
+_ROLE_CACHE_TS: dict[tuple[int, int, int], float] = {}
+_ROLE_CACHE_TTL: float = 60.0
+
+
+async def _get_team_roles_cached(pool, league_id: int, team_id: int, season: int) -> list[dict]:
+    """Fetch role assignments for a team, caching for 60 s to reduce DB load during batch sim."""
+    key = (league_id, team_id, season)
+    if key in _ROLE_CACHE and _time.monotonic() - _ROLE_CACHE_TS[key] < _ROLE_CACHE_TTL:
+        return _ROLE_CACHE[key]
+    rows = await get_or_derive_roles(pool, league_id, team_id, season)
+    _ROLE_CACHE[key] = rows
+    _ROLE_CACHE_TS[key] = _time.monotonic()
+    return rows
+
+
+def invalidate_role_cache(league_id: int, team_id: int | None = None, season: int | None = None) -> None:
+    """Evict stale entries after roster changes (trades, injuries).  Called by Phase 3 hooks."""
+    keys_to_drop = [
+        k for k in _ROLE_CACHE
+        if k[0] == league_id
+        and (team_id is None or k[1] == team_id)
+        and (season is None or k[2] == season)
+    ]
+    for k in keys_to_drop:
+        _ROLE_CACHE.pop(k, None)
+        _ROLE_CACHE_TS.pop(k, None)
+
+
+async def _stamp_role_data(
+    pool,
+    league_id: int,
+    team_id: int,
+    season: int,
+    players: list[dict],
+    offensive_scheme: str,
+) -> None:
+    """Stamp _role_* fields onto each player dict so sim_engine can use them.
+
+    Fields set on each player:
+        _role              — role name string (e.g. "post_anchor")
+        _role_touch_share  — base touch share from ROLE_REGISTRY (pre-scheme-synergy)
+        _role_fga_3pa_pct  — role's 3PA fraction
+        _role_fta_per_fga  — role's FTA per FGA ratio
+        _role_def_role     — defensive_role string ("anchor"/"perimeter"/"general"/"passive")
+        _role_minutes_tier — "starter"/"rotation"/"bench"/"depth"
+        _role_tendencies   — list of tendency column names this role amplifies
+    """
+    assignments = await _get_team_roles_cached(pool, league_id, team_id, season)
+    role_by_pid: dict[int, dict] = {a["player_id"]: a for a in assignments}
+
+    # Pass 1: resolve role/registry for every player and apply scheme_synergy bump
+    # BEFORE renormalising so the documented +15% relative gain survives.  If we
+    # applied synergy after normalisation (old behaviour) the re-normalise step in
+    # sim_engine would absorb ~1.4% of the bump, yielding only ~13.6% relative.
+    stamped: list[tuple] = []  # (player_dict, role, touch_share, reg)
+    for p in players:
+        pid = p.get("id") or p.get("player_id")
+        assignment = role_by_pid.get(pid)
+        if assignment:
+            role = assignment["role"]
+            touch_share = float(assignment["touch_share"])  # Postgres returns Decimal
+        else:
+            # Fallback: player not yet in player_roles (shouldn't happen post-Phase-1)
+            role = "glue_guy"
+            touch_share = 0.08
+
+        reg = ROLE_REGISTRY.get(role, ROLE_REGISTRY["glue_guy"])
+
+        # Apply scheme_synergy modifier (+15%) before renormalising below.
+        if offensive_scheme in reg.get("scheme_synergy", []):
+            touch_share *= 1.15
+
+        stamped.append((p, role, touch_share, reg))
+
+    # Pass 2: renormalise so the team's touch shares still sum to 1.0.
+    # This makes the synergy bump a true +15% relative shift (synergy player gets
+    # a larger slice; everyone else proportionally less), matching the docstring.
+    total_ts = sum(ts for _, _, ts, _ in stamped) or 1.0
+    for p, role, touch_share, reg in stamped:
+        p["_role"] = role
+        p["_role_touch_share"] = round(touch_share / total_ts, 4)
+        p["_role_fga_3pa_pct"] = reg["fga_3pa_pct"]
+        p["_role_fta_per_fga"] = reg["fta_per_fga"]
+        p["_role_def_role"] = reg["defensive_role"]
+        p["_role_minutes_tier"] = reg["minutes_tier"]
+        p["_role_tendencies"] = reg.get("tendencies_boosted", [])
 
 
 async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
@@ -79,6 +198,30 @@ async def _ensure_lineup(pool, league_id: int, team_id: int) -> None:
             slot,
             player.id,
         )
+
+    if _HEADLESS:
+        try:
+            _team_row = await pool.fetchrow(
+                "SELECT nba_team_code FROM teams WHERE id = $1", team_id
+            )
+            _tc = _team_row["nba_team_code"] if _team_row else str(team_id)
+            starters = [p for i, p in enumerate(players[:15]) if i < 5]
+            bench = [p for i, p in enumerate(players[:15]) if i >= 5]
+            _s_lines = [
+                f"    S{i+1}: {p.full_name} OVR {p.overall} ({p.position})"
+                for i, p in enumerate(starters)
+            ]
+            _b_lines = [
+                f"    B{i+1}: {p.full_name} OVR {p.overall} ({p.position})"
+                for i, p in enumerate(bench)
+            ]
+            print(
+                f"CPU [{_tc}] — lineup auto-populated (top OVR order)\n"
+                + "\n".join(_s_lines)
+                + ("\n" + "\n".join(_b_lines) if _b_lines else "")
+            )
+        except Exception:
+            pass  # never let logging break the sim
 
 
 def _apply_directives(p: dict) -> dict:
@@ -137,6 +280,19 @@ def _apply_directives(p: dict) -> dict:
         p["usage_weight"] = clamp(int(p.get("usage_weight", 50) * 0.7))
 
     return p
+
+
+def _apply_cpu_directives(players: list[dict], directives: dict[int, dict]) -> None:
+    for p in players:
+        pid = p.get("id")
+        if pid is None or pid not in directives:
+            continue
+        d = directives[pid]
+        p["shot_diet"] = d.get("shot_diet", "auto")
+        p["usage_mode"] = d.get("usage_mode", "normal")
+        p["defense_mode"] = d.get("defense_mode", "standard")
+        p["role_mode"] = d.get("role_mode", "spot_up")
+        p["clutch_mode"] = d.get("clutch_mode", "normal")
 
 
 async def _load_lineup_for_team(pool, league_id: int, team_id: int) -> List[dict]:
@@ -207,8 +363,7 @@ async def _persist_injuries(
     if not raw_injuries:
         return
 
-    import random as _random
-    rng = _random.Random(game_id)
+    rng = random.Random(game_id)
 
     game_date: datetime.date = game.get("scheduled_date") or datetime.date.today()
     rows: list[dict] = []
@@ -358,10 +513,9 @@ async def _persist_game_result(
     suppressed_season: set[int] = set()
     for at_ann in at_announcements:
         # Extract numeric tokens from the all-time string (scores, margins, etc.)
-        import re as _re
-        at_nums = set(_re.findall(r'\d+', at_ann))
+        at_nums = set(re.findall(r'\d+', at_ann))
         for idx, s_ann in enumerate(record_announcements):
-            s_nums = set(_re.findall(r'\d+', s_ann))
+            s_nums = set(re.findall(r'\d+', s_ann))
             # If both strings share at least one key number AND the at_ann covers the
             # same team/player token, treat the season message as superseded.
             if at_nums & s_nums:
@@ -407,13 +561,40 @@ async def _sim_single_game(
         "away_b2b": await game_repo.is_back_to_back(pool, league_id, season, game["away_team_id"], game_date),
     }
 
-    home_strategy = await strategy_service.get_sim_modifiers(pool, league_id, home_team.id, players=home_players)
-    away_strategy = await strategy_service.get_sim_modifiers(pool, league_id, away_team.id, players=away_players)
+    home_gameplan, away_gameplan = await cpu_coach_service.decide_gameplans(
+        pool, league_id, season, game, home_players, away_players
+    )
+    await gameplan_repo.record_gameplan(pool, game["id"], home_team.id, home_gameplan)
+    await gameplan_repo.record_gameplan(pool, game["id"], away_team.id, away_gameplan)
+
+    if home_gameplan["source"] == "cpu":
+        _apply_cpu_directives(home_players, home_gameplan["player_directives"])
+        for _p in home_players:
+            _apply_directives(_p)
+    if away_gameplan["source"] == "cpu":
+        _apply_cpu_directives(away_players, away_gameplan["player_directives"])
+        for _p in away_players:
+            _apply_directives(_p)
+
+    home_strategy = await strategy_service.get_sim_modifiers(
+        pool, league_id, home_team.id, override_strategy=home_gameplan["strategy"]
+    )
+    away_strategy = await strategy_service.get_sim_modifiers(
+        pool, league_id, away_team.id, override_strategy=away_gameplan["strategy"]
+    )
+
+    # Phase 2: stamp role-based touch share + shot profile onto player dicts before sim.
+    # offensive_scheme comes from the resolved strategy so scheme_synergy is applied correctly.
+    home_scheme = home_gameplan["strategy"].get("offensive_scheme", "balanced")
+    away_scheme = away_gameplan["strategy"].get("offensive_scheme", "balanced")
+    await _stamp_role_data(pool, league_id, home_team.id, season, home_players, home_scheme)
+    await _stamp_role_data(pool, league_id, away_team.id, season, away_players, away_scheme)
 
     home_player_ids = [p["id"] for p in home_players]
     away_player_ids = [p["id"] for p in away_players]
-    home_minutes = await strategy_repo.get_team_minutes_plan(pool, league_id, home_team.id, home_player_ids)
-    away_minutes = await strategy_repo.get_team_minutes_plan(pool, league_id, away_team.id, away_player_ids)
+    game_rng_seed = game.get("rng_seed") or (game["id"] * 31337)
+    home_minutes = await strategy_repo.get_team_minutes_plan(pool, league_id, home_team.id, home_player_ids, game_seed=game_rng_seed)
+    away_minutes = await strategy_repo.get_team_minutes_plan(pool, league_id, away_team.id, away_player_ids, game_seed=game_rng_seed ^ 0xABCD)
 
     seed = game.get("rng_seed") or (game["id"] * 31337)
     result = sim_engine.sim_game(
@@ -444,6 +625,8 @@ async def _sim_single_game(
         "home_team": home_team,
         "away_team": away_team,
         "result": result,
+        "home_gameplan": home_gameplan,
+        "away_gameplan": away_gameplan,
     }
 
 
@@ -452,11 +635,10 @@ async def _notify_user_matchup_result(
     guild: discord.Guild,
     league_id: int,
     game_result: dict,
-    home_manager_id: int,
-    away_manager_id: int,
+    *manager_ids: int,
 ) -> None:
-    """Post the box score to #box-scores and DM both managers after their game is simmed."""
-    from services import notifier_service
+    """Post the box score to #box-scores and DM any human manager whose game was just simmed."""
+
 
     home_team = game_result["home_team"]
     away_team = game_result["away_team"]
@@ -485,7 +667,7 @@ async def _notify_user_matchup_result(
     )
     dm_embed.set_footer(text=f"Game #{game.get('game_index', '?')} | {game.get('scheduled_date', '')} — Check #box-scores for full recap.")
 
-    for user_id in (home_manager_id, away_manager_id):
+    for user_id in manager_ids:
         await notifier_service.send_dm(
             bot,
             league_id,
@@ -538,11 +720,19 @@ async def _maybe_run_cpu_trades(
     total_regular_games: int,
     deadline_game_index: Optional[int],
     guild: discord.Guild,
+    refresh_block: bool = True,
 ) -> None:
+    """Wrapper that swallows exceptions so a trade-round failure doesn't abort the sim.
+
+    refresh_block=False skips the CPU trade-block refresh (cpu_block_service.refresh_league)
+    for mid-batch calls.  Pass True only on the final flush of each sim function so the
+    block is rebuilt once per sim invocation rather than once per game-day.
+    """
     try:
         await _run_cpu_trades_inner(
             pool, league_id, season, current_game_index,
             total_regular_games, deadline_game_index, guild,
+            refresh_block=refresh_block,
         )
     except Exception as exc:
         log.warning(f"_maybe_run_cpu_trades failed silently: {exc}")
@@ -556,18 +746,18 @@ async def _run_cpu_trades_inner(
     total_regular_games: int,
     deadline_game_index: Optional[int],
     guild: discord.Guild,
+    refresh_block: bool = True,
 ) -> None:
     if not deadline_game_index:
         return
 
-    import datetime as _dt
-
-    snapshot_ts = _dt.datetime.now(_dt.timezone.utc)
+    snapshot_ts = datetime.datetime.now(datetime.timezone.utc)
 
     trades_proposed = await cpu_trade_service.maybe_initiate_round(
         pool, league_id, season,
         current_game_index, total_regular_games, deadline_game_index,
         guild,
+        refresh_block=refresh_block,
     )
     if not trades_proposed:
         return
@@ -586,8 +776,6 @@ async def _run_cpu_trades_inner(
         """,
         league_id, snapshot_ts,
     )
-
-    from data.repositories import trade_repo
 
     for trade_row in new_trades:
         trade_id = trade_row["id"]
@@ -729,6 +917,73 @@ async def _run_cpu_trades_inner(
             except Exception as _rf_exc:
                 log.warning(f"Marcus Cole roster-fit enrichment failed: {_rf_exc}")
 
+            # Compute context signals for each player arriving at their new team.
+            # These are the same signals that drove the CPU's accept/reject math;
+            # Marcus Cole's voice_notes instruct him to lean on them in analysis.
+            # Signals are computed fresh here (not persisted — Phase 5 adds that).
+            context_signals_per_player: dict[int, list[dict]] = {}
+            try:
+                from services.trade_context import compute_context_modifier
+                from services import team_intel as _ti
+                _league_row = await pool.fetchrow(
+                    "SELECT * FROM leagues WHERE id = $1", league_id
+                )
+                if _league_row:
+                    from data.repositories import league_repo as _lr2
+                    _league_obj = _lr2._league_from_record(_league_row)
+                    # Fetch plan + posture for each receiving team in one bulk call.
+                    _receiving_team_ids = list({
+                        a.to_team_id for a in assets
+                        if a.asset_type == "player" and a.player_id
+                    })
+                    if _receiving_team_ids:
+                        _ti_data = await _ti.build_team_intel(
+                            pool, _league_obj, season,
+                            _receiving_team_ids,
+                            include=("posture", "plan", "philosophy"),
+                        )
+                    else:
+                        _ti_data = {}
+
+                    for _asset in assets:
+                        if _asset.asset_type != "player" or not _asset.player_id:
+                            continue
+                        _pid = _asset.player_id
+                        _recv_tid = _asset.to_team_id
+                        _intel = _ti_data.get(_recv_tid, {})
+                        _plan = _intel.get("plan") or {}
+                        _posture = _intel.get("posture") or {}
+                        _phil = _intel.get("philosophy")
+                        # Fetch minimal player dict for the detector.
+                        _p_row = await pool.fetchrow(
+                            """SELECT id, overall, position,
+                                      scoring_tendency, playmaking_tendency,
+                                      defense_tendency, rebounding_tendency
+                               FROM players WHERE id = $1""",
+                            _pid,
+                        )
+                        if not _p_row:
+                            continue
+                        _player_dict = dict(_p_row)
+                        _modifier, _signals = await compute_context_modifier(
+                            pool=pool,
+                            league_id=league_id,
+                            season=season,
+                            perspective_team_id=_recv_tid,
+                            plan=_plan,
+                            posture=_posture,
+                            coach_philosophy=_phil,
+                            incoming_player=_player_dict,
+                            form_mod=1.0,
+                        )
+                        if _signals:
+                            context_signals_per_player[_pid] = [
+                                {"code": s.code, "delta": s.delta, "reason": s.reason}
+                                for s in _signals
+                            ]
+            except Exception as _sig_exc:
+                log.warning(f"Marcus Cole signal enrichment failed: {_sig_exc}")
+
             trade_context = {
                 "proposer_team": proposer_code,
                 "counterparty_team": counterparty_code,
@@ -736,12 +991,17 @@ async def _run_cpu_trades_inner(
                 "counterparty_sends": _asset_lines(counterparty_id),
                 "trade_status": status,
                 "roster_fits": roster_fits,
+                "context_signals_per_player": {
+                    int(pid): sigs
+                    for pid, sigs in context_signals_per_player.items()
+                },
             }
             mc_article = await columnist_service.generate(
                 pool, league_id, season,
                 persona_id="marcus_cole",
                 category="trade_report",
                 context=trade_context,
+                subject_team_ids=[proposer_id, counterparty_id],
             )
         if mc_article:
             analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
@@ -814,13 +1074,28 @@ async def _maybe_post_potm(
 
     When a new month is detected, also posts a visual month separator to #analysis
     and fires the award race odds (once per simulated month, tied to this cycle).
+
+    Month-gate: batches within the same simulated calendar month are short-circuited
+    in the runner without touching the DB, avoiding repeated potm_service round-trips
+    that always return None mid-month.
     """
+    if not current_game_date:
+        log.debug("_maybe_post_potm: no current_game_date, skipping")
+        return
+
+    current_month = current_game_date[:7]  # "YYYY-MM"
+    if _potm_last_checked_month.get(league_id) == current_month:
+        log.debug(
+            f"_maybe_post_potm: same month {current_month} as last check for league {league_id}, skipping"
+        )
+        return
+    _potm_last_checked_month[league_id] = current_month
+
     log.info(
         f"_maybe_post_potm called: league={league_id} season={season} "
         f"current_game_date={current_game_date!r}"
     )
     if not current_game_date:
-        log.info("_maybe_post_potm: no current_game_date, skipping")
         return
     try:
         log.info(f"_maybe_post_potm: calling check_and_get_potm_awards for league={league_id}")
@@ -846,15 +1121,14 @@ async def _maybe_post_potm(
         if analysis_channel:
             # Derive month label from first award (all awards share same month block).
             _sep_label = awards[0]["month_label"] if awards else current_game_date[:7]
-            _sep_text = f"━" * 22 + f"\n\U0001f4c5  {_sep_label}\n" + "━" * 22
+            _sep_text = "━" * 22 + f"\n\U0001f4c5  {_sep_label}\n" + "━" * 22
             try:
                 await analysis_channel.send(_sep_text)
             except Exception as exc:
                 log.warning(f"Month separator post failed: {exc}")
 
         # Group awards by month so we generate one article per month (East+West together).
-        from collections import defaultdict as _defaultdict
-        by_month: dict[str, list[dict]] = _defaultdict(list)
+        by_month: dict[str, list[dict]] = defaultdict(list)
         for award in awards:
             by_month[award["month_label"]].append(award)
         for month_awards in by_month.values():
@@ -893,7 +1167,139 @@ _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
     "keisha_williams": (0, 128, 255),
     "hot_take_hour":  (255, 0, 0),
     "pat_chen":       (0, 180, 150),
+    "darius_cole":    (34, 139, 34),
+    "coach_beat":     (160, 82, 45),
 }
+
+
+async def _maybe_snapshot_teams(
+    pool,
+    league_id: int,
+    season: int,
+    sim_batch_index: int,
+) -> None:
+    """Write a team_state_snapshots row for each team in the league.
+
+    Swallows exceptions so a snapshot failure never aborts the sim.
+    Called at every batch flush point in sim_until_rival and sim_range.
+    """
+    try:
+        count = await team_intel.snapshot_all_teams(pool, league_id, season, sim_batch_index)
+        log.debug(f"Snapshot written: {count} rows (batch={sim_batch_index})")
+    except Exception as exc:
+        log.warning(f"_maybe_snapshot_teams failed silently: {exc}")
+
+
+async def _maybe_post_coach_beat(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post a Quinn Park (coach_beat) article every ~50 games.
+
+    Focuses on the team with the most extreme philosophy-vs-outcome mismatch in
+    the current batch.  Swallows exceptions so article failures never abort the sim.
+    """
+    global _coach_beat_game_counter
+
+    _coach_beat_game_counter += len(batch_results)
+    if _coach_beat_game_counter < 50:
+        return
+    _coach_beat_game_counter = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    cb_persona = _PERSONAS.get("coach_beat")
+    if not cb_persona:
+        log.warning("_maybe_post_coach_beat: coach_beat persona not registered — skipping")
+        return
+
+    try:
+        # Identify the most "interesting" coaching team from the recent batch by
+        # finding the team with the most extreme philosophy (chaos or vet_overrater)
+        # among teams in this batch.  Fall back to any team if none qualify.
+        batch_team_ids: list[int] = []
+        for br in batch_results:
+            ht = br.get("home_team")
+            at = br.get("away_team")
+            if ht:
+                batch_team_ids.append(ht.id)
+            if at:
+                batch_team_ids.append(at.id)
+        batch_team_ids = list(dict.fromkeys(batch_team_ids))  # deduplicate
+
+        raw = await pool.fetchrow(
+            "SELECT * FROM leagues WHERE id = $1", league_id
+        )
+        if not raw:
+            return
+        from data.repositories import league_repo as _lr
+        league = _lr._league_from_record(raw)
+
+        intel = await team_intel.build_team_intel(
+            pool, league, season, batch_team_ids,
+            include=("posture", "plan", "philosophy", "recent_role_changes"),
+        )
+
+        # Prioritise chaos and vet_overrater; then youth_developer; else any.
+        _PRIORITY_PHILOSOPHIES = ("chaos", "vet_overrater", "youth_developer")
+        subject_team_id: int | None = None
+        for philosophy in _PRIORITY_PHILOSOPHIES:
+            for tid, data in intel.items():
+                if data.get("philosophy") == philosophy:
+                    subject_team_id = tid
+                    break
+            if subject_team_id is not None:
+                break
+        if subject_team_id is None and batch_team_ids:
+            subject_team_id = batch_team_ids[0]
+        if subject_team_id is None:
+            return
+
+        subject_intel = intel.get(subject_team_id, {})
+
+        # Pull recent role changes for the subject team.
+        recent_role_changes = subject_intel.get("recent_role_changes", [])
+
+        # Fetch team code for context.
+        team_row = await pool.fetchrow(
+            "SELECT nba_team_code FROM teams WHERE id = $1", subject_team_id
+        )
+        team_code = team_row["nba_team_code"] if team_row else "???"
+
+        cb_context = {
+            "posture":             subject_intel.get("posture"),
+            "plan":                subject_intel.get("plan"),
+            "philosophy":          subject_intel.get("philosophy", "tendency_respecter"),
+            "recent_role_changes": recent_role_changes,
+            "subject_team_code":   team_code,
+        }
+
+        cb_article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="coach_beat",
+                category="coaching_beat",
+                context=cb_context,
+                subject_team_ids=[subject_team_id],
+            ),
+            timeout=8.0,
+        )
+        if cb_article:
+            embed = discord.Embed(
+                title=f"🎤 {cb_article['headline']}",
+                description=cb_article["body"][:2000],
+                color=discord.Color.from_rgb(160, 82, 45),
+            )
+            embed.set_footer(text=f"by {cb_persona.display_name} · {cb_persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_coach_beat failed: {exc}", exc_info=True)
 
 
 async def _maybe_post_columnist(
@@ -905,17 +1311,30 @@ async def _maybe_post_columnist(
     batch_start_index: int = 0,
     batch_end_index: int = 0,
     total_regular_games: int = 0,
+    force: bool = False,
 ) -> None:
     """
     Post a columnist article after each batch, rotating through _COLUMNIST_ROTATION.
 
     Marcus Brooks also fires every ~200 games (every 20 batches of 10), independently.
     hot_take_hour uses a JSON debate format instead of a plain article embed.
+
+    force=True cadence gate: when running a forced bulk sim (e.g. /sim deadline
+    force:True), columnist articles are capped to at most one per
+    _COLUMNIST_FORCE_MIN_GAP games.  This avoids ~10s LLM calls on every
+    game-day when the sim is covering hundreds of games at once.  The Darius Cole
+    independent counter is unaffected — he still fires every ~50 games.
     """
-    global _marcus_game_counter, _columnist_rotation_index
+    global _marcus_game_counter, _darius_game_counter, _last_columnist_game_index, _columnist_rotation_index
 
     if not batch_results:
         return
+
+    # Counters must increment even when the analysis channel is absent so that
+    # Darius Cole and Marcus Brooks fire correctly once the channel exists.
+    _darius_game_counter += len(batch_results)
+    _marcus_game_counter += len(batch_results)
+    log.info(f"Darius Cole check: counter={_darius_game_counter}")
 
     analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
     analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
@@ -936,11 +1355,10 @@ async def _maybe_post_columnist(
         hs: int = r["home_score"]
         as_: int = r["away_score"]
         winner_id = r.get("winner_team_id")
-        winner_code = (ht.nba_team_code if hasattr(ht, "nba_team_code") and winner_id == ht.id
-                       else at.nba_team_code if hasattr(at, "nba_team_code") else "???")
-
-        away_code = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
         home_code = ht.nba_team_code if hasattr(ht, "nba_team_code") else "???"
+        away_code = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
+        winner_code = home_code if winner_id == ht.id else away_code
+        loser_code = away_code if winner_id == ht.id else home_code
 
         # Track which team the top scorer belongs to so the AI gets correct attribution.
         game_top: dict = {}
@@ -957,7 +1375,6 @@ async def _maybe_post_columnist(
                     game_top_team_code = team_code
 
         game_top_name = game_top.get("player_name", "") if game_top else ""
-        game_top_pts = game_top_pts_val
 
         if game_top_pts_val > overall_top_pts:
             overall_top_pts = game_top_pts_val
@@ -983,15 +1400,19 @@ async def _maybe_post_columnist(
         else:
             game_top_performer_dict = None
 
+        margin = abs(hs - as_)
         games_data.append({
             "game": f"{away_code} @ {home_code}",
             "actual_final_score": f"{away_code} {as_} - {home_code} {hs}",
+            "result_summary": f"{winner_code} beat {loser_code} {max(hs, as_)}-{min(hs, as_)}",
             "result_instruction": (
                 f"IMPORTANT: The actual final score is {away_code} {as_} - {home_code} {hs}. "
                 "Do NOT invent or change the score."
             ),
             "winner": winner_code,
-            "margin": abs(hs - as_),
+            "loser": loser_code,
+            "margin": margin,
+            "was_blowout": margin >= 20,
             "top_performer": game_top_performer_dict,
         })
 
@@ -1018,8 +1439,46 @@ async def _maybe_post_columnist(
     else:
         _top_of_batch = None
 
+    # The top-3 most interesting games (most pts, biggest upset, closest game).
+    # Sort by a combined interest score and take the top 3.
+    _by_pts = sorted(games_data, key=lambda g: (g.get("top_performer") or {}).get("pts", 0), reverse=True)
+    _by_margin_close = sorted(games_data, key=lambda g: g["margin"])
+    _by_blowout = sorted(games_data, key=lambda g: g["margin"], reverse=True)
+    _interesting_set: list[dict] = []
+    for _g in [_by_pts[0] if _by_pts else None,
+               _by_margin_close[0] if _by_margin_close else None,
+               _by_blowout[0] if _by_blowout else None]:
+        if _g is not None and _g not in _interesting_set:
+            _interesting_set.append(_g)
+
+    # Plain-English game results for the prompt.
+    game_results_summary = [
+        g["result_summary"] for g in games_data if g.get("result_summary")
+    ]
+
+    # Enrich top performers with player style context so columnists can write
+    # about archetypes, tendencies, and whether performances matched expectations.
+    def _enrich_performer(perf: dict | None) -> dict | None:
+        if not perf or not perf.get("name"):
+            return perf
+        style = _player_style_context(perf["name"], season)
+        if style:
+            perf = dict(perf)
+            perf["style"]        = style["style"]
+            perf["shot_profile"] = style["shot_profile"]
+            perf["playmaking"]   = style["playmaking"]
+            perf["defense"]      = style["defense"]
+        return perf
+
+    _top_of_batch = _enrich_performer(_top_of_batch)
+    for gd in games_data:
+        if gd.get("top_performer"):
+            gd["top_performer"] = _enrich_performer(gd["top_performer"])
+
     batch_context = {
         "season_games": games_data[:10],  # all games (≤10 per batch)
+        "top_3_interesting_games": _interesting_set,
+        "game_results": game_results_summary,
         "top_performer_of_batch": _top_of_batch,
         "games_count": len(batch_results),
     }
@@ -1169,8 +1628,7 @@ async def _maybe_post_columnist(
 
     # 1d: Add award race leaders for topic variety.
     try:
-        from services import awards_service as _awards_svc
-        _race_leaders = await _awards_svc.get_race_leaders(pool, league_id, season, top_n=3)
+        _race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=3)
         _race_player_ids = [
             p["player_id"]
             for candidates in _race_leaders.values()
@@ -1199,8 +1657,7 @@ async def _maybe_post_columnist(
         }
 
     # 1g: Compute subject_team_ids from the two most common teams in this batch.
-    from collections import Counter as _Counter
-    _team_id_counter: _Counter = _Counter()
+    _team_id_counter: Counter = Counter()
     for br in batch_results:
         ht = br["home_team"]
         at = br["away_team"]
@@ -1213,6 +1670,49 @@ async def _maybe_post_columnist(
 
     _FORMAT_VARIANTS = ["classic_debate", "co_sign_trap", "tony_monologue", "trial"]
 
+    # --- Reactive regular-season trigger gate ---
+    # Before picking a columnist, determine whether anything interesting enough
+    # happened to warrant an article.  If none of the conditions below are true,
+    # skip the rotation slot entirely (but still count games for Darius Cole and
+    # Marcus Brooks, and still advance _last_columnist_game_index on a post).
+    _batch_is_interesting = False
+    _recent_trade_within_50 = bool(batch_context.get("recent_trades"))
+
+    # Check 5+ win/loss streak for any team in the batch.
+    _streak_hooks: list[str] = batch_context.get("narrative_hooks", [])
+    _has_long_streak = any(
+        ("won 5" in h or "won 6" in h or "won 7" in h or "won 8" in h or "won 9" in h
+         or "won 10" in h or "lost 5" in h or "lost 6" in h or "lost 7" in h
+         or "lost 8" in h or "lost 9" in h or "lost 10" in h)
+        for h in _streak_hooks
+    )
+
+    # Check blowout (20+ margin) in this batch.
+    _has_blowout = any(g.get("was_blowout", False) for g in games_data)
+
+    # Check 40+ point game.
+    _has_big_game = overall_top_pts >= 40
+
+    # Fallback: more than 50 games since the last article.
+    _games_since_last = batch_end_index - _last_columnist_game_index
+    _fallback_due = _games_since_last >= 50
+
+    if _has_long_streak or _has_blowout or _has_big_game or _recent_trade_within_50 or _fallback_due:
+        _batch_is_interesting = True
+
+    # Force-mode frequency gate: when bulk-simming (force=True) suppress the main
+    # columnist unless at least _COLUMNIST_FORCE_MIN_GAP games have elapsed since the
+    # last article.  This prevents an LLM call on every game-day when hundreds of games
+    # are being pushed through at once.  Darius Cole's independent counter is unaffected.
+    if force and _batch_is_interesting:
+        _games_since_last_for_force = batch_end_index - _last_columnist_game_index
+        if _games_since_last_for_force < _COLUMNIST_FORCE_MIN_GAP:
+            log.debug(
+                f"_maybe_post_columnist: force mode — suppressing article "
+                f"({_games_since_last_for_force} games since last, need {_COLUMNIST_FORCE_MIN_GAP})"
+            )
+            _batch_is_interesting = False
+
     # Rotation — pick this batch's columnist.
     persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
     _columnist_rotation_index += 1
@@ -1220,6 +1720,13 @@ async def _maybe_post_columnist(
     # Pat Chen: enrich context with team strategy data.
     # Build a copy so we don't mutate the shared batch_context used by other callers.
     columnist_context = batch_context
+
+    # Darius Cole fires independently every ~50 games — skip him in the regular rotation
+    # so he doesn't consume a rotation slot.
+    if persona_id == "darius_cole":
+        persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index % len(_COLUMNIST_ROTATION)]
+        _columnist_rotation_index += 1
+
     if persona_id == "hot_take_hour":
         # Inject format_variant so the four Hot Take Hour variants cycle.
         columnist_context = dict(batch_context)
@@ -1331,50 +1838,145 @@ async def _maybe_post_columnist(
                 for r in strat_rows
                 if strategy_service.get_team_archetype_label(league_id, r["team_id"]) is not None
             }
+            pat_context["gameplans"] = [
+                {
+                    "matchup": f"{br['home_team'].nba_team_code if hasattr(br['home_team'], 'nba_team_code') else '???'} vs {br['away_team'].nba_team_code if hasattr(br['away_team'], 'nba_team_code') else '???'}",
+                    "home": {
+                        "team": br["home_team"].nba_team_code if hasattr(br["home_team"], "nba_team_code") else "???",
+                        "rationale": br["home_gameplan"]["rationale"],
+                        "scheme": br["home_gameplan"]["strategy"]["offensive_scheme"],
+                    },
+                    "away": {
+                        "team": br["away_team"].nba_team_code if hasattr(br["away_team"], "nba_team_code") else "???",
+                        "rationale": br["away_gameplan"]["rationale"],
+                        "scheme": br["away_gameplan"]["strategy"]["offensive_scheme"],
+                    },
+                }
+                for br in batch_results
+                if br.get("home_gameplan") and br.get("away_gameplan")
+            ]
             columnist_context = pat_context
         except Exception as _exc:
             log.warning(f"Pat Chen strategy enrichment failed: {_exc}")
 
-    try:
-        article = await asyncio.wait_for(
-            columnist_service.generate(
-                pool, league_id, season,
-                persona_id=persona_id,
-                category="game_recap",
-                context=columnist_context,
-                subject_team_ids=subject_team_ids,
-            ),
-            timeout=8.0,
+    # Only post a regular-season article if something interesting happened.
+    if _batch_is_interesting:
+        try:
+            article = await asyncio.wait_for(
+                columnist_service.generate(
+                    pool, league_id, season,
+                    persona_id=persona_id,
+                    category="game_recap",
+                    context=columnist_context,
+                    subject_team_ids=subject_team_ids,
+                ),
+                timeout=8.0,
+            )
+        except Exception as _col_exc:
+            log.warning(f"_maybe_post_columnist: article timed out or failed ({persona_id}): {_col_exc}")
+            article = None
+        if article:
+            _last_columnist_game_index = batch_end_index
+            if persona_id == "hot_take_hour":
+                # Body is plain text formatted as "DAVE: ...\n\nTONY: ...\n\nDAVE: ..."
+                # Bold the speaker labels for Discord markdown.
+                body = article["body"]
+                body = body.replace("DAVE:", "**Dave:**").replace("TONY:", "**Tony:**")
+                embed = discord.Embed(
+                    title=f"🔥 {article['headline']}",
+                    description=body[:2000],
+                    color=discord.Color.red(),
+                )
+                embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
+            else:
+                persona = _PERSONAS.get(persona_id)
+                rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
+                embed = discord.Embed(
+                    title=article["headline"],
+                    description=article["body"][:2000],
+                    color=discord.Color.from_rgb(*rgb),
+                )
+                if persona:
+                    embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    else:
+        log.debug(
+            f"_maybe_post_columnist: skipping regular-season article (no interesting condition met) "
+            f"for batch ending at game {batch_end_index}"
         )
-    except Exception as _col_exc:
-        log.warning(f"_maybe_post_columnist: article timed out or failed ({persona_id}): {_col_exc}")
-        article = None
-    if article:
-        if persona_id == "hot_take_hour":
-            # Body is plain text formatted as "DAVE: ...\n\nTONY: ...\n\nDAVE: ..."
-            # Bold the speaker labels for Discord markdown.
-            body = article["body"]
-            body = body.replace("DAVE:", "**Dave:**").replace("TONY:", "**Tony:**")
-            embed = discord.Embed(
-                title=f"🔥 {article['headline']}",
-                description=body[:2000],
-                color=discord.Color.red(),
-            )
-            embed.set_footer(text="Dave Collier & Tony Reyes · DBA Sports Debate")
+
+    # Darius Cole — every ~50 games, independently.  Covers bottom-5 teams and lottery odds.
+    # Counter was already incremented at the top of this function (before channel guard).
+    if _darius_game_counter >= 50:
+        _darius_game_counter = 0
+        dc_persona = _PERSONAS.get("darius_cole")
+        if not dc_persona:
+            log.warning("_maybe_post_columnist: darius_cole persona missing from _PERSONAS — skipping")
         else:
-            persona = _PERSONAS.get(persona_id)
-            rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
-            embed = discord.Embed(
-                title=article["headline"],
-                description=article["body"][:2000],
-                color=discord.Color.from_rgb(*rgb),
-            )
-            if persona:
-                embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-        await analysis_channel.send(embed=embed)
+            dc_article = None
+            try:
+                # Build bottom-5 context for Darius Cole.
+                _all_standings = await pool.fetch(
+                    """
+                    SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
+                    FROM standings_cache sc
+                    JOIN teams t ON t.id = sc.team_id
+                    WHERE sc.league_id = $1 AND sc.season = $2
+                    ORDER BY sc.wins ASC, sc.losses DESC
+                    LIMIT 5
+                    """,
+                    league_id, season,
+                )
+                # Approximate lottery odds: last-place gets ~14%, decreasing by ~2% per slot.
+                _lottery_base = [14.0, 13.4, 12.7, 12.0, 10.5]
+                _bottom5 = []
+                _bottom5_team_ids: list[int] = []
+                for _idx, _row in enumerate(_all_standings):
+                    _bottom5.append({
+                        "team": _row["nba_team_code"],
+                        "record": f"{_row['wins']}-{_row['losses']}",
+                        "lottery_odds_pct": _lottery_base[_idx] if _idx < len(_lottery_base) else 9.0,
+                    })
+                    _bottom5_team_ids.append(_row["team_id"])
+                _dc_context = dict(batch_context)
+                _dc_context["bottom_5_teams"] = _bottom5
+                _dc_context["article_focus"] = (
+                    "Draft lottery odds, tanking race, pick asset value. "
+                    "Focus on which teams are best positioned in the lottery."
+                )
+                log.info(f"Darius Cole: firing article (bottom_5={[t['team'] for t in _bottom5]})")
+                dc_article = await asyncio.wait_for(
+                    columnist_service.generate(
+                        pool, league_id, season,
+                        persona_id="darius_cole",
+                        category="tank_watch",
+                        context=_dc_context,
+                        subject_team_ids=_bottom5_team_ids,
+                    ),
+                    timeout=8.0,
+                )
+            except Exception as _dc_exc:
+                log.warning(
+                    f"_maybe_post_columnist: darius_cole timed out or failed: {_dc_exc}",
+                    exc_info=True,
+                )
+            if dc_article:
+                dc_embed = discord.Embed(
+                    title=f"📋 {dc_article['headline']}",
+                    description=dc_article["body"][:2000],
+                    color=discord.Color.from_rgb(34, 139, 34),
+                )
+                dc_embed.set_footer(text=f"by {dc_persona.display_name} · {dc_persona.byline}")
+                try:
+                    await analysis_channel.send(embed=dc_embed)
+                    log.info("Darius Cole article posted to #analysis")
+                except Exception as _dc_send_exc:
+                    log.warning(f"_maybe_post_columnist: darius_cole send failed: {_dc_send_exc}")
+            else:
+                log.warning("Darius Cole: generate() returned None — article not posted")
 
     # Marcus Brooks — every ~200 games (every 20 batches), independently of the rotation.
-    _marcus_game_counter += len(batch_results)
+    # Counter was already incremented at the top of this function (before channel guard).
     if _marcus_game_counter >= 200:
         _marcus_game_counter = 0
         mb_persona = _PERSONAS.get("marcus_brooks")
@@ -1645,14 +2247,30 @@ async def sim_until_rival(
     )
     _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
     await _maybe_close_trade_window(pool, league_id)
-
     current_index = await game_repo.get_current_index(pool, league_id, season)
+    # Refresh franchise plans once per sim batch so plans stay current as records evolve.
+    # Pass current_index so checkpoint detection can track which game window triggered
+    # each derive and enforce plan stickiness between checkpoints.
+    try:
+        await franchise_plan_service.derive_and_persist_all(
+            pool, league_id, season, current_game_index=current_index
+        )
+    except Exception as _fp_exc:
+        log.warning("franchise_plan refresh failed (sim_until_rival): %s", _fp_exc)
+
     next_user_game = await game_repo.get_user_matchup_ahead(pool, league_id, season, current_index)
 
     if next_user_game is None:
         stop_index = 10000
     else:
-        stop_index = next_user_game["game_index"] - 1
+        teams = await team_repo.get_all(pool, league_id)
+        human_teams = [t for t in teams if t.manager_user_id is not None]
+        ready_ids = set(await game_repo.get_ready_teams(pool, league_id))
+        all_ready = human_teams and all(t.id in ready_ids for t in human_teams)
+        if all_ready:
+            stop_index = next_user_game["game_index"]
+        else:
+            stop_index = next_user_game["game_index"] - 1
 
     if stop_index < current_index + 1:
         return {"games_simmed": 0, "next_matchup": next_user_game}
@@ -1665,6 +2283,7 @@ async def sim_until_rival(
     injury_channel = await _get_injury_channel(guild, pool, league_id)
 
     games_simmed = 0
+    user_matchups_simmed = 0
     batch_results = []
 
     for game in games:
@@ -1676,30 +2295,38 @@ async def sim_until_rival(
             continue
 
         games_simmed += 1
+        if game.get("is_user_matchup"):
+            user_matchups_simmed += 1
         batch_results.append(sim_result)
 
         if bot and game.get("is_user_matchup"):
             home_t = sim_result["home_team"]
             away_t = sim_result["away_team"]
-            if home_t and home_t.manager_user_id and away_t and away_t.manager_user_id:
-                await _notify_user_matchup_result(
-                    bot, guild, league_id, sim_result,
-                    home_t.manager_user_id, away_t.manager_user_id,
-                )
+            manager_ids = []
+            if home_t and home_t.manager_user_id:
+                manager_ids.append(home_t.manager_user_id)
+            if away_t and away_t.manager_user_id:
+                manager_ids.append(away_t.manager_user_id)
+            if manager_ids:
+                await _notify_user_matchup_result(bot, guild, league_id, sim_result, *manager_ids)
 
         # Yield to the event loop after every game so Discord slash-command interactions
         # can be acknowledged within the 3-second window while sim is running.
         await asyncio.sleep(0)
 
-        if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
+        if len(batch_results) >= _BOX_SCORE_BATCH_SIZE:
             standings = await game_repo.get_standings(pool, league_id, season)
-            embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-            try:
-                await box_channel.send(embed=embed)
-            except (discord.HTTPException, Exception) as exc:
-                log.warning(f"channel send failed: {exc}")
             first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
             last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            # Channel sends gate on channel availability — but trade execution
+            # below must NOT be gated, or leagues without #box-scores never run
+            # CPU trades during batch sims (task #13).
+            if box_channel:
+                embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
+                try:
+                    await box_channel.send(embed=embed)
+                except (discord.HTTPException, Exception) as exc:
+                    log.warning(f"channel send failed: {exc}")
             if standings_channel:
                 try:
                     await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
@@ -1714,20 +2341,23 @@ async def sim_until_rival(
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
             await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
-            last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
-            await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
-            await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
+            # Mid-batch: skip block refresh — fires once at the final flush below.
+            await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=False)
+            await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
+            await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
+            await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
             batch_results = []
 
-    if batch_results and box_channel:
+    if batch_results:
         standings = await game_repo.get_standings(pool, league_id, season)
-        embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-        try:
-            await box_channel.send(embed=embed)
-        except (discord.HTTPException, Exception) as exc:
-            log.warning(f"channel send failed: {exc}")
         first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
         last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        if box_channel:
+            embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
+            try:
+                await box_channel.send(embed=embed)
+            except (discord.HTTPException, Exception) as exc:
+                log.warning(f"channel send failed: {exc}")
         if standings_channel:
             try:
                 await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
@@ -1742,9 +2372,11 @@ async def sim_until_rival(
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
         await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
-        last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
-        await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
-        await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
+        # Final flush: run block refresh now (only time it fires this sim call).
+        await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=True)
+        await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
+        await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
+        await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
 
@@ -1760,7 +2392,7 @@ async def sim_until_rival(
         except (discord.HTTPException, Exception) as exc:
             log.warning(f"channel send failed: {exc}")
 
-    return {"games_simmed": games_simmed, "next_matchup": next_user_game, "season_complete": season_complete}
+    return {"games_simmed": games_simmed, "user_matchups_simmed": user_matchups_simmed, "next_matchup": next_user_game, "season_complete": season_complete}
 
 
 async def sim_range(
@@ -1781,8 +2413,16 @@ async def sim_range(
     _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
     news_channel = await _get_news_channel(guild, pool, league_id)
     await _maybe_close_trade_window(pool, league_id, news_channel)
-
     current_index = await game_repo.get_current_index(pool, league_id, season)
+    # Refresh franchise plans once per sim batch so plans stay current as records evolve.
+    # Pass current_index so checkpoint detection can track which game window triggered
+    # each derive and enforce plan stickiness between checkpoints.
+    try:
+        await franchise_plan_service.derive_and_persist_all(
+            pool, league_id, season, current_game_index=current_index
+        )
+    except Exception as _fp_exc:
+        log.warning("franchise_plan refresh failed (sim_range): %s", _fp_exc)
 
     if not force:
         user_matchups = await check_user_matchups_in_range(
@@ -1799,6 +2439,7 @@ async def sim_range(
     injury_channel = await _get_injury_channel(guild, pool, league_id)
 
     games_simmed = 0
+    user_matchups_simmed = 0
     batch_results = []
 
     for game in games:
@@ -1810,30 +2451,38 @@ async def sim_range(
             continue
 
         games_simmed += 1
+        if game.get("is_user_matchup"):
+            user_matchups_simmed += 1
         batch_results.append(sim_result)
 
         if bot and game.get("is_user_matchup"):
             home_t = sim_result["home_team"]
             away_t = sim_result["away_team"]
-            if home_t and home_t.manager_user_id and away_t and away_t.manager_user_id:
-                await _notify_user_matchup_result(
-                    bot, guild, league_id, sim_result,
-                    home_t.manager_user_id, away_t.manager_user_id,
-                )
+            manager_ids = []
+            if home_t and home_t.manager_user_id:
+                manager_ids.append(home_t.manager_user_id)
+            if away_t and away_t.manager_user_id:
+                manager_ids.append(away_t.manager_user_id)
+            if manager_ids:
+                await _notify_user_matchup_result(bot, guild, league_id, sim_result, *manager_ids)
 
         # Yield to the event loop after every game so Discord slash-command interactions
         # can be acknowledged within the 3-second window while sim is running.
         await asyncio.sleep(0)
 
-        if len(batch_results) >= _BOX_SCORE_BATCH_SIZE and box_channel:
+        if len(batch_results) >= _BOX_SCORE_BATCH_SIZE:
             standings = await game_repo.get_standings(pool, league_id, season)
-            embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-            try:
-                await box_channel.send(embed=embed)
-            except (discord.HTTPException, Exception) as exc:
-                log.warning(f"channel send failed: {exc}")
             first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
             last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+            # Channel sends gate on channel availability; trade execution below
+            # must NOT be gated, or leagues without #box-scores never run CPU
+            # trades during batch sims (task #13).
+            if box_channel:
+                embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
+                try:
+                    await box_channel.send(embed=embed)
+                except (discord.HTTPException, Exception) as exc:
+                    log.warning(f"channel send failed: {exc}")
             if standings_channel:
                 try:
                     await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
@@ -1844,24 +2493,28 @@ async def sim_range(
                 batch_start_index=first_game_idx,
                 batch_end_index=last_game_idx,
                 total_regular_games=total_regular_games,
+                force=force,
             )
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
             await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
-            last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
-            await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
-            await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
+            # Mid-batch: skip block refresh — fires once at the final flush below.
+            await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=False)
+            await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
+            await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
+            await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
             batch_results = []
 
-    if batch_results and box_channel:
+    if batch_results:
         standings = await game_repo.get_standings(pool, league_id, season)
-        embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
-        try:
-            await box_channel.send(embed=embed)
-        except (discord.HTTPException, Exception) as exc:
-            log.warning(f"channel send failed: {exc}")
         first_game_idx = batch_results[0]["game"].get("game_index", 0) if batch_results else 0
         last_game_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
+        if box_channel:
+            embed = sim_embeds.batch_recap_with_standings(batch_results, standings)
+            try:
+                await box_channel.send(embed=embed)
+            except (discord.HTTPException, Exception) as exc:
+                log.warning(f"channel send failed: {exc}")
         if standings_channel:
             try:
                 await standings_channel.send(embed=sim_embeds.standings_snapshot_embed(standings, last_game_idx))
@@ -1872,16 +2525,19 @@ async def sim_range(
             batch_start_index=first_game_idx,
             batch_end_index=last_game_idx,
             total_regular_games=total_regular_games,
+            force=force,
         )
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
         await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx)
-        last_idx = batch_results[-1]["game"].get("game_index", 0) if batch_results else 0
-        await _maybe_run_cpu_trades(pool, league_id, season, last_idx, total_regular_games, deadline_game_index, guild)
-        await _maybe_advance_trade_deadline(pool, league_id, last_idx, deadline_game_index, news_channel)
+        # Final flush: run block refresh now (only time it fires this sim call).
+        await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=True)
+        await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
+        await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
+        await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
-    return {"warning": False, "games_simmed": games_simmed, "user_matchups": [], "season_complete": season_complete}
+    return {"warning": False, "games_simmed": games_simmed, "user_matchups_simmed": user_matchups_simmed, "user_matchups": [], "season_complete": season_complete}
 
 
 async def sim_single_matchup(

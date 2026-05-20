@@ -1,4 +1,6 @@
-import json, unicodedata, sys
+import json
+import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))

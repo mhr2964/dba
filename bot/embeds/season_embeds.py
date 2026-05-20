@@ -25,7 +25,7 @@ def season_started_embed(
         for g in first_games:
             home_code = g.get("home_code", str(g.get("home_team_id", "?")))
             away_code = g.get("away_code", str(g.get("away_team_id", "?")))
-            user_marker = " [USER]" if g.get("is_user_matchup") else ""
+            user_marker = " [RIVAL]" if g.get("is_user_matchup") else ""
             lines.append(
                 f"Game #{g['game_index']} — {g['scheduled_date']}  "
                 f"`{away_code}` @ `{home_code}`{user_marker}"

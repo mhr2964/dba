@@ -18,11 +18,8 @@ from core.logging import get_logger
 log = get_logger(__name__)
 
 # Minimum games played within the month to be eligible.
-# 3 games is a low bar intentionally: eligibility is determined by the
-# schedule spreading games evenly, not by an artificial floor.  The real
-# NBA uses ~10 games but our sim awards are commissioner-facing and the
-# schedule guarantees ~12-13 games per team per month.
-_MIN_GAMES = 3
+# 10 games ensures the month has enough data for a meaningful award.
+_MIN_GAMES = 10
 
 
 def _prev_month(year_month: str) -> str:
@@ -105,7 +102,19 @@ async def check_and_get_potm_awards(
             last_ym = _prev_month(current_year_month)
         log.info(f"POTM check: first run, seeding last_ym={last_ym!r} from earliest simmed date={earliest_date!r}")
 
-    months_to_award = _months_between_exclusive_inclusive(last_ym, current_year_month)
+    # Only award for fully elapsed months. current_year_month is the month we're
+    # currently in — the last complete month is the one before it. We therefore
+    # only award up through _prev_month(current_year_month), not through
+    # current_year_month itself (which is still in progress).
+    award_up_to = _prev_month(current_year_month)
+    if last_ym >= award_up_to:
+        log.info(
+            f"POTM check: current month {current_year_month} not yet complete, "
+            f"last complete month is {award_up_to} — skipping"
+        )
+        return None
+
+    months_to_award = _months_between_exclusive_inclusive(last_ym, award_up_to)
     log.info(f"POTM check: months_to_award={months_to_award}")
     if not months_to_award:
         return None
@@ -247,7 +256,7 @@ async def check_and_get_potm_awards(
     if awards:
         await pool.execute(
             "UPDATE leagues SET last_potm_year_month = $1 WHERE id = $2",
-            current_year_month,
+            award_up_to,
             league_id,
         )
     else:

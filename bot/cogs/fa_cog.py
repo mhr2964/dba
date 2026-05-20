@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import fa_embeds
+from core.errors import safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo
@@ -22,7 +23,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
     @app_commands.command(name="open", description="Open free agency (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def fa_open(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -111,7 +112,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
     @app_commands.command(name="advance", description="Process today's responses and advance to next FA day (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def fa_advance(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -197,7 +198,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
     @app_commands.command(name="close", description="Manually close free agency (commissioner only)")
     @app_commands.default_permissions(administrator=True)
     async def fa_close(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:

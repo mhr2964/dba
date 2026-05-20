@@ -4,6 +4,23 @@ from core.logging import get_logger
 
 log = get_logger(__name__)
 
+# Track interaction IDs that have already been handled to prevent double-dispatch.
+_handled_interaction_ids: set[int] = set()
+
+
+async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False) -> None:
+    """Call defer() and swallow 404/rate-limit errors.
+
+    Discord occasionally returns 404 Unknown Interaction if the 3-second
+    window narrowly elapsed before defer() was sent. The interaction webhook
+    token is still valid for followup.send() calls, so we log a warning and
+    continue rather than propagating the exception and aborting the handler.
+    """
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+    except (discord.NotFound, discord.HTTPException) as exc:
+        log.warning(f"defer() failed for interaction {interaction.id} ({exc}) — continuing")
+
 
 class DBAError(Exception):
     """Base domain exception — caught by the error handler and shown to the user."""
@@ -24,6 +41,12 @@ async def handle_app_command_error(
     interaction: discord.Interaction,
     error: app_commands.AppCommandError,
 ) -> None:
+    if interaction.id in _handled_interaction_ids:
+        return
+    _handled_interaction_ids.add(interaction.id)
+    if len(_handled_interaction_ids) > 1000:
+        _handled_interaction_ids.clear()
+
     msg: str | None = "Something went wrong."
 
     if isinstance(error, app_commands.CommandInvokeError):
@@ -54,11 +77,7 @@ async def handle_app_command_error(
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True)
-    except discord.HTTPException as e:
-        if e.code == 40060:
-            # Another delivery of this interaction already responded — do not double-send
-            return
-        try:
-            await interaction.followup.send(msg, ephemeral=True)
-        except discord.HTTPException:
-            pass
+    except (discord.NotFound, discord.HTTPException) as e:
+        if isinstance(e, discord.HTTPException) and e.status not in (404, 403):
+            log.warning(f"Failed to send error message for interaction {interaction.id}: {e}")
+        # Token expired or interaction no longer valid — silently discard.

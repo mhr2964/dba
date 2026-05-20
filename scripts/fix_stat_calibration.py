@@ -32,7 +32,6 @@ import asyncio
 import json
 import os
 import pathlib
-import sys
 import unicodedata
 
 import asyncpg

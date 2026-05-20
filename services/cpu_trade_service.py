@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import random
 from typing import Optional
 
 import discord
 
 from core.logging import get_logger
-from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
-from services import trade_evaluator, trade_service
+from data.repositories import league_repo, player_repo, team_repo, trade_block_repo
+from services import cpu_block_service
+from services.cpu_trade_posture import _compute_team_posture, _default_posture
+from services.cpu_trade_proposals import (
+    _attempt_one_offer,
+    _attempt_three_team_deal,
+    _build_cpu_trade_block,
+)
+
+_HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
 log = get_logger(__name__)
 
@@ -22,16 +32,144 @@ _ACTIVE_PHASES = frozenset({
 # giving steady CPU trade activity through the second half of the season.
 _RAMP_WINDOW = 150
 
-# Minimum baseline pressure so trades can fire even early in the season
-# (prevents a completely dead trade block for the first half of the year).
-_BASELINE_PRESSURE = 0.15
+# Minimum baseline pressure so trades can fire even early in the season.
+# Raised 0.08→0.30: at 0.08 the n_offers formula always resolved to 0 early in the
+# season (int(0.08*2)=0, 4% probabilistic +1), producing zero trades across 100 games.
+# At 0.30: int(0.30*2)=0 + 30% chance of +1 = ~0.30 offers/tick, which is realistic.
+_BASELINE_PRESSURE = 0.30
 
 # Pressure override during the open deadline window.
-_DEADLINE_OPEN_PRESSURE = 1.2
+# Slightly above 0.8 to produce a burst of 5-8 trades at deadline.
+_DEADLINE_OPEN_PRESSURE = 1.0
 
 # Grade differential threshold above which a trade is flagged for commissioner
 # review instead of being auto-approved.  Expressed as a fraction of max side.
 _LOPSIDED_THRESHOLD = 0.30
+
+# Number of trade proposals to attempt per mode per round.  Contending teams
+# trade infrequently (they want to protect cores); rebuilding teams fire more.
+_MODE_N_OFFERS: dict[str, int] = {
+    "contending": 1,
+    "play_in_fringe": 2,
+    "developing": 2,
+    "soft_rebuild": 3,
+    "rebuilding": 4,
+}
+
+
+async def _get_recently_signed_player_ids(pool, league_id: int) -> set[int]:
+    """
+    Return player IDs whose contracts were signed within the last 60 sim games.
+
+    60 games ≈ 144 calendar days at ~2.4 days/game. We anchor to the latest
+    simmed game date rather than wall-clock time so the window tracks sim
+    progress. Returns an empty set when signed_at data is unavailable (e.g.
+    before migration 032 runs) so the caller can safely skip the check.
+
+    NULL signed_at rows are ignored — they predate the column and carry no
+    restriction (the migration back-fills them to 2000-01-01).
+    """
+    try:
+        cutoff_row = await pool.fetchrow(
+            """
+            SELECT MAX(scheduled_date) AS last_game
+            FROM games
+            WHERE league_id = $1 AND status = 'simmed'
+            """,
+            league_id,
+        )
+        if not cutoff_row or not cutoff_row["last_game"]:
+            return set()
+
+        rows = await pool.fetch(
+            """
+            SELECT player_id
+            FROM contracts
+            WHERE league_id = $1
+              AND is_active = TRUE
+              AND signed_at IS NOT NULL
+              AND signed_at > $2::date - INTERVAL '144 days'
+            """,
+            league_id,
+            cutoff_row["last_game"],
+        )
+        return {r["player_id"] for r in rows}
+    except Exception as exc:
+        log.debug(f"_get_recently_signed_player_ids failed (skipping restriction): {exc}")
+        return set()
+
+
+async def _cpu_auto_populate_block(
+    pool,
+    league: league_repo.League,
+    guild: Optional[discord.Guild] = None,
+) -> None:
+    """
+    Refresh CPU teams' trade blocks and post new entries to #trade-block.
+
+    Uses cpu_block_service.refresh_league for the heuristic selection (all
+    per-mode rules live there).  After the refresh, posts each newly-listed
+    player card to the channel so the channel stays active even without human
+    managers running /trade block add.
+
+    Only runs when the league is in an active-trading phase — cpu_block_service
+    already guards against deadline-and-later phases, so we let it handle that.
+    """
+    try:
+        result = await cpu_block_service.refresh_league(pool, league.id)
+        if not guild or result["players_listed"] == 0:
+            return
+
+        block_ch_id = await league_repo.get_channel(pool, league.id, "trade-block")
+        if not block_ch_id:
+            return
+        ch = guild.get_channel(block_ch_id)
+        if not ch:
+            return
+
+        # Fetch all CPU block entries and post an embed per team that has entries.
+        all_teams = await team_repo.get_all(pool, league.id)
+        cpu_teams = [t for t in all_teams if t.manager_user_id is None]
+
+        for team in cpu_teams:
+            entries = await trade_block_repo.get_team_block(pool, league.id, team.id)
+            if not entries:
+                continue
+
+            lines: list[str] = []
+            for entry in entries:
+                p = await player_repo.get_by_id(pool, entry["player_id"])
+                if not p:
+                    continue
+                line = f"**{p.full_name}** — OVR {p.overall} | {p.position}"
+                if entry.get("note"):
+                    line += f"\n  _{entry['note']}_"
+                lines.append(line)
+
+            if not lines:
+                continue
+
+            mode_label = {
+                "rebuilding": "Rebuilding",
+                "soft_rebuild": "Soft Rebuild",
+                "contending": "Contending",
+                "play_in_fringe": "Play-In Fringe",
+                "developing": "Developing",
+            }.get(team.cpu_mode or "default", "CPU")
+
+            embed = discord.Embed(
+                title=f"{team.full_name} — Trade Block Update",
+                description="\n\n".join(lines),
+                color=discord.Color.orange(),
+            )
+            embed.set_footer(text=f"{mode_label} team | CPU-managed")
+            try:
+                await ch.send(embed=embed)
+            except Exception as exc:
+                log.warning(f"Failed to post CPU block update for team {team.id}: {exc}")
+
+    except Exception as exc:
+        log.warning(f"_cpu_auto_populate_block failed: {exc}", exc_info=True)
 
 
 async def maybe_initiate_round(
@@ -42,11 +180,17 @@ async def maybe_initiate_round(
     total_regular_games: int,
     deadline_game_index: int,
     guild: Optional[discord.Guild] = None,
+    refresh_block: bool = True,
 ) -> int:
     """
     Possibly initiate 0-N CPU-to-CPU trades based on deadline pressure.
     Returns number of trades proposed.
     Only runs during REGULAR_SEASON_ACTIVE and TRADE_DEADLINE_OPEN phases.
+
+    refresh_block=False skips the cpu_block_service.refresh_league call that
+    rebuilds all 28 CPU team trade blocks.  Pass False for mid-batch calls
+    during bulk sims so the refresh only runs once per sim invocation (at the
+    final flush) instead of once per game-day.
     """
     # Load league to confirm phase and get salary cap / season.
     league_row = await pool.fetchrow(
@@ -60,6 +204,13 @@ async def maybe_initiate_round(
     if league.current_phase not in _ACTIVE_PHASES:
         return 0
 
+    # Refresh CPU trade blocks and post to #trade-block — gated by caller so this
+    # fires only once per sim batch (final flush) rather than every game-day.
+    if refresh_block:
+        await _cpu_auto_populate_block(pool, league, guild)
+    else:
+        log.debug(f"maybe_initiate_round: skipping block refresh for mid-batch call (league {league_id})")
+
     # Compute deadline pressure.
     # Ramps from _BASELINE_PRESSURE → 1.0 over the last _RAMP_WINDOW games before deadline.
     # Baseline ensures at least some trade activity throughout the season.
@@ -71,6 +222,10 @@ async def maybe_initiate_round(
         pressure = max(_BASELINE_PRESSURE, ramp)
 
     # Number of trade offers to attempt this round.
+    # Formula: int(pressure * 2) + probabilistic +1.
+    # At baseline (0.30): int(0.60)=0 + 30% chance = ~0.30 offers/tick.
+    # At mid-ramp (0.65): int(1.30)=1 + 65% chance = ~1.65 offers/tick.
+    # At deadline (1.00): int(2.00)=2 + 100% chance = 3 offers/tick.
     n_offers = int(pressure * 2) + (1 if random.random() < pressure else 0)
     if n_offers == 0:
         return 0
@@ -79,11 +234,9 @@ async def maybe_initiate_round(
     all_teams = await team_repo.get_all(pool, league_id)
     cpu_teams = [t for t in all_teams if t.manager_user_id is None]
 
-    # Build a synthetic tradeable-player map from CPU team rosters.
-    # CPU teams never call /trade block add, so we derive their block on the fly.
-    block_by_team = await _build_cpu_trade_block(pool, league_id, cpu_teams)
-    if not block_by_team:
-        return 0
+    # Fetch players under the 60-day sign-and-trade restriction upfront so we
+    # can exclude them from both the trade block and return packages.
+    recently_signed_ids = await _get_recently_signed_player_ids(pool, league_id)
 
     if len(cpu_teams) < 2:
         return 0
@@ -98,12 +251,47 @@ async def maybe_initiate_round(
         WHERE t.league_id = $1
           AND t.season = $2
           AND ta.asset_type = 'player'
-          AND t.status NOT IN ('approved', 'rejected', 'declined', 'expired')
+          AND t.status NOT IN ('approved', 'rejected', 'declined', 'expired', 'superseded')
           AND ta.player_id IS NOT NULL
         """,
         league_id,
         season,
     )
+
+    # Precompute trade posture for every CPU team so _attempt_one_offer can use
+    # live record + age context instead of the static cpu_mode column.
+    # Computed before block building so plan-aware filtering can use urgency.
+    posture_results = await asyncio.gather(
+        *[_compute_team_posture(pool, league, t.id) for t in cpu_teams],
+        return_exceptions=True,
+    )
+    postures: dict[int, dict] = {}
+    for team, result in zip(cpu_teams, posture_results):
+        if isinstance(result, Exception):
+            postures[team.id] = _default_posture(team)
+        else:
+            postures[team.id] = result
+
+    # Build a synthetic tradeable-player map from CPU team rosters.
+    # CPU teams never call /trade block add, so we derive their block on the fly.
+    # Postures are passed so plan-aware filtering can use urgency.
+    block_by_team = await _build_cpu_trade_block(
+        pool, league_id, season, cpu_teams, recently_signed_ids, postures,
+    )
+    if not block_by_team:
+        return 0
+
+    # Mode-driven n_offers: scale by pressure so sell-mode teams can mass-fire
+    # without drowning out the global round count.  See _MODE_N_OFFERS constant.
+    _mode_max = max(
+        (_MODE_N_OFFERS.get(postures[t.id]["mode"], 2) for t in cpu_teams),
+        default=2,
+    )
+    # Blend pressure-based count with mode max: take the larger of the two,
+    # scaled by pressure so early-season stays quiet even if modes are active.
+    n_offers = max(n_offers, round(_mode_max * pressure))
+    # Absolute cap: prevent runaway batches at deadline + lots of rebuild teams.
+    n_offers = min(n_offers, 8)
 
     proposed_count = 0
     used_pairs: set[tuple[int, int]] = set()
@@ -111,8 +299,22 @@ async def maybe_initiate_round(
 
     for _ in range(n_offers):
         try:
+            # 10% chance at high pressure: attempt a 3-team deal instead of a
+            # standard 2-team offer.  Only fires when pressure >= 0.6 so it's
+            # deadline-era behaviour, not a common occurrence.
+            if pressure >= 0.6 and random.random() < 0.10:
+                count = await _attempt_three_team_deal(
+                    pool, league, season, cpu_teams, block_by_team,
+                    used_pairs, taken_player_ids, recently_signed_ids, guild,
+                    postures=postures,
+                )
+                proposed_count += count
+                continue
+
             count = await _attempt_one_offer(
-                pool, league, season, cpu_teams, block_by_team, used_pairs, taken_player_ids, guild
+                pool, league, season, cpu_teams, block_by_team,
+                used_pairs, taken_player_ids, deadline_game_index, recently_signed_ids, guild,
+                postures=postures,
             )
             proposed_count += count
         except Exception as exc:
@@ -120,668 +322,3 @@ async def maybe_initiate_round(
             continue
 
     return proposed_count
-
-
-async def _build_cpu_trade_block(
-    pool,
-    league_id: int,
-    cpu_teams: list[team_repo.Team],
-) -> dict[int, list[int]]:
-    """
-    For each CPU team, identify players that make sense to offer in a trade.
-    Returns a map of team_id -> list of player_ids considered tradeable.
-
-    CPU teams never manually populate the trade block, so this derives it from
-    each team's roster and cpu_mode instead of querying trade_block entries.
-
-    Logic per cpu_mode:
-    - rebuilding: veterans age >= 32, or age >= 29 with OVR >= 65
-    - contending: mid-tier players OVR 72–84 (trade bait, not franchise cornerstones)
-    - developing: players age >= 30, or age >= 27 with OVR >= 78
-    - default: players OVR 70–82
-    """
-    result: dict[int, list[int]] = {}
-
-    for team in cpu_teams:
-        players = await player_repo.get_roster(pool, league_id, team.id)
-        tradeable: list[int] = []
-        mode = team.cpu_mode or "default"
-
-        for p in players:
-            age = _player_age(p)
-            ovr = p.overall
-
-            if mode == "rebuilding":
-                if age >= 32 or (age >= 29 and ovr >= 65):
-                    tradeable.append(p.id)
-            elif mode == "contending":
-                # Trade non-star bench pieces for better role players.
-                if 72 <= ovr <= 84:
-                    tradeable.append(p.id)
-            elif mode == "developing":
-                if age >= 30 or (ovr >= 78 and age >= 27):
-                    tradeable.append(p.id)
-            else:
-                if 70 <= ovr <= 82:
-                    tradeable.append(p.id)
-
-        if tradeable:
-            result[team.id] = tradeable
-
-    return result
-
-
-async def _attempt_one_offer(
-    pool,
-    league: league_repo.League,
-    season: int,
-    cpu_teams: list[team_repo.Team],
-    block_by_team: dict[int, list[int]],
-    used_pairs: set[tuple[int, int]],
-    taken_player_ids: set[int],
-    guild: Optional[discord.Guild] = None,
-) -> int:
-    """
-    Pick a team A, find the best target from team B, build a return package,
-    and call trade_service.propose. Returns 1 if a proposal was made, 0 otherwise.
-    """
-    # Shuffle so we don't always favour the same team.
-    candidates_a = random.sample(cpu_teams, len(cpu_teams))
-    team_a: Optional[team_repo.Team] = None
-    target_team: Optional[team_repo.Team] = None
-    target_player: Optional[player_repo.Player] = None
-
-    for a in candidates_a:
-        # Team A needs something worth offering — it must have block entries or picks.
-        a_picks = await trade_repo.get_team_picks(pool, league.id, a.id)
-        a_block_ids = block_by_team.get(a.id, [])
-
-        # Find a target (team B, player X) that team A actually wants.
-        b_candidates = [t for t in cpu_teams if t.id != a.id]
-        random.shuffle(b_candidates)
-
-        for b in b_candidates:
-            pair = (min(a.id, b.id), max(a.id, b.id))
-            if pair in used_pairs:
-                continue
-
-            # Skip this team pair if they already have an active trade proposal
-            # this season (any non-resolved status), preventing duplicate proposals
-            # across batch rounds.
-            active_pair_rows = await pool.fetch(
-                """SELECT 1 FROM trades
-                   WHERE league_id = $1 AND season = $2
-                     AND ((proposer_team_id = $3 AND counterparty_team_id = $4)
-                          OR (proposer_team_id = $4 AND counterparty_team_id = $3))
-                     AND status NOT IN ('approved', 'rejected', 'declined', 'expired')
-                   LIMIT 1""",
-                league.id, season, a.id, b.id,
-            )
-            if active_pair_rows:
-                continue
-
-            b_block_ids = block_by_team.get(b.id, [])
-            if not b_block_ids:
-                continue
-
-            # Load and score B's trade block players.
-            for pid in b_block_ids:
-                # Skip players already committed to another offer this round.
-                if pid in taken_player_ids:
-                    continue
-
-                p = await player_repo.get_by_id(pool, pid)
-                if not p:
-                    continue
-
-                if not _team_a_wants_player(a, p):
-                    continue
-
-                # Found a match.
-                team_a = a
-                target_team = b
-                target_player = p
-                break
-
-            if target_player:
-                break
-
-        if team_a:
-            break
-
-    if not (team_a and target_team and target_player):
-        return 0
-
-    pair = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
-    used_pairs.add(pair)
-
-    # Optionally request a second player from B alongside the primary target.
-    # Only attempted when the primary target is a star (OVR >= 75) and the 30%
-    # dice roll hits.  The secondary must be rated below the primary and not
-    # already committed elsewhere this round.  Falls back to single-player if
-    # no valid secondary exists — never errors.
-    secondary_target: Optional[player_repo.Player] = None
-    if target_player.overall >= 75 and random.random() < 0.3:
-        b_block_ids = block_by_team.get(target_team.id, [])
-        for pid in b_block_ids:
-            if pid == target_player.id:
-                continue
-            if pid in taken_player_ids:
-                continue
-            candidate = await player_repo.get_by_id(pool, pid)
-            if candidate and candidate.overall < target_player.overall:
-                secondary_target = candidate
-                break
-
-    # Build A's return package sized to match the combined value of all requested
-    # players (primary + optional secondary) within the usual 25% tolerance.
-    target_contract = await player_repo.get_active_contract(pool, target_player.id)
-    target_value = trade_evaluator.player_trade_value(
-        {"overall": target_player.overall, "age": _player_age(target_player)},
-        {
-            "salary": target_contract.salary if target_contract else 0,
-            "years_remaining": target_contract.years_remaining if target_contract else 1,
-        },
-        league.salary_cap,
-    )
-
-    if secondary_target:
-        secondary_contract = await player_repo.get_active_contract(pool, secondary_target.id)
-        secondary_value = trade_evaluator.player_trade_value(
-            {"overall": secondary_target.overall, "age": _player_age(secondary_target)},
-            {
-                "salary": secondary_contract.salary if secondary_contract else 0,
-                "years_remaining": secondary_contract.years_remaining if secondary_contract else 1,
-            },
-            league.salary_cap,
-        )
-        target_value += secondary_value
-
-    offer_player_ids, offer_pick_ids, package_value = await _build_return_package(
-        pool,
-        league,
-        team_a,
-        block_by_team.get(team_a.id, []),
-        target_value,
-        taken_player_ids,
-    )
-
-    if not offer_player_ids and not offer_pick_ids:
-        log.debug(
-            f"CPU trade skipped: team {team_a.id} has no assets to offer "
-            f"for player {target_player.id} (value {target_value:.1f})"
-        )
-        return 0
-
-    # OVR sanity check — reject if team A is giving away a player 10+ OVR points
-    # above the best player received.  The salary-weighted value metric can make
-    # a superstar on a max contract appear equal in value to a cheaper role player,
-    # producing absurd trades (e.g. Luka OVR 93 for Cameron Johnson OVR 79).
-    # This check bypasses contract weighting and looks at raw OVR only.
-    if offer_player_ids:
-        best_offered_ovr = 0
-        for pid in offer_player_ids:
-            offered_p = await player_repo.get_by_id(pool, pid)
-            if offered_p and offered_p.overall > best_offered_ovr:
-                best_offered_ovr = offered_p.overall
-        target_ovr = target_player.overall
-        if secondary_target:
-            target_ovr = max(target_ovr, secondary_target.overall)
-        if best_offered_ovr >= target_ovr + 10:
-            log.info(
-                f"CPU trade aborted (OVR sanity): team {team_a.id} would give OVR "
-                f"{best_offered_ovr} for OVR {target_ovr} — gap ≥ 10"
-            )
-            return 0
-
-    # Sanity check: only propose if the return package value is reasonably close
-    # to the target value.  A package worth less than 50% or more than 200% of
-    # the target is too lopsided to submit — this prevents absurd offers like
-    # SGA for Zubac from ever reaching trade_service.propose.
-    log.info(
-        f"Trade check: target={target_value:.1f} package={package_value:.1f} "
-        f"ratio={package_value / max(target_value, 1):.2f} "
-        f"(team {team_a.id} → player {target_player.id} OVR {target_player.overall})"
-    )
-    if target_value > 0 and (
-        package_value < target_value * 0.50 or package_value > target_value * 2.0
-    ):
-        log.info(
-            f"CPU trade aborted (lopsided): team {team_a.id} package value "
-            f"{package_value:.1f} vs target value {target_value:.1f}"
-        )
-        return 0
-
-    counterparty_player_ids = [target_player.id]
-    if secondary_target:
-        counterparty_player_ids.append(secondary_target.id)
-
-    log.info(
-        f"CPU trade: team {team_a.id} ({team_a.cpu_mode}) "
-        f"proposes to team {target_team.id} for player {target_player.id} "
-        f"(OVR {target_player.overall})"
-        + (
-            f" + player {secondary_target.id} (OVR {secondary_target.overall})"
-            if secondary_target else ""
-        )
-        + f" — combined value {target_value:.1f}, package value {package_value:.1f}"
-    )
-
-    trade = await trade_service.propose(
-        league=league,
-        proposer_team=team_a,
-        counterparty_team=target_team,
-        proposer_player_ids=offer_player_ids,
-        proposer_pick_ids=offer_pick_ids,
-        counterparty_player_ids=counterparty_player_ids,
-        counterparty_pick_ids=[],
-    )
-
-    # Mark all players in this trade as taken so subsequent offers in this round
-    # don't try to re-use them.
-    taken_player_ids.add(target_player.id)
-    if secondary_target:
-        taken_player_ids.add(secondary_target.id)
-    taken_player_ids.update(offer_player_ids)
-
-    # trade_service.propose runs cpu_should_accept on target_team's side.
-    # If accepted it lands as 'pending_commissioner'; auto-approve immediately for
-    # CPU-CPU trades so they never pile up in the commissioner queue.
-    if trade.status == "pending_commissioner":
-        try:
-            await _maybe_auto_approve(pool, league, trade, guild)
-        except Exception as exc:
-            log.error(
-                f"CPU-CPU trade {trade.id} auto-approve failed — "
-                f"trade remains pending_commissioner: {exc}",
-                exc_info=True,
-            )
-
-    return 1
-
-
-async def _maybe_auto_approve(
-    pool,
-    league: league_repo.League,
-    trade,
-    guild: Optional[discord.Guild] = None,
-) -> None:
-    """
-    CPU-to-CPU trades: always auto-approve (no human is involved, no review needed).
-    If either team has a human manager the trade stays pending_commissioner for human review.
-    After approval, each involved team posts a "looking to deal" embed to #trade-block.
-    """
-    # Confirm both sides are CPU teams.
-    teams = await pool.fetch(
-        "SELECT id, manager_user_id FROM teams WHERE id = ANY($1)",
-        [trade.proposer_team_id, trade.counterparty_team_id],
-    )
-    has_human = any(r["manager_user_id"] is not None for r in teams)
-    if has_human:
-        log.info(
-            f"Trade {trade.id} involves a human-managed team — leaving as pending_commissioner"
-        )
-        return
-
-    assets = await trade_repo.get_assets(pool, trade.id)
-
-    # Rebuild value scores for both sides.
-    proposer_value = 0.0
-    counterparty_value = 0.0
-
-    for asset in assets:
-        if asset.asset_type == "player" and asset.player_id:
-            p_row = await pool.fetchrow("SELECT * FROM players WHERE id = $1", asset.player_id)
-            c_row = await pool.fetchrow(
-                "SELECT salary, years_remaining FROM contracts "
-                "WHERE player_id = $1 AND is_active = TRUE LIMIT 1",
-                asset.player_id,
-            )
-            if p_row:
-                age = _player_age_from_row(p_row)
-                v = trade_evaluator.player_trade_value(
-                    {"overall": p_row["overall"], "age": age},
-                    {
-                        "salary": c_row["salary"] if c_row else 0,
-                        "years_remaining": c_row["years_remaining"] if c_row else 1,
-                    },
-                    league.salary_cap,
-                )
-                if asset.from_team_id == trade.proposer_team_id:
-                    proposer_value += v
-                else:
-                    counterparty_value += v
-        elif asset.asset_type == "pick" and asset.pick_id:
-            pk_row = await pool.fetchrow(
-                """SELECT dp.season, dp.round,
-                          CASE WHEN (sc.wins + sc.losses) > 0
-                               THEN sc.wins::float / (sc.wins + sc.losses)
-                               ELSE NULL END AS win_pct
-                   FROM draft_picks dp
-                   LEFT JOIN standings_cache sc
-                          ON sc.team_id = dp.original_team_id
-                         AND sc.league_id = dp.league_id
-                         AND sc.season = $2
-                   WHERE dp.id = $1""",
-                asset.pick_id,
-                league.current_season,
-            )
-            if pk_row:
-                v = trade_evaluator.pick_trade_value(
-                    pk_row["season"], pk_row["round"], league.current_season,
-                    team_win_pct=pk_row["win_pct"],
-                )
-                if asset.from_team_id == trade.proposer_team_id:
-                    proposer_value += v
-                else:
-                    counterparty_value += v
-
-    # Second lopsided-trade guard: even if the proposal got through, don't auto-approve
-    # a trade where one side's value exceeds the other by more than 50%.
-    # This catches edge cases where target_value was 0 at proposal time (contract lookup
-    # failure) but the actual values are computable here.
-    max_side = max(proposer_value, counterparty_value)
-    min_side = min(proposer_value, counterparty_value)
-    if max_side > 0 and min_side < max_side * 0.50:
-        log.info(
-            f"CPU-to-CPU trade {trade.id} blocked at auto-approve: lopsided "
-            f"(proposer_value={proposer_value:.1f}, counterparty_value={counterparty_value:.1f}) "
-            f"— leaving as pending_commissioner"
-        )
-        return
-
-    # OVR sanity guard at auto-approve: salary-weighted value can mask huge OVR gaps
-    # (e.g. Luka OVR 93 on a $41M contract appears equal to a cheaper OVR 79 player).
-    # Collect each side's best OVR and reject if one side's best player is 10+ OVR
-    # above the other side's best player.
-    proposer_ovrs: list[int] = []
-    counterparty_ovrs: list[int] = []
-    for asset in assets:
-        if asset.asset_type == "player" and asset.player_id:
-            p_row = await pool.fetchrow("SELECT overall FROM players WHERE id = $1", asset.player_id)
-            if p_row:
-                if asset.from_team_id == trade.proposer_team_id:
-                    proposer_ovrs.append(p_row["overall"])
-                else:
-                    counterparty_ovrs.append(p_row["overall"])
-    if proposer_ovrs and counterparty_ovrs:
-        best_prop_ovr = max(proposer_ovrs)
-        best_counter_ovr = max(counterparty_ovrs)
-        ovr_gap = abs(best_prop_ovr - best_counter_ovr)
-        if ovr_gap >= 10:
-            log.info(
-                f"CPU-to-CPU trade {trade.id} blocked at auto-approve: OVR gap "
-                f"(proposer best OVR={best_prop_ovr}, counterparty best OVR={best_counter_ovr}) "
-                f"— leaving as pending_commissioner"
-            )
-            return
-
-    # Always auto-approve CPU-to-CPU (human guard above ensures no human is involved).
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            for asset in assets:
-                if asset.asset_type == "player" and asset.player_id:
-                    await conn.execute(
-                        "UPDATE players SET team_id = $1 WHERE id = $2",
-                        asset.to_team_id,
-                        asset.player_id,
-                    )
-                    await conn.execute(
-                        "UPDATE contracts SET team_id = $1 "
-                        "WHERE player_id = $2 AND is_active = TRUE",
-                        asset.to_team_id,
-                        asset.player_id,
-                    )
-                    # Remove from old team's lineup so the sim engine stops
-                    # using them for the wrong team.
-                    await conn.execute(
-                        "DELETE FROM lineups WHERE league_id = $1 AND player_id = $2",
-                        trade.league_id,
-                        asset.player_id,
-                    )
-                    # Insert into new team's lineup at the next available slot.
-                    next_slot = await conn.fetchval(
-                        "SELECT COALESCE(MAX(slot), 0) + 1 FROM lineups "
-                        "WHERE league_id = $1 AND team_id = $2",
-                        trade.league_id,
-                        asset.to_team_id,
-                    )
-                    await conn.execute(
-                        """INSERT INTO lineups
-                               (league_id, team_id, is_starter, slot, player_id, set_by)
-                           VALUES ($1, $2, FALSE, $3, $4, NULL)
-                           ON CONFLICT (league_id, team_id, slot) DO NOTHING""",
-                        trade.league_id,
-                        asset.to_team_id,
-                        next_slot,
-                        asset.player_id,
-                    )
-                elif asset.asset_type == "pick" and asset.pick_id:
-                    await conn.execute(
-                        "UPDATE draft_picks SET current_team_id = $1 WHERE id = $2",
-                        asset.to_team_id,
-                        asset.pick_id,
-                    )
-
-            await conn.execute(
-                """
-                UPDATE trades
-                SET status = 'approved',
-                    resolved_at = NOW()
-                WHERE id = $1
-                """,
-                trade.id,
-            )
-
-    traded_player_ids = [
-        a.player_id for a in assets if a.asset_type == "player" and a.player_id
-    ]
-    if traded_player_ids:
-        from data.repositories import trade_block_repo
-        await trade_block_repo.remove_players_from_block(
-            pool, trade.league_id, traded_player_ids
-        )
-
-    log.info(f"CPU-to-CPU trade {trade.id} auto-approved")
-
-    # Post "looking to deal" embeds to #trade-block for each team involved.
-    if guild:
-        await _post_trade_block_ads(pool, league, trade, guild)
-
-
-async def _post_trade_block_ads(
-    pool,
-    league: league_repo.League,
-    trade,
-    guild: discord.Guild,
-) -> None:
-    """
-    After a CPU-to-CPU trade is approved, post one embed per involved team to
-    #trade-block advertising what they're looking to acquire next.
-    """
-    news_ch_id = await league_repo.get_channel(pool, league.id, "trade-block")
-    if not news_ch_id:
-        return
-    ch = guild.get_channel(news_ch_id)
-    if not ch:
-        return
-
-    team_rows = await pool.fetch(
-        "SELECT nba_team_code, cpu_mode FROM teams WHERE id = ANY($1)",
-        [trade.proposer_team_id, trade.counterparty_team_id],
-    )
-
-    _mode_descriptions = {
-        "rebuilding": "Rebuilding mode — looking for young assets (age ≤ 25) and future picks",
-        "contending": "Contending mode — looking for immediate impact role players (OVR 75+)",
-        "developing": "Developing mode — looking for veteran depth and expiring contracts",
-    }
-
-    for row in team_rows:
-        team_code = row["nba_team_code"]
-        cpu_mode = row["cpu_mode"] or "default"
-        description = _mode_descriptions.get(
-            cpu_mode,
-            "Open for business — looking to improve at the margins",
-        )
-        embed = discord.Embed(
-            title=f"📋 {team_code} — Looking to Deal",
-            description=description,
-            color=discord.Color.blue(),
-        )
-        embed.set_footer(text="CPU-managed team")
-        try:
-            await ch.send(embed=embed)
-        except Exception as exc:
-            log.warning(f"Failed to post trade-block ad for {team_code}: {exc}")
-
-
-async def _build_return_package(
-    pool,
-    league: league_repo.League,
-    team_a: team_repo.Team,
-    block_player_ids: list[int],
-    target_value: float,
-    taken_player_ids: set[int],
-) -> tuple[list[int], list[int], float]:
-    """
-    Build a return package from team A's trade block players and picks that
-    roughly matches target_value (within 25%).
-
-    Returns (player_ids, pick_ids, total_value).
-    Prefer picks over players when possible to keep rosters intact.
-    taken_player_ids prevents double-offering players committed to another offer
-    in the same round.
-    """
-    offer_player_ids: list[int] = []
-    offer_pick_ids: list[int] = []
-    accumulated = 0.0
-    tolerance = target_value * 0.25
-
-    # Load and score A's own trade block players.
-    scored_players: list[tuple[float, int]] = []
-    for pid in block_player_ids:
-        # Skip players already committed to another offer this round.
-        if pid in taken_player_ids:
-            continue
-        p = await player_repo.get_by_id(pool, pid)
-        if not p or p.team_id != team_a.id:
-            continue  # player was already traded away or belongs to another team
-        contract = await player_repo.get_active_contract(pool, p.id)
-        v = trade_evaluator.player_trade_value(
-            {"overall": p.overall, "age": _player_age(p)},
-            {
-                "salary": contract.salary if contract else 0,
-                "years_remaining": contract.years_remaining if contract else 1,
-            },
-            league.salary_cap,
-        )
-        scored_players.append((v, pid))
-
-    # Sort descending — use the best player(s) first.
-    scored_players.sort(reverse=True)
-
-    # Load A's available picks: round 2 first, then round 1 (protect higher picks).
-    all_picks = await trade_repo.get_team_picks(pool, league.id, team_a.id)
-    r2_picks = [p for p in all_picks if p["round"] == 2]
-    r1_picks = [p for p in all_picks if p["round"] == 1]
-    # Nearest season picks first (most concrete value).
-    r2_picks.sort(key=lambda p: p["season"])
-    r1_picks.sort(key=lambda p: p["season"])
-
-    # Hard cap of 3 picks per trade (1st + 2nd combined).
-    # cpu_mode governs willingness to include picks:
-    #   rebuilding  — picks are their future; offer at most 1, prefer 2nds over 1sts.
-    #   contending  — willing to deal picks for immediate help; up to 3.
-    #   developing / default — balanced; up to 2 picks.
-    mode = team_a.cpu_mode or "default"
-    if mode == "rebuilding":
-        max_picks = 1
-        # Offer 2nd-rounders first; only expose 1sts as a last resort.
-        sorted_picks = r2_picks + r1_picks
-    elif mode == "contending":
-        max_picks = 3
-        sorted_picks = r2_picks + r1_picks
-    else:
-        # developing / default
-        max_picks = 2
-        sorted_picks = r2_picks + r1_picks
-
-    # Pre-fetch win% for all original team IDs so pick_trade_value can discount by record.
-    orig_team_ids = list({p["original_team_id"] for p in sorted_picks if p.get("original_team_id")})
-    _orig_win_pct: dict[int, float | None] = {}
-    if orig_team_ids:
-        _wp_rows = await pool.fetch(
-            """SELECT team_id,
-                      CASE WHEN (wins + losses) > 0
-                           THEN wins::float / (wins + losses)
-                           ELSE NULL END AS win_pct
-               FROM standings_cache
-               WHERE league_id = $1 AND season = $2 AND team_id = ANY($3)""",
-            league.id, league.current_season, orig_team_ids,
-        )
-        _orig_win_pct = {r["team_id"]: r["win_pct"] for r in _wp_rows}
-
-    # Greedy fill: players first, then picks (up to the mode cap).
-    for v, pid in scored_players:
-        if accumulated >= target_value - tolerance:
-            break
-        offer_player_ids.append(pid)
-        accumulated += v
-
-    for pick in sorted_picks:
-        if len(offer_pick_ids) >= max_picks:
-            break
-        if accumulated >= target_value - tolerance:
-            break
-        orig_tid = pick.get("original_team_id")
-        win_pct = _orig_win_pct.get(orig_tid) if orig_tid else None
-        pv = trade_evaluator.pick_trade_value(
-            pick["season"], pick["round"], league.current_season,
-            team_win_pct=win_pct,
-        )
-        if pick["id"] not in offer_pick_ids:  # prevent duplicates
-            offer_pick_ids.append(pick["id"])
-            accumulated += pv
-
-    return offer_player_ids, offer_pick_ids, accumulated
-
-
-def _team_a_wants_player(team_a: team_repo.Team, player: player_repo.Player) -> bool:
-    """Return True if team A's mode makes it interested in this player."""
-    age = _player_age(player)
-    mode = team_a.cpu_mode
-
-    if mode in ("contending", "developing"):
-        return player.overall >= 76
-
-    if mode == "rebuilding":
-        # Want youth or actively shedding old contracts (age >= 31 means B wants
-        # to dump the salary, which rebuilding teams can absorb for picks).
-        return age <= 25 or age >= 31
-
-    # Default: accept any player with decent rating.
-    return player.overall >= 70
-
-
-def _player_age(player: player_repo.Player) -> int:
-    import datetime
-    if player.birth_date:
-        today = datetime.date.today()
-        age = today.year - player.birth_date.year
-        if (today.month, today.day) < (player.birth_date.month, player.birth_date.day):
-            age -= 1
-        return age
-    return 28
-
-
-def _player_age_from_row(row) -> int:
-    import datetime
-    birth = row["birth_date"]
-    if birth:
-        today = datetime.date.today()
-        age = today.year - birth.year
-        if (today.month, today.day) < (birth.month, birth.day):
-            age -= 1
-        return age
-    return 28

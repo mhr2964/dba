@@ -469,6 +469,44 @@ async def _compute_series_mvp(
     return {"player_id": rows[0]["player_id"], "player_name": rows[0]["player_name"]}
 
 
+async def _get_series_stats_for_player(
+    pool,
+    league_id: int,
+    season: int,
+    series_id: int,
+    player_id: int,
+) -> dict:
+    """Compute PPG/RPG/APG and games played for a player across a specific series."""
+    row = await pool.fetchrow(
+        """
+        SELECT
+            COUNT(b.id)                                     AS games,
+            AVG(b.points)                                   AS ppg,
+            AVG(b.rebounds_off + b.rebounds_def)            AS rpg,
+            AVG(b.assists)                                  AS apg
+        FROM game_box_scores b
+        JOIN games g ON g.id = b.game_id
+        WHERE g.league_id = $1 AND g.season = $2
+          AND b.player_id = $3
+          AND EXISTS (
+              SELECT 1 FROM series ps
+              WHERE ps.id = $4
+                AND (g.home_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
+                AND (g.away_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
+          )
+        """,
+        league_id, season, player_id, series_id,
+    )
+    if not row or not row["games"]:
+        return {"games": 0, "ppg": 0.0, "rpg": 0.0, "apg": 0.0}
+    return {
+        "games": int(row["games"]),
+        "ppg": round(float(row["ppg"] or 0), 1),
+        "rpg": round(float(row["rpg"] or 0), 1),
+        "apg": round(float(row["apg"] or 0), 1),
+    }
+
+
 async def _announce_series_mvp(
     pool,
     league_id: int,
@@ -477,6 +515,7 @@ async def _announce_series_mvp(
     award_label: str,
     award_type: str,
     guild: Optional[discord.Guild],
+    series_id: Optional[int] = None,
 ) -> None:
     """Post a series MVP announcement to #league-news and persist to player_awards."""
     from data.repositories import player_awards_repo
@@ -502,8 +541,27 @@ async def _announce_series_mvp(
     if not channel:
         return
 
+    series_stats: dict = {}
+    if series_id is not None:
+        try:
+            series_stats = await _get_series_stats_for_player(
+                pool, league_id, season, series_id, mvp["player_id"]
+            )
+        except Exception as exc:
+            log.warning(f"Failed to fetch series stats for {award_type} MVP embed: {exc}")
+
+    if series_stats and series_stats.get("games", 0) > 0:
+        stats_line = (
+            f"{series_stats['ppg']} PPG / {series_stats['rpg']} RPG / "
+            f"{series_stats['apg']} APG in {series_stats['games']} games"
+        )
+        description = f"{mvp['player_name']} — {stats_line}"
+    else:
+        description = mvp["player_name"]
+
     embed = discord.Embed(
-        title=f"🏆 {award_label}: {mvp['player_name']}",
+        title=f"🏆 {award_label}",
+        description=description,
         color=discord.Color.gold(),
     )
     try:
@@ -565,6 +623,7 @@ async def advance_playoff_round(
                     award_label="Finals MVP",
                     award_type="finals_mvp",
                     guild=guild,
+                    series_id=finals_series.id,
                 )
                 # Persist to history_seasons if the row exists.
                 try:
@@ -600,6 +659,7 @@ async def advance_playoff_round(
                     award_label="Eastern Conference Finals MVP",
                     award_type="cf_east_mvp",
                     guild=guild,
+                    series_id=east_series_list[0].id,
                 )
                 try:
                     await pool.execute(
@@ -624,6 +684,7 @@ async def advance_playoff_round(
                     award_label="Western Conference Finals MVP",
                     award_type="cf_west_mvp",
                     guild=guild,
+                    series_id=west_series_list[0].id,
                 )
                 try:
                     await pool.execute(

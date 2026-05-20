@@ -83,6 +83,9 @@ class Player:
     stl_tendency: int = 50
     ast_tendency: int = 50
     reb_tendency: int = 50
+    # Defensive profile derived from split interior/perimeter scores (migration 039).
+    # NULL until backfill_overall_from_defense.py has run.
+    defensive_archetype: Optional[str] = None
 
     @property
     def full_name(self) -> str:
@@ -150,6 +153,7 @@ def _player_from_record(r: asyncpg.Record) -> Player:
         stl_tendency=r["stl_tendency"] if "stl_tendency" in keys else 50,
         ast_tendency=r["ast_tendency"] if "ast_tendency" in keys else 50,
         reb_tendency=r["reb_tendency"] if "reb_tendency" in keys else 50,
+        defensive_archetype=r["defensive_archetype"] if "defensive_archetype" in keys else None,
     )
 
 

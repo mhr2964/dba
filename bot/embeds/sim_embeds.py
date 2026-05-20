@@ -88,50 +88,6 @@ def _totals_row(rows: list[dict], score_margin: int) -> str:
     )
 
 
-def _top_performers(away_box: list[dict], home_box: list[dict]) -> list[str]:
-    """Return up to 3 bullet lines for top performers across both teams."""
-    all_rows = away_box + home_box
-    if not all_rows:
-        return []
-
-    top_pts = max(all_rows, key=lambda r: r.get("points", 0))
-    top_reb = max(all_rows, key=lambda r: r.get("rebounds_off", 0) + r.get("rebounds_def", 0))
-    top_ast = max(all_rows, key=lambda r: r.get("assists", 0))
-
-    seen: set[int] = set()
-    lines: list[str] = []
-    for row, stat_label, stat_val in [
-        (top_pts, "PTS", top_pts.get("points", 0)),
-        (top_reb, "REB", top_reb.get("rebounds_off", 0) + top_reb.get("rebounds_def", 0)),
-        (top_ast, "AST", top_ast.get("assists", 0)),
-    ]:
-        pid = row.get("player_id") or id(row)
-        if pid in seen:
-            continue
-        seen.add(pid)
-        first = row.get("first_name", "")
-        last = row.get("last_name", "")
-        if not first and not last:
-            full = row.get("player_name", "")
-            parts = full.split(" ", 1)
-            first = parts[0] if len(parts) > 1 else ""
-            last = parts[1] if len(parts) > 1 else full
-        name = f"{first[0]}. {last}" if first else last
-        team_code = row.get("team_code", "")
-        pts = row.get("points", 0)
-        reb = row.get("rebounds_off", 0) + row.get("rebounds_def", 0)
-        ast = row.get("assists", 0)
-        fgm = row.get("fgm", 0)
-        fga = row.get("fga", 0)
-        tpm = row.get("tpm", 0)
-        tpa = row.get("tpa", 0)
-        lines.append(
-            f"**{name}** ({team_code}) — {pts} PTS · {fgm}/{fga} FG · {tpm}/{tpa} 3P · {ast} AST · {reb} REB"
-        )
-
-    return lines
-
-
 def box_score_summary_embed(
     game_row: dict,
     away_box: list[dict],
@@ -153,14 +109,6 @@ def box_score_summary_embed(
         description=score_line,
         color=discord.Color.blurple(),
     )
-
-    performers = _top_performers(away_box, home_box)
-    if performers:
-        embed.add_field(
-            name="Top Performers",
-            value="\n".join(performers),
-            inline=False,
-        )
 
     # Team totals inline
     def _team_totals(rows: list[dict]) -> str:
@@ -223,7 +171,6 @@ def box_score_team_embed(
     """Full per-player box score for one team as a monospace code block."""
     game_index = game_row.get("game_index", "?")
     away_code  = game_row.get("away_code", "???")
-    home_code  = game_row.get("home_code", "???")
     away_score = game_row.get("away_score", 0)
     home_score = game_row.get("home_score", 0)
 
@@ -290,7 +237,6 @@ def batch_recap(games_results: List[dict], title: str) -> discord.Embed:
 
     lines = []
     for r in games_results:
-        game = r["game"]
         home_team = r["home_team"]
         away_team = r["away_team"]
         result = r["result"]
@@ -355,8 +301,8 @@ def batch_recap_with_standings(
             Prevents a 2-0 team from outranking an 11-1 team — small samples
             are pulled toward .500, larger samples dominate correctly."""
             w = r.get("wins") or 0
-            l = r.get("losses") or 0
-            return (w + 1) / (w + l + 2)
+            losses = r.get("losses") or 0
+            return (w + 1) / (w + losses + 2)
 
         def _games_played(r: dict) -> int:
             return (r.get("wins") or 0) + (r.get("losses") or 0)
@@ -366,8 +312,8 @@ def batch_recap_with_standings(
         for i, row in enumerate(sorted_rows, start=1):
             code = row.get("nba_team_code", str(row.get("team_id", "?")))
             w = row.get("wins", 0)
-            l = row.get("losses", 0)
-            parts.append(f"{i}. {code} {w}-{l}")
+            losses = row.get("losses", 0)
+            parts.append(f"{i}. {code} {w}-{losses}")
         return "\n".join(parts) if parts else "No data"
 
     east_rows = [r for r in standings_rows if r.get("conference") == "East"]
@@ -426,8 +372,8 @@ def _championship_odds(standings_rows: List[dict]) -> dict[int, float]:
         """Laplace-smoothed win% for sorting: (wins+1)/(wins+losses+2).
         Determines conference seed order consistently with standings display."""
         w = r.get("wins") or 0
-        l = r.get("losses") or 0
-        return (w + 1) / (w + l + 2)
+        losses = r.get("losses") or 0
+        return (w + 1) / (w + losses + 2)
 
     east = sorted(
         [r for r in standings_rows if r["conference"] == "East"],
@@ -563,8 +509,8 @@ def standings_snapshot_embed(standings_rows: List[dict], game_index: int) -> dis
         """Laplace-smoothed win% for sorting: (wins+1)/(wins+losses+2).
         Prevents a 2-0 team from outranking an 11-1 team in sort order."""
         w = r.get("wins") or 0
-        l = r.get("losses") or 0
-        return (w + 1) / (w + l + 2)
+        losses = r.get("losses") or 0
+        return (w + 1) / (w + losses + 2)
 
     def _games_played(r: dict) -> int:
         return (r.get("wins") or 0) + (r.get("losses") or 0)
@@ -583,9 +529,9 @@ def standings_snapshot_embed(standings_rows: List[dict], game_index: int) -> dis
         for i, r in enumerate(rows, start=1):
             code = r.get("nba_team_code", str(r.get("team_id", "?")))
             w = r.get("wins", 0)
-            l = r.get("losses", 0)
+            losses = r.get("losses", 0)
             pct = f"{_win_pct(r):.3f}".lstrip("0") or ".000"
-            lines.append(f"`{i:2}.` **{code}**  {w}–{l}  `{pct}`")
+            lines.append(f"`{i:2}.` **{code}**  {w}–{losses}  `{pct}`")
         return "\n".join(lines) or "No data"
 
     embed = discord.Embed(

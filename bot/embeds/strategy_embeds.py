@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import discord
+from services.team_intel import PHILOSOPHY_DESCRIPTIONS
 
 _PACE_LABELS: dict[str, str] = {
     "slow": "Slow (-6 pace, grind it out)",
@@ -33,12 +32,34 @@ _INTENSITY_LABELS: dict[str, str] = {
 }
 
 
-def strategy_embed(team: object, strategy: dict, modifiers: dict) -> discord.Embed:
+def strategy_embed(
+    team: object,
+    strategy: dict,
+    modifiers: dict,
+    philosophy: str | None = None,
+) -> discord.Embed:
+    """Build the strategy embed.
+
+    Optional `philosophy` arg: when present, prepends a Coach Philosophy field
+    at the top of the embed using PHILOSOPHY_DESCRIPTIONS for the one-line summary.
+    Callers that don't have philosophy handy can omit it — existing call sites are
+    unaffected.
+    """
     team_name = getattr(team, "full_name", None) or f"{team['city']} {team['name']}"  # type: ignore[index]
     embed = discord.Embed(
         title=f"{team_name} — Team Strategy",
         color=discord.Color.blue(),
     )
+
+    if philosophy:
+        phil_data = PHILOSOPHY_DESCRIPTIONS.get(philosophy, {})
+        emoji = phil_data.get("emoji", "")
+        summary = phil_data.get("summary", philosophy.replace("_", " ").title())
+        embed.add_field(
+            name="Coach Philosophy",
+            value=f"{emoji} **{philosophy.replace('_', ' ').title()}**\n{summary}",
+            inline=False,
+        )
 
     embed.add_field(
         name="Offensive Pace",

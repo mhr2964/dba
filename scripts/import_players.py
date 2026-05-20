@@ -140,6 +140,111 @@ _RAW_SUM_MAX = 88
 _DEF_RTG_BASELINE = 115.0  # lenient league avg; below = good defense
 
 
+def _compute_defensive_scores(
+    pct_blk: float,
+    pct_stl: float,
+    dreb_pct: float,
+    def_rating: float | None,
+    position: str,
+) -> tuple[float, float, str]:
+    """
+    Compute interior and perimeter defensive scores (0-100 each) from rate-based
+    advanced/usage stats, then derive an archetype label.
+
+    Scores are calibrated against 2022-2024 BDL data distributions:
+      pct_blk  p50≈0.16, elite(top5%)≈0.55  → maps 0→0, 0.65→50
+      dreb_pct p50≈0.12, elite≈0.25          → maps 0.05→0, 0.28→25
+      def_rating best≈104, avg≈112           → maps 104→25, 116→0
+      pct_stl  p50≈0.20, elite≈0.33          → maps 0.10→0, 0.36→40
+      position bonus (perimeter score)        → PG/SG/SF +20, PF +10, C +5
+
+    Interior weights: 50% pct_blk, 25% dreb_pct, 25% def_rating.
+    Perimeter weights: 40% pct_stl, 40% def_rating, 20% position bonus.
+    """
+    pos = (position or "SF").upper()
+    dr = def_rating if def_rating is not None else 114.0  # neutral league-avg fallback
+
+    # --- Interior score (0–100) ---
+    blk_score  = min(50.0, max(0.0, (pct_blk / 0.65) * 50.0))
+    dreb_score = min(25.0, max(0.0, (dreb_pct - 0.05) / 0.23 * 25.0))
+    dr_int     = min(25.0, max(0.0, (116.0 - dr) / 12.0 * 25.0))
+    interior   = blk_score + dreb_score + dr_int
+
+    # --- Perimeter score (0–100) ---
+    stl_score = min(40.0, max(0.0, (pct_stl - 0.10) / 0.26 * 40.0))
+    dr_peri   = min(40.0, max(0.0, (116.0 - dr) / 12.0 * 40.0))
+    pos_bonus = 20.0 if pos in ("PG", "SG", "SF") else (10.0 if pos == "PF" else 5.0)
+    perimeter  = stl_score + dr_peri + pos_bonus
+
+    # --- Archetype (priority order) ---
+    # two_way_big first: interior elite AND meaningful perimeter presence
+    if interior >= 70.0 and perimeter >= 45.0:
+        archetype = "two_way_big"
+    elif interior >= 75.0 and perimeter < 55.0:
+        archetype = "rim_protector"
+    elif perimeter >= 65.0 and pos in ("PG", "SG") and pct_stl >= 0.22:
+        archetype = "on_ball_pest"
+    elif perimeter >= 65.0 and pos in ("SG", "SF") and interior < 55.0:
+        archetype = "wing_stopper"
+    elif interior >= 50.0 and pos in ("C", "PF"):
+        archetype = "size_defender"
+    elif interior < 50.0 and perimeter < 50.0:
+        archetype = "non_defender"
+    else:
+        archetype = "generalist"
+
+    return interior, perimeter, archetype
+
+
+def _defensive_ovr_bump(
+    interior_score: float,
+    perimeter_score: float,
+) -> int:
+    """
+    OVR bump derived from the split interior/perimeter defensive scores.
+
+    Bump tiers (based on the dominant score):
+      ≥78 → +6   (elite single-dimension defender)
+      62-77 → +4
+      50-61 → +2
+      <50   →  0
+
+    +1 stack when interior ≥ 60 AND perimeter ≥ 45 (genuine two-way impact).
+    Hard cap: +7.
+
+    Replaces the old per-game BPG/SPG/DREB thresholds that treated all defense
+    as one bucket and over-rewarded block-only or board-only profiles.
+    """
+    dominant = max(interior_score, perimeter_score)
+    if dominant >= 78.0:
+        bump = 6
+    elif dominant >= 62.0:
+        bump = 4
+    elif dominant >= 50.0:
+        bump = 2
+    else:
+        bump = 0
+
+    # Two-way stack: rare — requires meaningful contribution on both ends.
+    if interior_score >= 60.0 and perimeter_score >= 45.0:
+        bump = min(7, bump + 1)
+
+    return bump
+
+
+def _defensive_ovr_bump_fallback(defense_attribute: int) -> int:
+    """
+    Fallback bump when no advanced/usage cache entry exists for a player.
+    Uses the player's already-computed `defense` attribute (0-99) as a proxy.
+    Mirrors the old Path-B attr-fallback logic: ≥85 → +3, ≥75 → +1.
+    """
+    if defense_attribute >= 85:
+        return 3
+    if defense_attribute >= 75:
+        return 1
+    return 0
+
+
 def _stat_to_score(val: float, breakpoints: list[tuple[float, int]]) -> int:
     """Return the score for the highest threshold the value clears."""
     score = 0
@@ -275,6 +380,7 @@ def _fetch_league_stats_sync(season: int) -> dict[int, dict]:
             "gp": gp,
             "PTS":    float(row.get("PTS", 0) or 0),
             "REB":    float(row.get("REB", 0) or 0),
+            "DREB":   float(row.get("DREB", 0) or 0),
             "AST":    float(row.get("AST", 0) or 0),
             "STL":    float(row.get("STL", 0) or 0),
             "BLK":    float(row.get("BLK", 0) or 0),
@@ -327,6 +433,7 @@ def _fetch_multi_season_peak(season: int) -> dict[int, dict]:
                 "gp": gp,
                 "PTS":    float(row.get("PTS", 0) or 0),
                 "REB":    float(row.get("REB", 0) or 0),
+                "DREB":   float(row.get("DREB", 0) or 0),
                 "AST":    float(row.get("AST", 0) or 0),
                 "STL":    float(row.get("STL", 0) or 0),
                 "BLK":    float(row.get("BLK", 0) or 0),
@@ -372,16 +479,48 @@ def _overall_from_stats(
     peak_lookup: dict[int, dict],
     exp: int,
     draft_info: Optional[dict] = None,
+    position: str = "SF",
 ) -> int:
     """
     Derive overall from multi-season peak stats when available (min 10 GP).
+    Applies the split interior/perimeter defensive premium on top of the raw
+    composite. When PCT_BLK/PCT_STL/DREB_PCT are present in the stat row
+    (populated by build_stats_ratings from BDL advanced+usage caches), the full
+    two-score formula is used. When absent (live nba_api fallback path), falls
+    back to the attribute-proxy bump.
     For rookies (exp == 0), falls back to draft position OVR if draft_info is
     provided, then to _overall_for_exp for undrafted / data-gap cases.
     """
     entry = peak_lookup.get(player_id)
     if entry is not None and entry.get("gp", 0) >= 10:
         raw_sum = _composite_from_row(entry)
-        return _overall_from_raw_sum(raw_sum)
+        base_ovr = _overall_from_raw_sum(raw_sum)
+
+        # Use rate-based scores when BDL advanced/usage data is available.
+        pct_blk  = entry.get("PCT_BLK")
+        pct_stl  = entry.get("PCT_STL")
+        dreb_pct = entry.get("DREB_PCT")
+        def_rtg  = entry.get("DEF_RTG")
+
+        if pct_blk is not None and pct_stl is not None and dreb_pct is not None:
+            interior, perimeter, _arch = _compute_defensive_scores(
+                pct_blk=pct_blk,
+                pct_stl=pct_stl,
+                dreb_pct=dreb_pct,
+                def_rating=def_rtg,
+                position=position,
+            )
+            bump = _defensive_ovr_bump(interior, perimeter)
+        else:
+            # Live nba_api path: no rate stats — fall back to attr proxy.
+            bump = _defensive_ovr_bump_fallback(
+                defense_attribute=_overall_from_raw_sum(raw_sum)
+            )
+
+        # Cap at 96: reserves 97-99 for a future explicit all-time tier
+        # multiplier.  The bump itself is uncapped; the ceiling applies only
+        # to the final derived OVR.
+        return min(96, base_ovr + bump)
 
     # No qualifying stats found — use draft position for rookies.
     if exp == 0 and draft_info is not None:
@@ -570,8 +709,8 @@ async def _insert_contract(
         """
         INSERT INTO contracts (
             league_id, player_id, team_id, salary, years_remaining,
-            total_years, contract_type, signed_in_season, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+            total_years, contract_type, signed_in_season, is_active, signed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW())
         """,
         league_id, player_id, team_id, salary, years, years, contract_type, current_season,
     )
@@ -724,6 +863,7 @@ async def main() -> None:
                         overall = _overall_from_stats(
                             player_id_raw, peak_lookup, exp,
                             draft_info=draft_info if is_rookie else None,
+                            position=position,
                         )
                     attrs = _generate_attributes(overall, position)
                     hidden = _generate_hidden(overall, exp)

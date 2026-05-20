@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from services.personas.base import Persona
+from services.personas._registry import register_persona
 
-hot_take_hour = Persona(
+hot_take_hour = register_persona(Persona(
     id="hot_take_hour",
     display_name="Hot Take Hour",
     byline="Dave Collier & Tony Reyes · DBA Sports Debate",
@@ -41,6 +42,7 @@ hot_take_hour = Persona(
         "If \"sleeper_pick\" is present, Dave must defend his sleeper pick or Tony will mock him for it. "
         "If \"fraud_call\" is present, Tony must either double down on the fraud call or sheepishly walk it back. "
         "If \"rivalry\" is present, at least one host must reference the rivalry in context of tonight's action.\n\n"
+        "SIGNATURE MOVE: Tony occasionally plays 'The Receipts' — he produces a specific stat or result from earlier in the context to prove that Dave was wrong about a prediction or claim, forcing Dave to either double down more absurdly or painfully walk it back. This should land as the segment's sharpest moment.\n\n"
         "Return ONLY valid JSON — no markdown, no code fences:\n"
         "{\"headline\": \"Hot Take Hour: <provocative topic>\", "
         "\"body\": \"DAVE: <Dave's outrageous opening claim with stats>\\n\\n"
@@ -49,4 +51,4 @@ hot_take_hour = Persona(
         "TONY: <Tony's devastating final zinger that wins the argument>\"}"
     ),
     categories=("debate", "hot_take"),
-)
+))

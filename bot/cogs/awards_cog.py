@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import awards_embeds
-from core.errors import DBAError, PermissionError
+from core.errors import DBAError, PermissionError, safe_defer
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo
@@ -113,7 +113,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         award_type: app_commands.Choice[str],
     ) -> None:
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         pool = await get_pool()
         season = league.current_season
@@ -257,7 +257,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         award_type: app_commands.Choice[str],
     ) -> None:
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         pool = await get_pool()
         value = award_type.value
@@ -428,7 +428,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
     @app_commands.command(name="all-star", description="Open All-Star voting for both conferences (commissioner only)")
     async def all_star(self, interaction: discord.Interaction) -> None:
         league = await _require_commissioner(interaction)
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
         pool = await get_pool()
         east_id, west_id = await awards_service.open_all_star_voting(league.id, league.current_season)

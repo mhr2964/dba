@@ -239,7 +239,7 @@ async def advance_pick(
 
         # CPU team — auto-select best prospect with positional need weighting.
         best = _cpu_select(prospects, team)
-        selection = await draft_repo.record_selection(
+        await draft_repo.record_selection(
             pool,
             draft_id=draft.id,
             pick_number=pick_number,
@@ -310,7 +310,7 @@ async def make_pick(league_id: int, season: int, team_id: int, player_id: int) -
         raise DBAError("That player is no longer available.")
 
     round_number = ((pick_number - 1) // 30) + 1
-    selection = await draft_repo.record_selection(
+    await draft_repo.record_selection(
         pool,
         draft_id=draft.id,
         pick_number=pick_number,
@@ -443,8 +443,8 @@ async def _assign_rookie_contract(
         """
         INSERT INTO contracts
             (league_id, player_id, team_id, salary, years_remaining, total_years,
-             contract_type, signed_in_season, is_active)
-        VALUES ($1, $2, $3, $4, 4, 4, 'rookie_scale', $5, TRUE)
+             contract_type, signed_in_season, is_active, signed_at)
+        VALUES ($1, $2, $3, $4, 4, 4, 'rookie_scale', $5, TRUE, NOW())
         """,
         league_id,
         player_id,

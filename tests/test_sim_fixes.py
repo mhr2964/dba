@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import datetime
 
-import pytest
-
 from services.sim_engine import sim_game
 from services.storyline_service import generate_storylines
 
@@ -153,17 +151,6 @@ async def test_injury_persistence(db_pool):
     player_id = await _seed_player(db_pool, league_id, home_team_id)
     game_date = datetime.date(2025, 10, 1)
     game_id = await _seed_game(db_pool, league_id, home_team_id, away_team_id, game_date)
-
-    fake_result = {
-        "home_score": 110,
-        "away_score": 95,
-        "winner_team_id": home_team_id,
-        "home_box": [],
-        "away_box": [],
-        "injuries": [
-            {"player_id": player_id, "team_id": home_team_id, "severity": "week_4_8"}
-        ],
-    }
 
     import random as _random
     rng = _random.Random(game_id)

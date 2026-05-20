@@ -1,5 +1,8 @@
 """Print all leagues in the database."""
-import asyncio, asyncpg, os
+import asyncio
+import os
+
+import asyncpg
 from dotenv import load_dotenv
 load_dotenv()
 

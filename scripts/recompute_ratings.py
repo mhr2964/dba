@@ -44,7 +44,7 @@ async def main() -> None:
     draft_info: dict[int, dict] = {}
 
     if not prebuilt:
-        print(f"No pre-built file found — fetching live stats...")
+        print("No pre-built file found — fetching live stats...")
         try:
             peak_lookup = _fetch_multi_season_peak(args.season)
             print(f"  Peak stats resolved for {len(peak_lookup)} players.")

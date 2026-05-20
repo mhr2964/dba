@@ -5,6 +5,8 @@ from typing import Any
 import discord
 
 from data.repositories.player_repo import Contract, Player
+from services.player_style_service import style_tags as _style_tags, tendencies_block as _tendencies_block
+
 
 _STAT_DISPLAY: dict[str, str] = {
     "ppg": "PPG",
@@ -14,13 +16,19 @@ _STAT_DISPLAY: dict[str, str] = {
     "bpg": "BPG",
     "fg_pct": "FG%",
     "fg3_pct": "3P%",
+    "mpg": "MPG",
+    "ts_pct": "TS%",
+    "usg_pct": "USG%",
+    "per": "PER",
 }
+
+_PCT_COLS = frozenset({"fg_pct", "fg3_pct", "ts_pct", "usg_pct"})
 
 
 def _fmt_stat(col: str, value: float | None) -> str:
     if value is None:
         return "—"
-    if col in ("fg_pct", "fg3_pct"):
+    if col in _PCT_COLS:
         return f"{value:.1f}%"
     return f"{value:.1f}"
 
@@ -47,6 +55,7 @@ def player_profile_embed(
     contract: Contract | None,
     season_stats: dict[str, Any] | None,
     recent_games: list[dict[str, Any]],
+    nba_profile: dict | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=player.full_name,
@@ -64,9 +73,17 @@ def player_profile_embed(
             f"SPG {_fmt_stat('spg', season_stats.get('spg'))} | "
             f"BPG {_fmt_stat('bpg', season_stats.get('bpg'))} | "
             f"FG {_fmt_stat('fg_pct', season_stats.get('fg_pct'))} | "
-            f"3P {_fmt_stat('fg3_pct', season_stats.get('fg3_pct'))}"
+            f"3P {_fmt_stat('fg3_pct', season_stats.get('fg3_pct'))} | "
+            f"MPG {_fmt_stat('mpg', season_stats.get('mpg'))}"
         )
         embed.add_field(name="Season Averages", value=avg_line, inline=False)
+
+        adv_line = (
+            f"TS% {_fmt_stat('ts_pct', season_stats.get('ts_pct'))} | "
+            f"USG% {_fmt_stat('usg_pct', season_stats.get('usg_pct'))} | "
+            f"PER {_fmt_stat('per', season_stats.get('per'))}"
+        )
+        embed.add_field(name="Advanced", value=adv_line, inline=False)
 
     if contract:
         contract_line = (
@@ -74,6 +91,10 @@ def player_profile_embed(
             f"({contract.contract_type})"
         )
         embed.add_field(name="Contract", value=contract_line, inline=False)
+
+    if nba_profile:
+        embed.add_field(name="Playing Style", value=_style_tags(nba_profile), inline=False)
+        embed.add_field(name="Tendencies", value=_tendencies_block(nba_profile), inline=False)
 
     if recent_games:
         rows = ["```", f"{'Date':<12} {'PTS':>4} {'REB':>4} {'AST':>4} {'STL':>4} {'BLK':>4}"]
@@ -94,7 +115,7 @@ def player_profile_embed(
 
 
 def career_stats_embed(
-    player: Player, career: dict, current_team_name: str
+    player: Player, career: dict, current_team_name: str, nba_profile: dict | None = None
 ) -> discord.Embed:
     """Career totals, averages, career high, and compact per-season table."""
     embed = discord.Embed(
@@ -137,6 +158,10 @@ def career_stats_embed(
             )
         rows.append("```")
         embed.add_field(name="Season History", value="\n".join(rows), inline=False)
+
+    if nba_profile:
+        embed.add_field(name="Playing Style", value=_style_tags(nba_profile), inline=False)
+        embed.add_field(name="Tendencies", value=_tendencies_block(nba_profile), inline=False)
 
     return embed
 

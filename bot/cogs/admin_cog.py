@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.errors import DBAError
+from core.errors import safe_defer
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import admin_repo, player_repo, team_repo
+from data.repositories import admin_repo, game_repo, league_repo, player_repo, team_repo
 from phase.helpers import get_league_or_error, require_commissioner
 from services import import_service, league_service, roster_seed_service
 
@@ -63,7 +65,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         field: str,
         value: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -125,7 +127,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
     @app_commands.command(name="rollback-game", description="Commissioner: reset a game to scheduled and reverse standings")
     @app_commands.describe(game_id="Game ID to roll back")
     async def rollback_game(self, interaction: discord.Interaction, game_id: int) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -217,7 +219,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Commissioner: recount standings from scratch from simmed games",
     )
     async def recalculate_standings(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -328,7 +330,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         salary: int,
         years: int,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -382,8 +384,8 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     """
                     INSERT INTO contracts
                         (league_id, player_id, team_id, salary, years_remaining, total_years,
-                         contract_type, signed_in_season, is_active)
-                    VALUES ($1, $2, $3, $4, $5, $5, 'standard', $6, TRUE)
+                         contract_type, signed_in_season, is_active, signed_at)
+                    VALUES ($1, $2, $3, $4, $5, $5, 'standard', $6, TRUE, NOW())
                     """,
                     league.id,
                     player_id,
@@ -428,7 +430,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         year: int,
         mode: app_commands.Choice[str] = None,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -536,7 +538,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Commissioner: create any missing DBA channels for this league",
     )
     async def ensure_channels(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -571,7 +573,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         guild = interaction.guild
         deleted_categories: list[str] = []
@@ -597,8 +599,6 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     pass
 
         # Load NBA team full names so we can match team roles exactly.
-        import json
-        from pathlib import Path
         _teams_path = Path(__file__).parent.parent.parent / "data" / "seeds" / "nba_teams.json"
         try:
             _nba_teams = json.loads(_teams_path.read_text())
@@ -668,7 +668,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Commissioner: regenerate starting lineups for all teams (top-OVR ordering)",
     )
     async def rebuild_lineups(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
 
         league = await get_league_or_error(interaction.guild_id)
         await require_commissioner(interaction, league)
@@ -709,6 +709,40 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             action_type="rebuild_lineups",
             target_ref=str(league.id),
             detail=f"Rebuilt lineups for {n_success}/{len(teams)} teams. Errors: {len(errors)}",
+        )
+
+
+    @app_commands.command(
+        name="force-ready",
+        description="Commissioner: mark all managers as ready (testing / catch-up)",
+    )
+    async def force_ready(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction, ephemeral=True)
+        pool = await get_pool()
+        league = await league_repo.get_by_guild(pool, interaction.guild_id)
+        if not league:
+            await interaction.followup.send("No active league.", ephemeral=True)
+            return
+
+        if interaction.user.id != league.commissioner_user_id:
+            await interaction.followup.send(
+                "Only the commissioner can force-ready.", ephemeral=True
+            )
+            return
+
+        teams = await team_repo.get_all(pool, league.id)
+        human_teams = [t for t in teams if t.manager_user_id is not None]
+
+        if not human_teams:
+            await interaction.followup.send("No managers to ready up.", ephemeral=True)
+            return
+
+        for team in human_teams:
+            await game_repo.set_ready(pool, league.id, team.id, team.manager_user_id, True)
+
+        await interaction.followup.send(
+            f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.",
+            ephemeral=True,
         )
 
 
