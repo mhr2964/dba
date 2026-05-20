@@ -783,8 +783,6 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         description="Bot owner: restart the bot process",
     )
     async def restart_bot(self, interaction: discord.Interaction) -> None:
-        await safe_defer(interaction, ephemeral=True)
-
         # Bot-level admin: check Discord application owner OR commissioner of
         # any league in this guild. This is a process-restart, not a
         # league-state action, so it shouldn't require a league to exist.
@@ -793,17 +791,25 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         if not is_owner:
             league = await league_repo.get_by_guild(await get_pool(), interaction.guild_id)
             if not league or interaction.user.id != league.commissioner_user_id:
-                raise DBAError("Only the bot owner or league commissioner can restart the bot.")
-
-        await safe_respond(
-            interaction,
-            content="Restarting now — back in ~10 seconds.",
-            ephemeral=True,
-        )
+                # Permission denied — respond cleanly before bailing.
+                try:
+                    await interaction.response.send_message(
+                        "Only the bot owner or league commissioner can restart the bot.",
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
+                return
 
         log.warning(
             f"Bot restart requested by {interaction.user} ({interaction.user.id})"
         )
+
+        # Skip defer/respond entirely — Discord's gateway delivery is often
+        # laggy enough that the 3-second ack window expires before we can
+        # reply, and a half-failed ack shows "Something went wrong" to the
+        # user. Just exit fast; Discord shows "Application did not respond"
+        # for a few seconds while the watchdog respawns us.
 
         # Exit with code 42 — run.py watchdog sees this and respawns main.py.
         # All the previous self-spawn approaches (subprocess.Popen with
