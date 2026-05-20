@@ -20,6 +20,18 @@ data/seeds/nba_2k_ratings_raw.csv
 .log_baseline
 dba.db
 data/dba.db
+headless_logs/
+
+# Root-level throwaway dev/debug scripts (kept locally, not source)
+/check_*.py
+/fix_*.py
+/verify_fixes.py
+/run_sim_check.py
+/recalibrate_tendencies.py
+/build_tendency_snapshots.py
+/find_member.py
+/get_user_id.py
+/assign_teams.py
 
 # Test-run artifacts
 .test-screenshots/
