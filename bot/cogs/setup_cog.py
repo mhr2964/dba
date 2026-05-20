@@ -547,7 +547,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
+            if channel and channel.id != interaction.channel_id:
                 await channel.send(
                     f"📋 {member.mention} has claimed the **{team.full_name}** (`{team.nba_team_code}`)!"
                 )
@@ -581,7 +581,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
+            if channel and channel.id != interaction.channel_id:
                 await channel.send(
                     f"🔄 The **{team.full_name}** (`{team.nba_team_code}`) is now CPU controlled."
                 )

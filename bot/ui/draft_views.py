@@ -148,7 +148,7 @@ class _ProspectSelect(discord.ui.Select):
             )
             if news_channel_id:
                 channel = guild.get_channel(news_channel_id)
-                if channel:
+                if channel and channel.id != interaction.channel_id:
                     await channel.send(embed=next_embed, view=next_view)
 
         elif next_state["status"] == "complete":

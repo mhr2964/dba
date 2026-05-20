@@ -669,11 +669,18 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             inline=True,
         )
         embed.set_footer(text="Server is clean. Use /league create to start fresh.")
-        # Send result to a channel that still exists — the DBA channels were just deleted,
-        # so posting to the interaction channel (which may be #league-news) would 404.
-        # Try the guild's system channel, then DM the user, as fallbacks.
+        # Try to resolve the deferred placeholder FIRST — if the interaction
+        # channel still exists, this is one message (the placeholder updates
+        # in place). Only fall back to system_channel/DM if the original
+        # channel is gone (it might be — purge just deleted all DBA channels).
         sent = False
-        if guild.system_channel:
+        try:
+            await safe_respond(interaction, embed=embed)
+            sent = True
+        except discord.HTTPException:
+            pass
+
+        if not sent and guild.system_channel:
             try:
                 await guild.system_channel.send(embed=embed)
                 sent = True
@@ -682,13 +689,6 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         if not sent:
             try:
                 await interaction.user.send(embed=embed)
-                sent = True
-            except discord.HTTPException:
-                pass
-        if not sent:
-            # Last resort — try editing the deferred placeholder (may 404 if issued from a deleted channel)
-            try:
-                await safe_respond(interaction, embed=embed)
             except discord.HTTPException:
                 pass
 

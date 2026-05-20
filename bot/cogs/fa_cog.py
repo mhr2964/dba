@@ -138,7 +138,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
             news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
+                if channel and channel.id != interaction.channel_id:
                     await channel.send(embed=closed_embed)
         else:
             day_embed = fa_embeds.fa_day_open_embed(new_state, new_state["current_day"], league)
@@ -146,7 +146,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
             news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
+                if channel and channel.id != interaction.channel_id:
                     await channel.send(embed=day_embed)
 
     @app_commands.command(name="counter-accept", description="Accept a player's counter offer (team manager only)")

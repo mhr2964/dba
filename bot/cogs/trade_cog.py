@@ -202,7 +202,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             )
             if transactions_channel_id:
                 tx_channel = interaction.guild.get_channel(transactions_channel_id)
-                if tx_channel:
+                if tx_channel and tx_channel.id != interaction.channel_id:
                     await tx_channel.send(embed=announced)
             return
 
@@ -233,7 +233,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         if transactions_channel_id:
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
-            if tx_channel:
+            if tx_channel and tx_channel.id != interaction.channel_id:
                 announced = trade_embeds.trade_proposed(trade, proposer_team, counterparty_team)
                 await tx_channel.send(embed=announced)
 
@@ -367,7 +367,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         )
         if transactions_channel_id:
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
-            if tx_channel:
+            if tx_channel and tx_channel.id != interaction.channel_id:
                 announced = trade_embeds.trade_proposed(trade, proposer_team, cpu_team)
                 await tx_channel.send(embed=announced)
 
@@ -403,7 +403,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
         if transactions_channel_id:
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
-            if tx_channel:
+            if tx_channel and tx_channel.id != interaction.channel_id:
                 await tx_channel.send(embed=trade_embeds.trade_proposed(trade, proposer_team, user_team))
 
     @app_commands.command(name="decline", description="Decline an incoming trade offer")
@@ -447,7 +447,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
         if transactions_channel_id:
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
-            if tx_channel:
+            if tx_channel and tx_channel.id != interaction.channel_id:
                 await tx_channel.send(embed=result_embed)
 
                 proposer_team = await team_repo.get_by_id(pool, trade.proposer_team_id)

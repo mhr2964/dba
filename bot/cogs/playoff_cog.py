@@ -89,7 +89,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
             news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
+                if channel and channel.id != interaction.channel_id:
                     await channel.send(embed=series_em)
 
             next_round = await playoff_service.advance_playoff_round(
@@ -100,7 +100,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
                 champ_embed = playoff_embeds.champion_embed(winner)
                 if news_channel_id:
                     channel = interaction.guild.get_channel(news_channel_id)
-                    if channel:
+                    if channel and channel.id != interaction.channel_id:
                         await channel.send(embed=champ_embed)
                 await interaction.followup.send(embed=champ_embed)
 
@@ -110,7 +110,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
                 bracket_em.title = f"Round {next_round} — Updated Bracket"
                 if news_channel_id:
                     channel = interaction.guild.get_channel(news_channel_id)
-                    if channel:
+                    if channel and channel.id != interaction.channel_id:
                         await channel.send(embed=bracket_em)
                 await interaction.followup.send(embed=bracket_em)
 
@@ -184,7 +184,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
             champ_em = playoff_embeds.champion_embed(winner)
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
+                if channel and channel.id != interaction.channel_id:
                     try:
                         await channel.send(embed=champ_em)
                     except Exception:
@@ -196,7 +196,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
             bracket_em.title = f"Round Complete — {games_simmed} games simmed"
             if news_channel_id:
                 channel = interaction.guild.get_channel(news_channel_id)
-                if channel:
+                if channel and channel.id != interaction.channel_id:
                     try:
                         await channel.send(embed=bracket_em)
                     except Exception:
@@ -244,7 +244,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
+            if channel and channel.id != interaction.channel_id:
                 await channel.send(embed=result_embed)
 
         await safe_respond(interaction, embed=result_embed)
@@ -292,7 +292,7 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
             channel = interaction.guild.get_channel(news_channel_id)
-            if channel:
+            if channel and channel.id != interaction.channel_id:
                 await channel.send(embed=playin_em)
                 await channel.send(embed=r1_embed)
 
