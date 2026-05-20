@@ -1,0 +1,34 @@
+# Local runtime state — never ship to prod
+.bot.lock
+*.log
+bot.log
+headless_logs/
+.claude/
+
+# Local dev
+.git/
+.gitignore
+.env
+.env.local
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local-only files
+docker-compose.yml
+run.py
+Start*.bat
+
+# Dev/test scripts that live at root but shouldn't deploy
+run_sim_check.py
+tests/
+test_*.py

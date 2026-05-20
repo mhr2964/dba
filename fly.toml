@@ -7,6 +7,15 @@ primary_region = "iad"
 [deploy]
   release_command = "python -m alembic upgrade head"
 
+# Discord bots are long-lived websocket clients — they should never be
+# scaled to zero. auto_stop_machines = false keeps the machine awake.
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"
