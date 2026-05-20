@@ -223,11 +223,13 @@ async def generate(  # noqa: PLR0912, PLR0915
     # Prepend a hard score-accuracy rule before the persona's own voice notes.
     # This fires before any context so the model cannot later "forget" it.
     length_rule = (
-        "LENGTH RULE (mandatory): Your article body must be 150-200 words. "
-        "Write a COMPLETE, finished piece within this limit — every idea must reach its conclusion. "
-        "Do NOT stop mid-thought. Do NOT write more than 200 words. "
-        "Plan your take before writing: pick ONE angle, develop it fully, close it cleanly. "
-        "No incomplete sentences, no trailing thoughts.\n\n"
+        "LENGTH RULE (mandatory): Your article body must be 90-130 words. No more. No less.\n"
+        "STRUCTURE (mandatory — follow exactly):\n"
+        "1. One-sentence lede: state your take directly. Bold the key name or verdict.\n"
+        "2. 2-3 bullets using the • character (not -). Each bullet: one line only. "
+        "Lead with the number or stat, then the beat. Example: '• **24/8/5 on .604 TS** — career year amid chaos.'\n"
+        "3. One-sentence close: verdict or forward hook. No filler.\n"
+        "No paragraph blocks. No walls of text. Discord-native formatting only.\n\n"
     )
 
     score_accuracy_rule = (
@@ -262,14 +264,10 @@ async def generate(  # noqa: PLR0912, PLR0915
     )
 
     format_freedom_rule = (
-        "FORMAT FREEDOM: You are not limited to straight paragraphs. Choose the format that best fits your take:\n"
-        "- Film room breakdown: numbered tactical observations\n"
-        "- Hot take column: bold assertion + 2 supporting points\n"
-        "- Grades: assign A-F grades to teams/players with 1-sentence justification each\n"
-        "- Power shift: 'Team X is rising because... Team Y is falling because...'\n"
-        "- Bold prediction: state a specific outcome, give your reasoning\n"
-        "- Stat spotlight: lead with a surprising custom stat from the data, explain what it reveals\n"
-        "Pick the format that makes your angle land hardest. Not every piece needs 3 paragraphs.\n\n"
+        "DISCORD FORMATTING (mandatory): Use • bullets for any 2+ discrete points. "
+        "Bold (**) player names, verdicts, and key numbers — not entire phrases. "
+        "One blank line between sections. No paragraph walls. No filler openers "
+        "('As we look at...', 'In a matchup that...', etc.).\n\n"
     )
 
     custom_stats_rule = (
@@ -314,7 +312,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         client = anthropic.AsyncAnthropic(api_key=api_key)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=1200,
+            max_tokens=600,
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )

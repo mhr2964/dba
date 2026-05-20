@@ -1550,15 +1550,17 @@ async def get_ai_reasoning(trade_summary: dict, api_key: str | None) -> dict[str
     players_b = ", ".join(_player_line(p) for p in trade_summary.get("team_b_players", [])) or "picks only"
 
     prompt = (
-        "Grade this NBA trade. Be direct, 1-2 sentences per side. No filler.\n\n"
+        "Grade this DBA trade. Be direct. No filler. No paragraph blocks.\n\n"
         f"TRADE: {trade_summary['team_a_name']} gives {players_a} | "
         f"{trade_summary['team_b_name']} gives {players_b}\n"
         f"{trade_summary['team_a_name']} record: {trade_summary.get('team_a_record', '?')} | "
         f"{trade_summary['team_b_name']} record: {trade_summary.get('team_b_record', '?')}\n"
-        f"Grades already assigned: {trade_summary['team_a_name']} = {trade_summary['grade_a']} | "
-        f"{trade_summary['team_b_name']} = {trade_summary['grade_b']}\n\n"
-        "For each team write: 1 sentence explaining why that grade fits, "
-        "1 sentence about where this team is headed.\n"
+        f"Grades: {trade_summary['team_a_name']} = **{trade_summary['grade_a']}** | "
+        f"{trade_summary['team_b_name']} = **{trade_summary['grade_b']}**\n\n"
+        "MANDATORY FORMAT — each team gets exactly two sentences:\n"
+        "Sentence 1: the asymmetry (what one side got vs the other, bolding the key player/number).\n"
+        "Sentence 2: the rationale (why this fits or hurts that team's situation).\n"
+        "No openers. No conclusions. Two sentences per team, period.\n"
         'Return JSON: {"teamA": "...", "teamB": "..."}'
     )
 

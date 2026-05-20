@@ -867,7 +867,8 @@ async def build_team_perspective(
     Build a narrative read of this trade from perspective_team's POV.
 
     Returns a list of bullet-point strings, each starting with "• ".
-    Target: 5-9 bullets.  Skips lines when data is absent or irrelevant.
+    Target: 3-4 bullets per side.  Skips lines when data is absent or irrelevant.
+    Each bullet must be a single line — no run-ons.
     """
     bullets: list[str] = []
 
@@ -1260,22 +1261,21 @@ async def build_team_perspective(
         if cpu_reason and decision_label:
             bullets.append(f"• Model says {decision_label}: {cpu_reason}")
 
-    # Clamp to 9 bullets max.
-    # Drop context (↳) lines from the back first — they're supplementary.
-    # Structural bullets (scene-setter, cap, alignment) are preserved as long as possible.
-    if len(bullets) > 9:
-        # Pass 1: collect everything, mark context lines
+    # Clamp to 4 bullets max.
+    # Drop context (-> sub-lines) first — they're supplementary.
+    # Then drop lowest-impact primary bullets (those added later have less structural weight).
+    if len(bullets) > 4:
         ctx_indices = [i for i, b in enumerate(bullets) if b.startswith("  -> ")]
-        # Remove context lines from the back until we're at 9
         removed = set()
         for idx in reversed(ctx_indices):
-            if len(bullets) - len(removed) <= 9:
+            if len(bullets) - len(removed) <= 4:
                 break
             removed.add(idx)
         bullets = [b for i, b in enumerate(bullets) if i not in removed]
-        # Hard cap if still over (very unusual — many players in the trade)
-        if len(bullets) > 9:
-            bullets = bullets[:9]
+        # Hard cap: keep first bullet (scene-setter), last bullet (alignment/net),
+        # and trim mid-section down to fit 4 total.
+        if len(bullets) > 4:
+            bullets = [bullets[0]] + bullets[1:-1][:2] + [bullets[-1]]
 
     return bullets
 
