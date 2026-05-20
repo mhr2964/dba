@@ -7,8 +7,6 @@ Tests for CPU gameplay fixes:
 """
 from __future__ import annotations
 
-import pytest
-
 from data.repositories import game_repo
 from services.batch_sim_runner import _ensure_lineup
 

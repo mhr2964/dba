@@ -14,12 +14,42 @@ TEST_DB_URL = "postgresql://dba:dba@localhost:5434/dba_test"
 DBA_ROOT = r"C:\Users\Owner\Desktop\AI\Projects\dba"
 
 
+def _check_db_available() -> bool:
+    """Probe Postgres at collection time so skip decisions can be made early."""
+    try:
+        conn = psycopg2.connect(
+            "postgresql://dba:dba@localhost:5434/postgres",
+            connect_timeout=2,
+        )
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+_DB_AVAILABLE = _check_db_available()
+
+
+def pytest_collection_modifyitems(items):
+    """Skip tests that explicitly request db_pool when Postgres is unavailable."""
+    if _DB_AVAILABLE:
+        return
+    skip_marker = pytest.mark.skip(reason="Postgres not available at localhost:5434")
+    for item in items:
+        if "db_pool" in getattr(item, "fixturenames", []):
+            item.add_marker(skip_marker, append=False)
+
+
 # ---------------------------------------------------------------------------
-# DB bootstrap — sync, session-scoped so migrations run exactly once
+# DB bootstrap — sync, session-scoped so migrations run exactly once.
+# Skips gracefully when Postgres is not reachable (e.g. CI without DB).
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
+    if not _DB_AVAILABLE:
+        return
+
     conn = psycopg2.connect("postgresql://dba:dba@localhost:5434/postgres")
     conn.autocommit = True
     cur = conn.cursor()
@@ -41,11 +71,15 @@ def setup_test_db():
 
 
 # ---------------------------------------------------------------------------
-# Per-test pool — function-scoped so pool and event loop always match
+# Per-test pool — function-scoped so pool and event loop always match.
+# Yields None when DB is unavailable; callers must handle None or skip.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 async def db_pool():
+    if not _DB_AVAILABLE:
+        yield None
+        return
     pool = await asyncpg.create_pool(TEST_DB_URL, min_size=1, max_size=3)
     yield pool
     await pool.close()
@@ -53,6 +87,9 @@ async def db_pool():
 
 @pytest.fixture(autouse=True)
 async def clean_db(db_pool):
+    if db_pool is None:
+        yield
+        return
     await db_pool.execute(
         "TRUNCATE leagues RESTART IDENTITY CASCADE"
     )
@@ -61,6 +98,9 @@ async def clean_db(db_pool):
 
 @pytest.fixture(autouse=True)
 async def patch_get_pool(db_pool):
+    if db_pool is None:
+        yield
+        return
     pool_mock = AsyncMock(return_value=db_pool)
     with (
         patch("data.db.get_pool", pool_mock),
@@ -96,6 +136,10 @@ def mock_guild():
     guild = MagicMock(spec=discord.Guild)
     guild.id = 999001
     guild.name = "Test Server"
+    # league_service._create_locked compares bot_top_role.position > 1;
+    # MagicMock doesn't support __gt__ with int, so stub it as an int.
+    # Added 2026-05-20 after _create_locked role-reorder logic was added.
+    guild.me.top_role.position = 99
 
     _created_roles: dict[int, MagicMock] = {}
 

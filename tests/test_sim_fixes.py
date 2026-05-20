@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import datetime
 
-import pytest
-
 from services.sim_engine import sim_game
 from services.storyline_service import generate_storylines
 
@@ -154,17 +152,6 @@ async def test_injury_persistence(db_pool):
     game_date = datetime.date(2025, 10, 1)
     game_id = await _seed_game(db_pool, league_id, home_team_id, away_team_id, game_date)
 
-    fake_result = {
-        "home_score": 110,
-        "away_score": 95,
-        "winner_team_id": home_team_id,
-        "home_box": [],
-        "away_box": [],
-        "injuries": [
-            {"player_id": player_id, "team_id": home_team_id, "severity": "week_4_8"}
-        ],
-    }
-
     import random as _random
     rng = _random.Random(game_id)
     lo, hi = 20, 35
@@ -306,7 +293,7 @@ async def test_records_big_game_detected(db_pool):
         ],
         "away_box": [],
     }
-    announcements = await check_and_update_records(db_pool, league_id, 2025, game_id, result)
+    season_announcements, _at_announcements = await check_and_update_records(db_pool, league_id, 2025, game_id, result)
 
     record_row = await db_pool.fetchrow(
         "SELECT value, player_id FROM season_records "
@@ -316,7 +303,7 @@ async def test_records_big_game_detected(db_pool):
     assert record_row is not None
     assert record_row["value"] == 55.0
     assert record_row["player_id"] == player_id
-    assert any("55" in a for a in announcements)
+    assert any("55" in a for a in season_announcements)
 
 
 # ---------------------------------------------------------------------------
