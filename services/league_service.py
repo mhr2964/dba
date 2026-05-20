@@ -276,34 +276,63 @@ async def _create_locked(
             ch = await category.create_text_channel(role_name)
             channel_ids[role_name] = ch.id
 
-        # Per-channel duplicate sweep: discord.py retries on transients can
-        # cause each create_text_channel call to land twice on Discord's
-        # side, leaving two same-named channels in our category. For each
-        # role we tracked, find ALL channels in our category with that
-        # name and keep only the one we stored; delete the rest before the
-        # user sees them.
+        # Combined duplicate sweep: fetch channels ONCE and clean up both
+        # duplicate categories (phantom siblings of our tracked category)
+        # and duplicate channels (same-named siblings within our category).
+        # Running this immediately after channel creation — before any
+        # team-seeding / archetype / philosophy work — means the user
+        # sees the duplicates flicker for at most ~200ms instead of
+        # several seconds.
         try:
+            fresh_channels = await guild.fetch_channels()
+            # Kill phantom duplicate categories (and their children) FIRST,
+            # so the per-channel sweep below doesn't have to look at them.
+            dup_cats = [
+                c for c in fresh_channels
+                if isinstance(c, discord.CategoryChannel)
+                and c.name == category_name
+                and c.id != category.id
+            ]
+            for orphan_cat in dup_cats:
+                log.warning(
+                    f"League {league.id}: post-create sweep killing duplicate "
+                    f"category id={orphan_cat.id} (kept id={category.id})"
+                )
+                for ch in [
+                    c for c in fresh_channels
+                    if getattr(c, "category_id", None) == orphan_cat.id
+                ]:
+                    try:
+                        await ch.delete(reason="DBA orphan-category sweep")
+                    except Exception as exc:
+                        log.warning(f"  orphan child delete failed for {ch.id}: {exc}")
+                try:
+                    await orphan_cat.delete(reason="DBA orphan-category sweep")
+                except Exception as exc:
+                    log.warning(f"  orphan category delete failed for {orphan_cat.id}: {exc}")
+
+            # Per-channel dedupe WITHIN our category: same-name duplicates
+            # from retried create_text_channel calls.
+            kept_ids = set(channel_ids.values())
             in_category = [
-                c for c in await guild.fetch_channels()
+                c for c in fresh_channels
                 if isinstance(c, discord.TextChannel)
                 and getattr(c, "category_id", None) == category.id
             ]
-            kept_ids = set(channel_ids.values())
             for role_name in CHANNEL_ROLES:
-                same_name = [c for c in in_category if c.name == role_name]
-                for dup in same_name:
+                for dup in [c for c in in_category if c.name == role_name]:
                     if dup.id in kept_ids:
                         continue
                     log.warning(
-                        f"League {league.id}: per-channel sweep found duplicate "
-                        f"#{role_name} id={dup.id} (kept id={channel_ids[role_name]}) — deleting"
+                        f"League {league.id}: post-create sweep killing duplicate "
+                        f"#{role_name} id={dup.id} (kept id={channel_ids[role_name]})"
                     )
                     try:
                         await dup.delete(reason="DBA per-channel duplicate sweep")
                     except Exception as exc:
                         log.warning(f"  per-channel delete failed for {dup.id}: {exc}")
         except Exception as exc:
-            log.warning(f"League {league.id}: per-channel sweep failed: {exc}")
+            log.warning(f"League {league.id}: post-create sweep failed: {exc}")
 
         commissioner_role = await guild.create_role(
             name="DBA Commissioner",
@@ -408,41 +437,6 @@ async def _create_locked(
         )
 
     await _randomize_philosophies(pool, league.id)
-
-    # Defensive sweep: if Discord's API (or discord.py's retry logic) created
-    # any extra categories with our name beyond the one we tracked, delete them.
-    # Observed 2026-05-18: a single /league create produced 1 DB row + 1 logged
-    # "category created" line + 2 actual Discord categories with identical
-    # channel sets ~130ms apart. Lock + DB unique constraint hold, but extra
-    # Discord-side categories slip through. This sweep makes it irrelevant.
-    try:
-        fresh_channels = await guild.fetch_channels()
-        duplicates = [
-            c for c in fresh_channels
-            if isinstance(c, discord.CategoryChannel)
-            and c.name == category_name
-            and c.id != category.id
-        ]
-        for orphan_cat in duplicates:
-            log.warning(
-                f"League {league.id}: detected duplicate orphan category "
-                f"id={orphan_cat.id} (kept id={category.id}) — sweeping"
-            )
-            orphan_children = [
-                c for c in fresh_channels
-                if getattr(c, "category_id", None) == orphan_cat.id
-            ]
-            for ch in orphan_children:
-                try:
-                    await ch.delete(reason="DBA orphan-category sweep")
-                except Exception as exc:
-                    log.warning(f"  could not delete orphan channel {ch.id}: {exc}")
-            try:
-                await orphan_cat.delete(reason="DBA orphan-category sweep")
-            except Exception as exc:
-                log.warning(f"  could not delete orphan category {orphan_cat.id}: {exc}")
-    except Exception as exc:
-        log.warning(f"League {league.id}: orphan-category sweep failed: {exc}")
 
     await _post_onboarding_guide(guild, pool, league.id, name)
     log.info(f"League '{name}' created in guild {guild.id} by {commissioner.id}")
