@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import history_embeds, hof_embeds, progression_embeds
-from core.errors import DBAError, PermissionError, PhaseError, safe_defer
+from core.errors import DBAError, PermissionError, PhaseError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import history_repo, hof_repo, league_repo, player_repo, team_repo
@@ -52,8 +52,9 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
         league = await _require_commissioner(interaction)
 
         if league.current_phase != Phase.PROGRESSION_PENDING.value:
-            await interaction.followup.send(
-                f"League must be in PROGRESSION_PENDING phase. Current phase: {league.current_phase}",
+            await safe_respond(
+                interaction,
+                content=f"League must be in PROGRESSION_PENDING phase. Current phase: {league.current_phase}",
                 ephemeral=True,
             )
             return
@@ -83,8 +84,9 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
                 league.id, league.current_season, exc,
                 exc_info=True,
             )
-            await interaction.followup.send(
-                f"Progression failed: {exc}\nCheck bot logs for the full stack trace.",
+            await safe_respond(
+                interaction,
+                content=f"Progression failed: {exc}\nCheck bot logs for the full stack trace.",
                 ephemeral=True,
             )
             return
@@ -132,7 +134,7 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
             if channel and channel.id != interaction.channel_id:
                 await channel.send(embed=embed)
 
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         log.info(
             "Progression run by %s: %d players (league %d, season %d)",
@@ -166,7 +168,7 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
         await _post_to_news(interaction.guild, league.id, pool, news_embed)
 
         reply_embed = history_embeds.rollover_complete_embed(summary)
-        await interaction.followup.send(embed=reply_embed)
+        await safe_respond(interaction, embed=reply_embed)
 
     @app_commands.command(name="history", description="View season history records")
     @app_commands.describe(season="Season year to look up (omit for last 5 seasons)")

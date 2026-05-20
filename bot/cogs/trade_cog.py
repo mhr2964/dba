@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from bot.embeds import trade_embeds
 from bot.embeds import intel_embeds
-from core.errors import DBAError, safe_defer
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
@@ -112,7 +112,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         await require_phase(league, "trade_propose")
@@ -121,22 +121,25 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         proposer_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not proposer_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         counterparty_team = await team_repo.get_by_manager(pool, league.id, counterparty.id)
         if not counterparty_team:
             # Allow targeting CPU teams by checking if the member is a bot/has no team — but
             # the caller passes a Member, so if no human team is found, reject.
-            await interaction.followup.send(
-                f"{counterparty.mention} does not manage a team in this league. "
-                "To trade with a CPU team, use their team code instead — this command requires a human manager.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"{counterparty.mention} does not manage a team in this league. "
+                    "To trade with a CPU team, use their team code instead — this command requires a human manager."
+                ),
                 ephemeral=True,
             )
             return
 
         if proposer_team.id == counterparty_team.id:
-            await interaction.followup.send("You cannot trade with yourself.", ephemeral=True)
+            await safe_respond(interaction, content="You cannot trade with yourself.", ephemeral=True)
             return
 
         give_player_ids = _parse_ids(give_players) if give_players.strip() else []
@@ -159,9 +162,12 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         card = trade_embeds.trade_card(trade, assets, proposer_team, counterparty_team, players_by_id, picks_by_id)
 
         if trade.status in ("declined", "rejected"):
-            await interaction.followup.send(
-                f"The CPU **{counterparty_team.full_name}** declined the trade.\n"
-                f"Reason: {trade.cpu_rationale or 'No reason given.'}",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"The CPU **{counterparty_team.full_name}** declined the trade.\n"
+                    f"Reason: {trade.cpu_rationale or 'No reason given.'}"
+                ),
                 ephemeral=True,
             )
             return
@@ -174,9 +180,12 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                 trade, counter_assets, counterparty_team, proposer_team,
                 counter_players_by_id, counter_picks_by_id,
             )
-            await interaction.followup.send(
-                f"The CPU **{counterparty_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
-                f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"The CPU **{counterparty_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
+                    f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond."
+                ),
                 embed=counter_card,
             )
             return
@@ -186,8 +195,9 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         if trade.status == "pending_commissioner":
             # CPU auto-accepted
             announced = trade_embeds.trade_proposed(trade, proposer_team, counterparty_team)
-            await interaction.followup.send(
-                f"The CPU **{counterparty_team.full_name}** accepted! Trade is now pending commissioner approval.",
+            await safe_respond(
+                interaction,
+                content=f"The CPU **{counterparty_team.full_name}** accepted! Trade is now pending commissioner approval.",
                 embed=card,
             )
             if transactions_channel_id:
@@ -206,14 +216,18 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             )
         except discord.Forbidden:
             log.warning(f"Could not DM counterparty {counterparty.id} for trade {trade.id}")
-            await interaction.followup.send(
-                f"Trade #{trade.id} proposed, but I couldn't DM {counterparty.mention} — their DMs may be closed. "
-                "They can still use `/trade accept {trade.id}` or `/trade decline {trade.id}`.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"Trade #{trade.id} proposed, but I couldn't DM {counterparty.mention} — their DMs may be closed. "
+                    "They can still use `/trade accept {trade.id}` or `/trade decline {trade.id}`."
+                ),
                 embed=card,
             )
         else:
-            await interaction.followup.send(
-                f"Trade #{trade.id} proposed. {counterparty.mention} has been notified via DM.",
+            await safe_respond(
+                interaction,
+                content=f"Trade #{trade.id} proposed. {counterparty.mention} has been notified via DM.",
                 embed=card,
             )
 
@@ -353,12 +367,12 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         user_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not user_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         trade = await trade_service.accept(pool, trade_id, user_team.id)
@@ -368,10 +382,10 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         players_by_id, picks_by_id = await _build_asset_lookup(pool, assets)
         card = trade_embeds.trade_card(trade, assets, proposer_team, user_team, players_by_id, picks_by_id)
 
-        await interaction.followup.send(
-            f"Trade #{trade_id} accepted and sent to commissioner for review.",
+        await safe_respond(
+            interaction,
+            content=f"Trade #{trade_id} accepted and sent to commissioner for review.",
             embed=card,
-            ephemeral=True,
         )
 
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
@@ -388,17 +402,17 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         user_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not user_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         trade = await trade_service.decline(pool, trade_id, user_team.id)
         result_embed = trade_embeds.trade_result(trade, "declined")
-        await interaction.followup.send(f"Trade #{trade_id} declined.", embed=result_embed, ephemeral=True)
+        await safe_respond(interaction, content=f"Trade #{trade_id} declined.", embed=result_embed)
 
     @app_commands.command(name="approve", description="Commissioner: approve a pending trade")
     @app_commands.describe(trade_id="The trade ID to approve")
@@ -408,7 +422,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         await require_phase(league, "trade_approve")
@@ -416,7 +430,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         trade, grade_info = await trade_service.approve(pool, trade_id, interaction.user.id)
         result_embed = trade_embeds.trade_result(trade, "approved")
-        await interaction.followup.send(content="Trade approved.", ephemeral=True)
+        await safe_respond(interaction, content="Trade approved.")
 
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
         if transactions_channel_id:
@@ -481,7 +495,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         await require_phase(league, "trade_veto")
@@ -489,7 +503,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         trade = await trade_service.veto(pool, trade_id, interaction.user.id, reason)
         result_embed = trade_embeds.trade_result(trade, "vetoed")
-        await interaction.followup.send(embed=result_embed)
+        await safe_respond(interaction, embed=result_embed)
 
         transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
         if transactions_channel_id:
@@ -504,16 +518,16 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         if interaction.user.id != league.commissioner_user_id:
-            await interaction.followup.send("Only the commissioner can view the trade queue.", ephemeral=True)
+            await safe_respond(interaction, content="Only the commissioner can view the trade queue.", ephemeral=True)
             return
 
         queue = await trade_service.get_pending_queue(pool, league.id)
         embed = trade_embeds.pending_queue(queue)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="list", description="View your team's active trades (incoming and outgoing)")
     async def list(self, interaction: discord.Interaction) -> None:
@@ -522,12 +536,12 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         user_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not user_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         incoming = await trade_repo.get_pending_for_team(pool, user_team.id)
@@ -549,7 +563,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         if not incoming and not outgoing:
             embed.description = "No active trades."
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="history", description="View approved trade history for a team")
     @app_commands.describe(
@@ -567,21 +581,25 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         if team:
             target_team = await team_repo.get_by_code(pool, league.id, team.upper())
             if not target_team:
-                await interaction.followup.send(
-                    f"Team `{team.upper()}` not found.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Team `{team.upper()}` not found.",
+                    ephemeral=True,
                 )
                 return
         else:
             target_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
             if not target_team:
-                await interaction.followup.send(
-                    "You don't manage a team. Provide a team code.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Provide a team code.",
+                    ephemeral=True,
                 )
                 return
 
@@ -603,7 +621,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                     players_by_id[p.id] = {"full_name": p.full_name, "overall": p.overall}
 
         embed = trade_embeds.trade_history_embed(trades, target_team, players_by_id)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="why",
@@ -616,21 +634,26 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         trade = await trade_repo.get_trade(pool, trade_id)
         if not trade or trade.league_id != league.id:
-            await interaction.followup.send(
-                f"Trade #{trade_id} not found in this league.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"Trade #{trade_id} not found in this league.",
+                ephemeral=True,
             )
             return
 
         context_signals = await trade_repo.get_context_signals(pool, trade_id)
         if not context_signals:
-            await interaction.followup.send(
-                "This trade pre-dates context signal tracking — no reasoning available. "
-                "Signals tracking started 2026-05-20; trades before this date have no signal history.",
+            await safe_respond(
+                interaction,
+                content=(
+                    "This trade pre-dates context signal tracking — no reasoning available. "
+                    "Signals tracking started 2026-05-20; trades before this date have no signal history."
+                ),
                 ephemeral=True,
             )
             return
@@ -657,7 +680,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             counterparty_team=counterparty_team,
             player_names=player_names,
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="signals",
@@ -678,13 +701,15 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         target_team = await team_repo.get_by_code(pool, league.id, team_code.upper())
         if not target_team:
-            await interaction.followup.send(
-                f"Team `{team_code.upper()}` not found.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"Team `{team_code.upper()}` not found.",
+                ephemeral=True,
             )
             return
 
@@ -704,7 +729,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             top_positive=top_positive,
             top_negative=top_negative,
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="league",
@@ -716,7 +741,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         # Single query: last 20 trades across all statuses, ordered by most-recent
@@ -745,7 +770,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
         if not trade_rows:
             embed = intel_embeds.league_trades_embed([])
-            await interaction.followup.send(embed=embed)
+            await safe_respond(interaction, embed=embed)
             return
 
         # Bulk-fetch assets for all trade IDs in one query.
@@ -806,7 +831,7 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             })
 
         embed = intel_embeds.league_trades_embed(trades_for_embed)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
 class TradeBlockGroup(app_commands.Group, name="block", description="Trade block management"):
@@ -827,18 +852,18 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
         await safe_defer(interaction)
 
         if note and len(note) > 100:
-            await interaction.followup.send("Note must be 100 characters or fewer.", ephemeral=True)
+            await safe_respond(interaction, content="Note must be 100 characters or fewer.", ephemeral=True)
             return
 
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         user_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not user_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         # Try numeric ID first so users can copy the ID shown in /roster output.
@@ -850,15 +875,18 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
         if player_int_id is not None:
             found_player = await player_repo.get_by_id(pool, player_int_id)
             if found_player is None or found_player.league_id != league.id:
-                await interaction.followup.send(
-                    f"No player with ID {player_int_id} found in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"No player with ID {player_int_id} found in this league.",
+                    ephemeral=True,
                 )
                 return
             if found_player.team_id != user_team.id:
                 owner_team = await team_repo.get_by_id(pool, found_player.team_id) if found_player.team_id else None
                 team_label = owner_team.full_name if owner_team else "another team"
-                await interaction.followup.send(
-                    f"**{found_player.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                await safe_respond(
+                    interaction,
+                    content=f"**{found_player.full_name}** plays for {team_label} — you can only block players on your own roster.",
                     ephemeral=True,
                 )
                 return
@@ -872,19 +900,24 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
                     other = league_matches[0]
                     owner_team = await team_repo.get_by_id(pool, other.team_id)
                     team_label = owner_team.full_name if owner_team else "another team"
-                    await interaction.followup.send(
-                        f"**{other.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                    await safe_respond(
+                        interaction,
+                        content=f"**{other.full_name}** plays for {team_label} — you can only block players on your own roster.",
                         ephemeral=True,
                     )
                 else:
-                    await interaction.followup.send(
-                        f"No player matching '{player}' found on your roster.", ephemeral=True
+                    await safe_respond(
+                        interaction,
+                        content=f"No player matching '{player}' found on your roster.",
+                        ephemeral=True,
                     )
                 return
             if len(roster_matches) > 1:
                 names = ", ".join(p.full_name for p in roster_matches)
-                await interaction.followup.send(
-                    f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Multiple matches for '{player}': {names}. Be more specific.",
+                    ephemeral=True,
                 )
                 return
             found_player = roster_matches[0]
@@ -914,7 +947,7 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
             "years_remaining": _contract.years_remaining if _contract else None,
         }
         embed = trade_embeds.trade_block_added_embed(player_dict, user_team, asking_price, note)
-        await interaction.followup.send(f"Added **{found_player.full_name}** to your trade block.", embed=embed)
+        await safe_respond(interaction, content=f"Added **{found_player.full_name}** to your trade block.", embed=embed)
 
         block_channel_id = await league_repo.get_channel(pool, league.id, "trade-block")
         if block_channel_id:
@@ -930,12 +963,12 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         user_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not user_team:
-            await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
         # Try numeric ID first so users can copy the ID shown in /roster output.
@@ -947,15 +980,18 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
         if player_int_id is not None:
             found_player = await player_repo.get_by_id(pool, player_int_id)
             if found_player is None or found_player.league_id != league.id:
-                await interaction.followup.send(
-                    f"No player with ID {player_int_id} found in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"No player with ID {player_int_id} found in this league.",
+                    ephemeral=True,
                 )
                 return
             if found_player.team_id != user_team.id:
                 owner_team = await team_repo.get_by_id(pool, found_player.team_id) if found_player.team_id else None
                 team_label = owner_team.full_name if owner_team else "another team"
-                await interaction.followup.send(
-                    f"**{found_player.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                await safe_respond(
+                    interaction,
+                    content=f"**{found_player.full_name}** plays for {team_label} — you can only block players on your own roster.",
                     ephemeral=True,
                 )
                 return
@@ -969,30 +1005,35 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
                     other = league_matches[0]
                     owner_team = await team_repo.get_by_id(pool, other.team_id)
                     team_label = owner_team.full_name if owner_team else "another team"
-                    await interaction.followup.send(
-                        f"**{other.full_name}** plays for {team_label} — you can only block players on your own roster.",
+                    await safe_respond(
+                        interaction,
+                        content=f"**{other.full_name}** plays for {team_label} — you can only block players on your own roster.",
                         ephemeral=True,
                     )
                 else:
-                    await interaction.followup.send(
-                        f"No player matching '{player}' found on your roster.", ephemeral=True
+                    await safe_respond(
+                        interaction,
+                        content=f"No player matching '{player}' found on your roster.",
+                        ephemeral=True,
                     )
                 return
             if len(roster_matches) > 1:
                 names = ", ".join(p.full_name for p in roster_matches)
-                await interaction.followup.send(
-                    f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Multiple matches for '{player}': {names}. Be more specific.",
+                    ephemeral=True,
                 )
                 return
             found_player = roster_matches[0]
 
         on_block = await trade_block_repo.is_on_block(pool, league.id, found_player.id)
         if not on_block:
-            await interaction.followup.send(f"**{found_player.full_name}** is not on your trade block.", ephemeral=True)
+            await safe_respond(interaction, content=f"**{found_player.full_name}** is not on your trade block.", ephemeral=True)
             return
 
         await trade_block_repo.remove_from_block(pool, league.id, found_player.id)
-        await interaction.followup.send(f"Removed **{found_player.full_name}** from your trade block.")
+        await safe_respond(interaction, content=f"Removed **{found_player.full_name}** from your trade block.")
 
         block_channel_id = await league_repo.get_channel(pool, league.id, "trade-block")
         if block_channel_id:
@@ -1034,19 +1075,21 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
         pool = await get_pool()
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         if team:
             target_team = await team_repo.get_by_code(pool, league.id, team.upper())
             if not target_team:
-                await interaction.followup.send(f"Team `{team.upper()}` not found.", ephemeral=True)
+                await safe_respond(interaction, content=f"Team `{team.upper()}` not found.", ephemeral=True)
                 return
         else:
             target_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
             if not target_team:
-                await interaction.followup.send(
-                    "You don't manage a team. Provide a team code.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Provide a team code.",
+                    ephemeral=True,
                 )
                 return
 
@@ -1061,7 +1104,7 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
                     players_by_id[pid] = {"full_name": p.full_name, "overall": p.overall}
 
         embed = trade_embeds.trade_block_team_embed(target_team, entries, players_by_id)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="league", description="Show all players on the trade block league-wide")
     async def league(self, interaction: discord.Interaction) -> None:
@@ -1070,7 +1113,7 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
         pool = await get_pool()
         league_obj = await league_service.get_league(interaction.guild_id)
         if not league_obj:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         all_entries = await trade_block_repo.get_league_block(pool, league_obj.id)
@@ -1099,7 +1142,7 @@ class TradeBlockGroup(app_commands.Group, name="block", description="Trade block
                     players_by_id[pid] = {"full_name": p.full_name, "overall": p.overall}
 
         embed = trade_embeds.trade_block_league_embed(entries_by_team, teams_by_id, players_by_id)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
 class TradeCog(commands.Cog):

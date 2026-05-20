@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import fa_embeds
-from core.errors import safe_defer
+from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo
@@ -27,13 +27,13 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         state = await fa_service.open_fa(league.id, league.current_season)
 
         embed = fa_embeds.fa_day_open_embed(state, state["current_day"], league)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         pool = await get_pool()
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
@@ -116,7 +116,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         decisions = await fa_service.advance_to_responses(
@@ -124,7 +124,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
         )
 
         responses_embed = fa_embeds.fa_responses_embed(decisions)
-        await interaction.followup.send(embed=responses_embed)
+        await safe_respond(interaction, embed=responses_embed)
 
         new_state = await fa_service.advance_day(league.id, league.current_season)
 
@@ -202,7 +202,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         summary = await fa_service.close_fa(league.id, league.current_season)
@@ -211,7 +211,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
             waived_count=summary["waived_count"],
             retired_count=summary["retired_count"],
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         pool = await get_pool()
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")

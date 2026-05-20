@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import awards_embeds
-from core.errors import DBAError, PermissionError, safe_defer
+from core.errors import DBAError, PermissionError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo
@@ -135,8 +135,10 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
                 asyncio.create_task(
                     awards_service.generate_cpu_votes(vid, league.id, season)
                 )
-            await interaction.followup.send(
-                "All-Star voting opened for East and West.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="All-Star voting opened for East and West.",
+                ephemeral=True,
             )
             return
 
@@ -158,8 +160,10 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
                 asyncio.create_task(
                     awards_service.generate_cpu_votes(vid, league.id, season)
                 )
-            await interaction.followup.send(
-                "All-NBA 1st/2nd/3rd team voting opened.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="All-NBA 1st/2nd/3rd team voting opened.",
+                ephemeral=True,
             )
             return
 
@@ -177,8 +181,10 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         asyncio.create_task(
             awards_service.generate_cpu_votes(voting_id, league.id, season)
         )
-        await interaction.followup.send(
-            f"{award_type.name} voting opened.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"{award_type.name} voting opened.",
+            ephemeral=True,
         )
 
     @app_commands.command(name="vote", description="Cast your vote for an award")
@@ -294,7 +300,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
             }
             embed = awards_embeds.all_nba_embed(first_team, second_team, third_team, players)
             await _post_to_news(interaction.guild, league.id, pool, embed)
-            await interaction.followup.send("All-NBA teams announced.", ephemeral=True)
+            await safe_respond(interaction, content="All-NBA teams announced.", ephemeral=True)
             return
 
         if value == "all_star":
@@ -323,7 +329,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
             }
             embed = awards_embeds.all_star_embed(east_results, west_results, players)
             await _post_to_news(interaction.guild, league.id, pool, embed)
-            await interaction.followup.send("All-Star rosters announced.", ephemeral=True)
+            await safe_respond(interaction, content="All-Star rosters announced.", ephemeral=True)
             return
 
         vid_row = await pool.fetchrow(
@@ -342,7 +348,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         }
         embed = awards_embeds.award_result_embed(results, value, players)
         await _post_to_news(interaction.guild, league.id, pool, embed)
-        await interaction.followup.send(f"{award_type.name} results announced.", ephemeral=True)
+        await safe_respond(interaction, content=f"{award_type.name} results announced.", ephemeral=True)
 
     @app_commands.command(name="results", description="Show closed award results for a season")
     @app_commands.describe(
@@ -448,7 +454,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
                 awards_service.generate_cpu_votes(vid, league.id, league.current_season)
             )
 
-        await interaction.followup.send("All-Star voting opened for East and West.", ephemeral=True)
+        await safe_respond(interaction, content="All-Star voting opened for East and West.", ephemeral=True)
 
 
 class AwardsCog(commands.Cog):

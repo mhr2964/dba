@@ -22,6 +22,50 @@ async def safe_defer(interaction: discord.Interaction, ephemeral: bool = False) 
         log.warning(f"defer() failed for interaction {interaction.id} ({exc}) — continuing")
 
 
+async def safe_respond(
+    interaction: discord.Interaction,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    embeds: list[discord.Embed] | None = None,
+    view: discord.ui.View | None = None,
+    ephemeral: bool = False,
+) -> None:
+    """Send the first response to an interaction, editing the deferred
+    placeholder if defer() was called, otherwise responding fresh.
+
+    Goal: avoid the "DBA is thinking..." -> separate result message UX.
+    The result appears in the SAME slot as the placeholder.
+
+    Subsequent messages on the same interaction should still use
+    interaction.followup.send() — this helper is only for the FIRST reply.
+
+    Args mirror discord.py's response methods; pass only what you need.
+    `ephemeral` is honored on the initial response path; if the interaction
+    is already deferred, ephemerality was fixed by the defer() call and
+    this parameter is ignored (Discord's API limitation).
+    """
+    kwargs: dict = {}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    if embeds is not None:
+        kwargs["embeds"] = embeds
+    if view is not None:
+        kwargs["view"] = view
+
+    try:
+        if interaction.response.is_done():
+            # Deferred — edit the placeholder in place
+            await interaction.edit_original_response(**kwargs)
+        else:
+            # Not deferred — send a fresh response
+            await interaction.response.send_message(ephemeral=ephemeral, **kwargs)
+    except (discord.NotFound, discord.HTTPException) as exc:
+        log.warning(f"safe_respond failed for interaction {interaction.id} ({exc}) — continuing")
+
+
 class DBAError(Exception):
     """Base domain exception — caught by the error handler and shown to the user."""
     def __init__(self, message: str):

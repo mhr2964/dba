@@ -3,7 +3,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 
-from core.errors import DBAError
+from core.errors import DBAError, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import team_repo
@@ -113,7 +113,7 @@ class _ProspectSelect(discord.ui.Select):
                 player_id,
             )
         except DBAError as exc:
-            await interaction.followup.send(exc.message, ephemeral=True)
+            await safe_respond(interaction, content=exc.message, ephemeral=True)
             return
 
         # Remove all components — Discord requires options even on disabled selects.
@@ -124,7 +124,7 @@ class _ProspectSelect(discord.ui.Select):
         player = result["player"] or {}
         team_obj = await team_repo.get_by_id(pool, user_team.id)
         embed = pick_announcement(result["pick_number"], team_obj, player)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         # Continue draft (handles CPU auto-picks until next human team).
         guild = interaction.guild

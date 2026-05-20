@@ -15,7 +15,7 @@ from bot.embeds.stats_embeds import (
 from bot.embeds.info_embeds import h2h_embed, power_rankings_embed
 from bot.embeds.intel_embeds import power_rankings_posture_embed
 from bot.ui.stats_views import LeaderboardView, _fetch_season_leaders
-from core.errors import DBAError, safe_defer
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo, team_repo
@@ -284,7 +284,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         stat_col = category.value if category else "ppg"
@@ -294,15 +294,15 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
             try:
                 leaders_data = await player_repo.get_all_time_leaders(pool, league.id, stat_col)
             except ValueError as exc:
-                await interaction.followup.send(str(exc), ephemeral=True)
+                await safe_respond(interaction, content=str(exc), ephemeral=True)
                 return
             embed = all_time_leaders_embed(stat_col, leaders_data)
-            await interaction.followup.send(embed=embed)
+            await safe_respond(interaction, embed=embed)
         else:
             top_players = await _fetch_season_leaders(pool, league.id, stat_col)
             embed = leaders_embed(stat_col, top_players)
             view = LeaderboardView(league_id=league.id, current_category=stat_col)
-            await interaction.followup.send(embed=embed, view=view)
+            await safe_respond(interaction, embed=embed, view=view)
 
     @app_commands.command(name="player", description="View a player's profile and stats")
     @app_commands.describe(
@@ -319,7 +319,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -327,7 +327,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
         try:
             p = await _resolve_player(pool, league.id, name_or_id)
         except DBAError as exc:
-            await interaction.followup.send(exc.message, ephemeral=True)
+            await safe_respond(interaction, content=exc.message, ephemeral=True)
             return
 
         team_name = "Free Agent"
@@ -347,7 +347,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
             recent_games = await _recent_games_for_player(pool, p.id)
             embed = player_profile_embed(p, team_name, contract, season_stats, recent_games, nba_profile=nba_profile)
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="all-time-records", description="Show notable all-time league records")
     async def all_time_records(self, interaction: discord.Interaction) -> None:
@@ -355,13 +355,13 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
         records = await player_repo.get_league_all_time_records(pool, league.id)
         embed = all_time_records_embed(records)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="compare", description="Compare two players side-by-side")
     @app_commands.describe(player1="First player name or ID", player2="Second player name or ID")
@@ -375,7 +375,7 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -384,14 +384,14 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
             p_a = await _resolve_player(pool, league.id, player1)
             p_b = await _resolve_player(pool, league.id, player2)
         except DBAError as exc:
-            await interaction.followup.send(exc.message, ephemeral=True)
+            await safe_respond(interaction, content=exc.message, ephemeral=True)
             return
 
         stats_a = await _season_stats_for_player(pool, p_a.id)
         stats_b = await _season_stats_for_player(pool, p_b.id)
 
         embed = compare_embed(p_a, stats_a, p_b, stats_b)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
 
 class StatsCog(commands.Cog):
@@ -420,7 +420,7 @@ class StatsCog(commands.Cog):
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         rank_mode = mode.value if mode else "record"
@@ -432,7 +432,7 @@ class StatsCog(commands.Cog):
             league.current_season,
         )
         if not standings_rows:
-            await interaction.followup.send("No standings data yet.", ephemeral=True)
+            await safe_respond(interaction, content="No standings data yet.", ephemeral=True)
             return
 
         all_teams = await team_repo.get_all(pool, league.id)
@@ -442,7 +442,7 @@ class StatsCog(commands.Cog):
         if rank_mode == "record" and mode is None:
             ranked = compute_power_rankings([dict(r) for r in standings_rows], teams_by_id)
             embed = power_rankings_embed(ranked)
-            await interaction.followup.send(embed=embed)
+            await safe_respond(interaction, embed=embed)
             return
 
         # Posture-aware path: bulk fetch posture for all teams (1 batch call).
@@ -480,7 +480,7 @@ class StatsCog(commands.Cog):
             rank_mode,
         )
         embed = power_rankings_posture_embed(ranked, rank_mode)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="h2h", description="Head-to-head record between two teams")
     @app_commands.describe(team1_code="First team code (e.g. LAL)", team2_code="Second team code (e.g. BOS)")
@@ -494,7 +494,7 @@ class StatsCog(commands.Cog):
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -502,10 +502,10 @@ class StatsCog(commands.Cog):
         team_b = await team_repo.get_by_code(pool, league.id, team2_code)
 
         if not team_a:
-            await interaction.followup.send(f"Team `{team1_code.upper()}` not found.", ephemeral=True)
+            await safe_respond(interaction, content=f"Team `{team1_code.upper()}` not found.", ephemeral=True)
             return
         if not team_b:
-            await interaction.followup.send(f"Team `{team2_code.upper()}` not found.", ephemeral=True)
+            await safe_respond(interaction, content=f"Team `{team2_code.upper()}` not found.", ephemeral=True)
             return
 
         rows = await pool.fetch(
@@ -548,7 +548,7 @@ class StatsCog(commands.Cog):
             wins_b=wins_b,
             recent_games=recent,
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:

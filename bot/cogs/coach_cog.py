@@ -25,7 +25,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.errors import DBAError, safe_defer
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo
@@ -331,7 +331,7 @@ async def _do_role_assign(
     pool = await get_pool()
     league = await league_service.get_league(interaction.guild_id)
     if not league:
-        await interaction.followup.send("No active league in this server.", ephemeral=True)
+        await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
         return
 
     league_id = league.id
@@ -339,18 +339,23 @@ async def _do_role_assign(
     caller_team = await _resolve_caller_team(pool, league_id, interaction.user.id)
 
     if not caller_team and not is_commish:
-        await interaction.followup.send(
-            "You don't manage a team in this league.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content="You don't manage a team in this league.",
+            ephemeral=True,
         )
         return
 
     if caller_team:
         team = caller_team
     else:
-        await interaction.followup.send(
-            "Commissioner: use `/coach role assign` from a team manager's perspective. "
-            "As commissioner you have no team; use a team manager's account or "
-            "manually locate the player ID.",
+        await safe_respond(
+            interaction,
+            content=(
+                "Commissioner: use `/coach role assign` from a team manager's perspective. "
+                "As commissioner you have no team; use a team manager's account or "
+                "manually locate the player ID."
+            ),
             ephemeral=True,
         )
         return
@@ -358,7 +363,7 @@ async def _do_role_assign(
     try:
         player_row = await _resolve_player_on_team(pool, league_id, team["id"], player)
     except DBAError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await safe_respond(interaction, content=str(exc), ephemeral=True)
         return
 
     season = await _get_season(pool, league_id)
@@ -425,7 +430,7 @@ async def _do_role_assign(
         new_touch=new_touch,
         discord_username=interaction.user.name,
     )
-    await interaction.followup.send(embed=embed)
+    await safe_respond(interaction, embed=embed)
 
 
 async def _do_role_show(
@@ -438,7 +443,7 @@ async def _do_role_show(
     pool = await get_pool()
     league = await league_service.get_league(interaction.guild_id)
     if not league:
-        await interaction.followup.send("No active league in this server.", ephemeral=True)
+        await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
         return
 
     league_id = league.id
@@ -446,7 +451,7 @@ async def _do_role_show(
     try:
         team, _is_own = await _resolve_target_team(pool, league_id, interaction.user.id, team_member)
     except DBAError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await safe_respond(interaction, content=str(exc), ephemeral=True)
         return
 
     season = await _get_season(pool, league_id)
@@ -474,7 +479,7 @@ async def _do_role_show(
 
     roles = [dict(r) for r in rows]
     embed = _roles_embed(team, roles, season)
-    await interaction.followup.send(embed=embed)
+    await safe_respond(interaction, embed=embed)
 
 
 async def _do_role_unlock(
@@ -487,7 +492,7 @@ async def _do_role_unlock(
     pool = await get_pool()
     league = await league_service.get_league(interaction.guild_id)
     if not league:
-        await interaction.followup.send("No active league in this server.", ephemeral=True)
+        await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
         return
 
     league_id = league.id
@@ -495,12 +500,13 @@ async def _do_role_unlock(
     caller_team = await _resolve_caller_team(pool, league_id, interaction.user.id)
 
     if not caller_team and not is_commish:
-        await interaction.followup.send("You don't manage a team in this league.", ephemeral=True)
+        await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
         return
 
     if not caller_team:
-        await interaction.followup.send(
-            "Commissioner: unlock requires specifying a team. Run this as the team's manager account.",
+        await safe_respond(
+            interaction,
+            content="Commissioner: unlock requires specifying a team. Run this as the team's manager account.",
             ephemeral=True,
         )
         return
@@ -510,7 +516,7 @@ async def _do_role_unlock(
     try:
         player_row = await _resolve_player_on_team(pool, league_id, team["id"], player)
     except DBAError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await safe_respond(interaction, content=str(exc), ephemeral=True)
         return
 
     season = await _get_season(pool, league_id)
@@ -523,8 +529,10 @@ async def _do_role_unlock(
         league_id, team["id"], season, player_row["id"],
     )
     if existing and not existing["locked"]:
-        await interaction.followup.send(
-            f"**{player_row['full_name']}** is already unlocked.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"**{player_row['full_name']}** is already unlocked.",
+            ephemeral=True,
         )
         return
 
@@ -562,7 +570,7 @@ async def _do_role_unlock(
         new_touch=new_touch,
         discord_username=interaction.user.name,
     )
-    await interaction.followup.send(embed=embed)
+    await safe_respond(interaction, embed=embed)
 
 
 async def _player_autocomplete_own_team(
@@ -745,16 +753,18 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
 
         if category not in _VALID_VALUES:
             valid_cats = ", ".join(sorted(_VALID_VALUES))
-            await interaction.followup.send(
-                f"Unknown category `{category}`. Valid categories: {valid_cats}",
+            await safe_respond(
+                interaction,
+                content=f"Unknown category `{category}`. Valid categories: {valid_cats}",
                 ephemeral=True,
             )
             return
 
         if value not in _VALID_VALUES[category]:
             valid_vals = ", ".join(sorted(_VALID_VALUES[category]))
-            await interaction.followup.send(
-                f"Invalid value `{value}` for `{category}`. Valid values: {valid_vals}",
+            await safe_respond(
+                interaction,
+                content=f"Invalid value `{value}` for `{category}`. Valid values: {valid_vals}",
                 ephemeral=True,
             )
             return
@@ -764,21 +774,24 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
 
         matches = await player_repo.search_by_name(pool, league_id, player)
         if not matches:
-            await interaction.followup.send(
-                f"No player found matching '{player}'.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"No player found matching '{player}'.",
+                ephemeral=True,
             )
             return
         if len(matches) > 1:
             names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
-            await interaction.followup.send(
-                f"Multiple players match '{player}': {names}. Be more specific.",
+            await safe_respond(
+                interaction,
+                content=f"Multiple players match '{player}': {names}. Be more specific.",
                 ephemeral=True,
             )
             return
 
         found_player = matches[0]
         if found_player.team_id is None:
-            await interaction.followup.send("That player is not on a team.", ephemeral=True)
+            await safe_respond(interaction, content="That player is not on a team.", ephemeral=True)
             return
 
         try:
@@ -786,7 +799,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
                 pool, league_id, interaction.user.id, found_player.team_id
             )
         except DBAError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await safe_respond(interaction, content=str(exc), ephemeral=True)
             return
 
         column = _CATEGORY_COLUMN[category]
@@ -811,7 +824,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
         embed.add_field(name="Player", value=found_player.full_name, inline=True)
         embed.add_field(name="Category", value=_CATEGORY_LABELS.get(column, category), inline=True)
         embed.add_field(name="Value", value=f"`{value}`", inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="view", description="View all directives for your team")
     @app_commands.describe(team="Team code (e.g. LAL), defaults to your team")
@@ -827,7 +840,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
         try:
             team_row = await _resolve_team_for_directive_view(pool, league_id, team, interaction.user.id)
         except DBAError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await safe_respond(interaction, content=str(exc), ephemeral=True)
             return
 
         rows = await pool.fetch(
@@ -851,7 +864,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
 
         if not rows:
             embed.description = "No players in lineup."
-            await interaction.followup.send(embed=embed)
+            await safe_respond(interaction, embed=embed)
             return
 
         lines = []
@@ -889,7 +902,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
             label = "Players" if field_idx == 1 else f"Players ({field_idx})"
             embed.add_field(name=label, value="\n".join(chunk), inline=False)
 
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="reset", description="Reset all directives for a player to auto")
     @app_commands.describe(player="Player name (e.g. LeBron James)")
@@ -905,21 +918,24 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
 
         matches = await player_repo.search_by_name(pool, league_id, player)
         if not matches:
-            await interaction.followup.send(
-                f"No player found matching '{player}'.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"No player found matching '{player}'.",
+                ephemeral=True,
             )
             return
         if len(matches) > 1:
             names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
-            await interaction.followup.send(
-                f"Multiple players match '{player}': {names}. Be more specific.",
+            await safe_respond(
+                interaction,
+                content=f"Multiple players match '{player}': {names}. Be more specific.",
                 ephemeral=True,
             )
             return
 
         found_player = matches[0]
         if found_player.team_id is None:
-            await interaction.followup.send("That player is not on a team.", ephemeral=True)
+            await safe_respond(interaction, content="That player is not on a team.", ephemeral=True)
             return
 
         try:
@@ -927,7 +943,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
                 pool, league_id, interaction.user.id, found_player.team_id
             )
         except DBAError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await safe_respond(interaction, content=str(exc), ephemeral=True)
             return
 
         await pool.execute(
@@ -948,7 +964,7 @@ class DirectiveSubGroup(app_commands.Group, name="directive", description="Playe
             ),
             color=discord.Color.orange(),
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
 
 # ---------------------------------------------------------------------------
@@ -971,7 +987,7 @@ class PhilosophyGroup(app_commands.Group, name="philosophy", description="Team c
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -990,12 +1006,15 @@ class PhilosophyGroup(app_commands.Group, name="philosophy", description="Team c
 
         if row is None:
             if code:
-                await interaction.followup.send(
-                    f"Team `{code.upper()}` not found in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Team `{code.upper()}` not found in this league.",
+                    ephemeral=True,
                 )
             else:
-                await interaction.followup.send(
-                    "You don't manage a team. Use `/coach philosophy show LAL` to view any team.",
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Use `/coach philosophy show LAL` to view any team.",
                     ephemeral=True,
                 )
             return
@@ -1012,8 +1031,10 @@ class PhilosophyGroup(app_commands.Group, name="philosophy", description="Team c
             log.error(
                 f"coach philosophy show failed for team {team_id}: {exc}", exc_info=True
             )
-            await interaction.followup.send(
-                "Failed to retrieve philosophy data.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Failed to retrieve philosophy data.",
+                ephemeral=True,
             )
             return
 
@@ -1023,7 +1044,7 @@ class PhilosophyGroup(app_commands.Group, name="philosophy", description="Team c
             philosophy=philosophy,
             recent_role_changes=recent_role_changes,
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
 # ---------------------------------------------------------------------------

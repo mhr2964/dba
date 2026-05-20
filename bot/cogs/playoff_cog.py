@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import playoff_embeds
-from core.errors import DBAError, PermissionError, safe_defer
+from core.errors import DBAError, PermissionError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, series_repo, team_repo
@@ -68,7 +68,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
                 league.id, series_id, interaction.guild, league.current_season
             )
         except ValueError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await safe_respond(interaction, content=str(exc), ephemeral=True)
             return
 
         series = outcome["series"]
@@ -79,7 +79,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
         low_team = teams_by_id.get(series.low_seed_team_id)
 
         series_em = playoff_embeds.series_embed(series, high_team, low_team)
-        await interaction.followup.send(embed=series_em)
+        await safe_respond(interaction, embed=series_em)
 
         if outcome["series_over"]:
             winner = teams_by_id.get(outcome["winner_team_id"])
@@ -124,12 +124,15 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
         all_series = await series_repo.get_bracket(pool, league.id, league.current_season)
         pending = [s for s in all_series if s.status == "active"]
         if not pending:
-            await interaction.followup.send("No active series to sim.", ephemeral=True)
+            await safe_respond(interaction, content="No active series to sim.", ephemeral=True)
             return
 
-        await interaction.followup.send(
-            f"Simming {len(pending)} series — game recaps will appear in #box-scores. "
-            "Full bracket posts when the round is complete.",
+        await safe_respond(
+            interaction,
+            content=(
+                f"Simming {len(pending)} series — game recaps will appear in #box-scores. "
+                "Full bracket posts when the round is complete."
+            ),
             ephemeral=True,
         )
 
@@ -242,7 +245,7 @@ class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff g
             if channel:
                 await channel.send(embed=result_embed)
 
-        await interaction.followup.send(embed=result_embed)
+        await safe_respond(interaction, embed=result_embed)
 
 
 class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff management"):
@@ -258,9 +261,12 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
         league = await _require_commissioner(interaction)
 
         if league.current_phase != "REGULAR_SEASON_COMPLETE":
-            await interaction.followup.send(
-                "Regular season must be complete before seeding playoffs. "
-                f"Current phase: `{league.current_phase}`",
+            await safe_respond(
+                interaction,
+                content=(
+                    "Regular season must be complete before seeding playoffs. "
+                    f"Current phase: `{league.current_phase}`"
+                ),
                 ephemeral=True,
             )
             return
@@ -269,7 +275,7 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
         try:
             bracket = await playoff_service.seed_playoffs(league.id, league.current_season)
         except DBAError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await safe_respond(interaction, content=str(exc), ephemeral=True)
             return
 
         teams = await team_repo.get_all(pool, league.id)
@@ -290,9 +296,12 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
 
         await league_service.advance_phase(league.id, Phase.PLAYIN_ACTIVE.value)
 
-        await interaction.followup.send(
-            f"Playoffs seeded for season {league.current_season}. "
-            f"Run `/playoffs sim-playin` to resolve the play-in tournament.",
+        await safe_respond(
+            interaction,
+            content=(
+                f"Playoffs seeded for season {league.current_season}. "
+                f"Run `/playoffs sim-playin` to resolve the play-in tournament."
+            ),
             embeds=[playin_em, r1_embed],
         )
 

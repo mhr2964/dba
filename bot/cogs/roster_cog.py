@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.errors import DBAError, safe_defer
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import extension_repo, player_repo
@@ -82,7 +82,7 @@ async def _do_lineup_start(interaction: discord.Interaction, player: str) -> Non
         interaction.guild_id,
     )
     if not league_row:
-        await interaction.followup.send("No active league found.", ephemeral=True)
+        await safe_respond(interaction, content="No active league found.", ephemeral=True)
         return
     league_id: int = league_row["id"]
 
@@ -93,11 +93,12 @@ async def _do_lineup_start(interaction: discord.Interaction, player: str) -> Non
     )
     is_commissioner = interaction.user.id == league_row["commissioner_user_id"]
     if not team_row and not is_commissioner:
-        await interaction.followup.send("You are not a team manager in this league.", ephemeral=True)
+        await safe_respond(interaction, content="You are not a team manager in this league.", ephemeral=True)
         return
     if not team_row:
-        await interaction.followup.send(
-            "Commissioners must use `/lineup` commands on behalf of a team — specify which team first.",
+        await safe_respond(
+            interaction,
+            content="Commissioners must use `/lineup` commands on behalf of a team — specify which team first.",
             ephemeral=True,
         )
         return
@@ -116,14 +117,18 @@ async def _do_lineup_start(interaction: discord.Interaction, player: str) -> Non
         league_id, team_id, f"%{player}%",
     )
     if not rows:
-        await interaction.followup.send(
-            f"No player matching '{player}' found in your lineup.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"No player matching '{player}' found in your lineup.",
+            ephemeral=True,
         )
         return
     if len(rows) > 1:
         names = ", ".join(f"{r['first_name']} {r['last_name']}" for r in rows)
-        await interaction.followup.send(
-            f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"Multiple matches for '{player}': {names}. Be more specific.",
+            ephemeral=True,
         )
         return
 
@@ -132,8 +137,10 @@ async def _do_lineup_start(interaction: discord.Interaction, player: str) -> Non
     target_pid: int = target["player_id"]
 
     if target["is_starter"]:
-        await interaction.followup.send(
-            f"**{target['first_name']} {target['last_name']}** is already a starter.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"**{target['first_name']} {target['last_name']}** is already a starter.",
+            ephemeral=True,
         )
         return
 
@@ -164,7 +171,7 @@ async def _do_lineup_start(interaction: discord.Interaction, player: str) -> Non
     embed.title = (
         f"Lineup Updated — {target['first_name']} {target['last_name']} promoted to starter"
     )
-    await interaction.followup.send(embed=embed)
+    await safe_respond(interaction, embed=embed)
 
 
 async def _do_lineup_bench(interaction: discord.Interaction, player: str) -> None:
@@ -177,7 +184,7 @@ async def _do_lineup_bench(interaction: discord.Interaction, player: str) -> Non
         interaction.guild_id,
     )
     if not league_row:
-        await interaction.followup.send("No active league found.", ephemeral=True)
+        await safe_respond(interaction, content="No active league found.", ephemeral=True)
         return
     league_id: int = league_row["id"]
 
@@ -188,11 +195,12 @@ async def _do_lineup_bench(interaction: discord.Interaction, player: str) -> Non
     )
     is_commissioner = interaction.user.id == league_row["commissioner_user_id"]
     if not team_row and not is_commissioner:
-        await interaction.followup.send("You are not a team manager in this league.", ephemeral=True)
+        await safe_respond(interaction, content="You are not a team manager in this league.", ephemeral=True)
         return
     if not team_row:
-        await interaction.followup.send(
-            "Commissioners must use `/lineup` commands on behalf of a team — specify which team first.",
+        await safe_respond(
+            interaction,
+            content="Commissioners must use `/lineup` commands on behalf of a team — specify which team first.",
             ephemeral=True,
         )
         return
@@ -211,14 +219,18 @@ async def _do_lineup_bench(interaction: discord.Interaction, player: str) -> Non
         league_id, team_id, f"%{player}%",
     )
     if not rows:
-        await interaction.followup.send(
-            f"No player matching '{player}' found in your lineup.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"No player matching '{player}' found in your lineup.",
+            ephemeral=True,
         )
         return
     if len(rows) > 1:
         names = ", ".join(f"{r['first_name']} {r['last_name']}" for r in rows)
-        await interaction.followup.send(
-            f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"Multiple matches for '{player}': {names}. Be more specific.",
+            ephemeral=True,
         )
         return
 
@@ -227,8 +239,9 @@ async def _do_lineup_bench(interaction: discord.Interaction, player: str) -> Non
     target_pid: int = target["player_id"]
 
     if not target["is_starter"]:
-        await interaction.followup.send(
-            f"**{target['first_name']} {target['last_name']}** is already on the bench.",
+        await safe_respond(
+            interaction,
+            content=f"**{target['first_name']} {target['last_name']}** is already on the bench.",
             ephemeral=True,
         )
         return
@@ -265,7 +278,7 @@ async def _do_lineup_bench(interaction: discord.Interaction, player: str) -> Non
     embed.title = (
         f"Lineup Updated — {target['first_name']} {target['last_name']} moved to bench"
     )
-    await interaction.followup.send(embed=embed)
+    await safe_respond(interaction, embed=embed)
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +302,9 @@ class LineupGroup(app_commands.Group, name="lineup", description="Lineup managem
         )
 
         if team_row is None:
-            await interaction.followup.send(
-                "You don't manage a team. Use `/lineup show LAL` to view any team.",
+            await safe_respond(
+                interaction,
+                content="You don't manage a team. Use `/lineup show LAL` to view any team.",
                 ephemeral=True,
             )
             return
@@ -299,15 +313,18 @@ class LineupGroup(app_commands.Group, name="lineup", description="Lineup managem
         lineup_rows = await roster_service.get_lineup(league_id, team_id)
 
         if not lineup_rows:
-            await interaction.followup.send(
-                f"**{team_row['city']} {team_row['name']}** has no lineup set yet. "
-                "Run `python scripts/import_players.py` to populate rosters and auto-generate lineups.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"**{team_row['city']} {team_row['name']}** has no lineup set yet. "
+                    "Run `python scripts/import_players.py` to populate rosters and auto-generate lineups."
+                ),
                 ephemeral=True,
             )
             return
 
         embed = roster_embeds.lineup_embed(team_row, lineup_rows)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="start", description="Move a player on your team to the starting five")
     @app_commands.describe(player="Part of the player's name (e.g. 'LeBron')")
@@ -340,8 +357,9 @@ class RosterCog(commands.Cog):
         )
 
         if team_row is None:
-            await interaction.followup.send(
-                "You don't manage a team. Use `/roster LAL` to view any team.",
+            await safe_respond(
+                interaction,
+                content="You don't manage a team. Use `/roster LAL` to view any team.",
                 ephemeral=True,
             )
             return
@@ -350,9 +368,12 @@ class RosterCog(commands.Cog):
         players = await roster_service.get_roster(league_id, team_id)
 
         if not players:
-            await interaction.followup.send(
-                f"**{team_row['city']} {team_row['name']}** has no players yet. "
-                "Run `python scripts/import_players.py` to populate the roster.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"**{team_row['city']} {team_row['name']}** has no players yet. "
+                    "Run `python scripts/import_players.py` to populate the roster."
+                ),
                 ephemeral=True,
             )
             return
@@ -365,7 +386,7 @@ class RosterCog(commands.Cog):
 
         cap_summary = await roster_service.get_cap_summary(league_id, team_id)
         embed = roster_embeds.roster_embed(team_row, players, contracts_by_player_id, cap_summary)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     # /lineup (standalone view) is now /lineup show — this is kept only as a
     # compatibility shim so the old /lineup <team> path still works.
@@ -387,8 +408,9 @@ class RosterCog(commands.Cog):
         )
 
         if team_row is None:
-            await interaction.followup.send(
-                "You don't manage a team. Use `/lineup show LAL` to view any team.",
+            await safe_respond(
+                interaction,
+                content="You don't manage a team. Use `/lineup show LAL` to view any team.",
                 ephemeral=True,
             )
             return
@@ -397,15 +419,18 @@ class RosterCog(commands.Cog):
         lineup_rows = await roster_service.get_lineup(league_id, team_id)
 
         if not lineup_rows:
-            await interaction.followup.send(
-                f"**{team_row['city']} {team_row['name']}** has no lineup set yet. "
-                "Run `python scripts/import_players.py` to populate rosters and auto-generate lineups.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"**{team_row['city']} {team_row['name']}** has no lineup set yet. "
+                    "Run `python scripts/import_players.py` to populate rosters and auto-generate lineups."
+                ),
                 ephemeral=True,
             )
             return
 
         embed = roster_embeds.lineup_embed(team_row, lineup_rows)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="lineup-start",
@@ -449,8 +474,10 @@ class RosterCog(commands.Cog):
             interaction.guild_id,
         )
         if not league_row:
-            await interaction.followup.send(
-                "No active league in this server.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="No active league in this server.",
+                ephemeral=True,
             )
             return
 
@@ -500,7 +527,7 @@ class RosterCog(commands.Cog):
             normalized.append(d)
 
         embed = injury_report_embed(normalized, players_by_id, teams_by_id)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
 class ExtensionGroup(app_commands.Group, name="extension", description="Contract extension management"):
@@ -526,7 +553,7 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             interaction.guild_id,
         )
         if not league_row:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         league_id: int = league_row["id"]
@@ -535,8 +562,10 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
         salary_cap: int = league_row["salary_cap"]
 
         if current_phase not in ("REGULAR_SEASON_ACTIVE", "REGULAR_SEASON_POSTDEADLINE"):
-            await interaction.followup.send(
-                "Extensions can only be offered during the regular season.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Extensions can only be offered during the regular season.",
+                ephemeral=True,
             )
             return
 
@@ -546,39 +575,41 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             interaction.user.id,
         )
         if not team_row:
-            await interaction.followup.send("You are not a team manager in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You are not a team manager in this league.", ephemeral=True)
             return
 
         matches = await player_repo.search_by_name(pool, league_id, player)
         matches = [p for p in matches if p.team_id == team_row["id"]]
         if not matches:
-            await interaction.followup.send(f"No player matching '{player}' found on your roster.", ephemeral=True)
+            await safe_respond(interaction, content=f"No player matching '{player}' found on your roster.", ephemeral=True)
             return
         if len(matches) > 1:
             names = ", ".join(p.full_name for p in matches)
-            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            await safe_respond(interaction, content=f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
         found_player = matches[0]
         player_id = found_player.id
 
         existing = await extension_repo.get_extension(pool, league_id, player_id)
         if existing:
-            await interaction.followup.send(
-                f"**{found_player.full_name}** already has a pending extension. Cancel it first.",
+            await safe_respond(
+                interaction,
+                content=f"**{found_player.full_name}** already has a pending extension. Cancel it first.",
                 ephemeral=True,
             )
             return
 
         max_salary = int(salary_cap * 0.35)
         if salary > max_salary:
-            await interaction.followup.send(
-                f"Salary ${salary:,} exceeds the max contract value (${max_salary:,}/yr = 35% of cap).",
+            await safe_respond(
+                interaction,
+                content=f"Salary ${salary:,} exceeds the max contract value (${max_salary:,}/yr = 35% of cap).",
                 ephemeral=True,
             )
             return
 
         if years < 1 or years > 5:
-            await interaction.followup.send("Extension length must be between 1 and 5 years.", ephemeral=True)
+            await safe_respond(interaction, content="Extension length must be between 1 and 5 years.", ephemeral=True)
             return
 
         # Check that this extension won't push the team over cap when it activates.
@@ -588,8 +619,9 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
         own_salary = current_contract.salary if current_contract else 0
         projected_cap = cap_used - own_salary + salary
         if projected_cap > salary_cap:
-            await interaction.followup.send(
-                f"This extension would put the team ${projected_cap - salary_cap:,} over the cap when it activates.",
+            await safe_respond(
+                interaction,
+                content=f"This extension would put the team ${projected_cap - salary_cap:,} over the cap when it activates.",
                 ephemeral=True,
             )
             return
@@ -621,7 +653,7 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
         }
         player_dict = {"full_name": found_player.full_name, "overall": found_player.overall}
         embed = strategy_embeds.extension_embed(player_dict, ext_dict, team_row)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="view", description="View pending contract extensions for a team")
     @app_commands.describe(team="Team code (e.g. LAL). Defaults to your team.")
@@ -634,7 +666,7 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             interaction.guild_id,
         )
         if not league_row:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
         league_id: int = league_row["id"]
 
@@ -645,7 +677,7 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
                 team.upper(),
             )
             if not team_row:
-                await interaction.followup.send(f"Team `{team.upper()}` not found.", ephemeral=True)
+                await safe_respond(interaction, content=f"Team `{team.upper()}` not found.", ephemeral=True)
                 return
         else:
             team_row = await pool.fetchrow(
@@ -654,8 +686,9 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
                 interaction.user.id,
             )
             if not team_row:
-                await interaction.followup.send(
-                    "You don't manage a team. Provide a team code to view another team's extensions.",
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Provide a team code to view another team's extensions.",
                     ephemeral=True,
                 )
                 return
@@ -669,7 +702,7 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
                 players_by_id[p.id] = {"full_name": p.full_name}
 
         embed = strategy_embeds.extension_list_embed(extensions, players_by_id)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="cancel", description="Cancel a pending contract extension")
     @app_commands.describe(player="Player name whose extension to cancel")
@@ -682,24 +715,24 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             interaction.guild_id,
         )
         if not league_row:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
         league_id: int = league_row["id"]
 
         matches = await player_repo.search_by_name(pool, league_id, player)
         if not matches:
-            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            await safe_respond(interaction, content=f"No player found matching '{player}'.", ephemeral=True)
             return
         if len(matches) > 1:
             names = ", ".join(p.full_name for p in matches)
-            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            await safe_respond(interaction, content=f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
         found_player = matches[0]
         player_id = found_player.id
 
         ext = await extension_repo.get_extension(pool, league_id, player_id)
         if not ext:
-            await interaction.followup.send(f"No pending extension found for **{found_player.full_name}**.", ephemeral=True)
+            await safe_respond(interaction, content=f"No pending extension found for **{found_player.full_name}**.", ephemeral=True)
             return
 
         is_commissioner = interaction.user.id == league_row["commissioner_user_id"]
@@ -711,14 +744,16 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
         is_team_manager = team_row is not None and team_row["id"] == ext["team_id"]
 
         if not is_commissioner and not is_team_manager:
-            await interaction.followup.send(
-                "Only the team manager or commissioner can cancel an extension.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Only the team manager or commissioner can cancel an extension.",
+                ephemeral=True,
             )
             return
 
         await extension_repo.cancel_extension(pool, league_id, player_id)
         log.info(f"Extension cancelled: player={player_id} league={league_id} by user={interaction.user.id}")
-        await interaction.followup.send(f"Extension for **{found_player.full_name}** has been cancelled.")
+        await safe_respond(interaction, content=f"Extension for **{found_player.full_name}** has been cancelled.")
 
 
 class PlayerGroup(app_commands.Group, name="player", description="Player lookup tools"):
@@ -738,7 +773,7 @@ class PlayerGroup(app_commands.Group, name="player", description="Player lookup 
             interaction.guild_id,
         )
         if not league_row:
-            await interaction.followup.send("No active league.", ephemeral=True)
+            await safe_respond(interaction, content="No active league.", ephemeral=True)
             return
 
         league_id: int = league_row["id"]
@@ -746,8 +781,10 @@ class PlayerGroup(app_commands.Group, name="player", description="Player lookup 
         matches = matches[:10]
 
         if not matches:
-            await interaction.followup.send(
-                f"No players found matching '{name}'.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"No players found matching '{name}'.",
+                ephemeral=True,
             )
             return
 
@@ -777,7 +814,7 @@ class PlayerGroup(app_commands.Group, name="player", description="Player lookup 
             description=description,
             color=discord.Color.blurple(),
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:

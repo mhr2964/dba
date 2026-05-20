@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.errors import safe_defer
+from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import admin_repo, game_repo, league_repo, player_repo, team_repo
@@ -71,8 +71,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         await require_commissioner(interaction, league)
 
         if field not in _PLAYER_FIELD_ALLOWLIST:
-            await interaction.followup.send(
-                f"Invalid field `{field}`. Allowed fields: {', '.join(sorted(_PLAYER_FIELD_ALLOWLIST))}",
+            await safe_respond(
+                interaction,
+                content=f"Invalid field `{field}`. Allowed fields: {', '.join(sorted(_PLAYER_FIELD_ALLOWLIST))}",
                 ephemeral=True,
             )
             return
@@ -80,11 +81,11 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         pool = await get_pool()
         matches = await player_repo.search_by_name(pool, league.id, player)
         if not matches:
-            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            await safe_respond(interaction, content=f"No player found matching '{player}'.", ephemeral=True)
             return
         if len(matches) > 1:
             names = ", ".join(p.full_name for p in matches)
-            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            await safe_respond(interaction, content=f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
         found_player = matches[0]
         player_id = found_player.id
@@ -98,8 +99,10 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             try:
                 typed_value = int(value)
             except ValueError:
-                await interaction.followup.send(
-                    f"Field `{field}` requires an integer value.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Field `{field}` requires an integer value.",
+                    ephemeral=True,
                 )
                 return
 
@@ -119,8 +122,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             detail=f"{field}: {old_value} → {typed_value}",
         )
 
-        await interaction.followup.send(
-            f"Updated **{found_player.full_name}** `{field}`: {old_value} → {typed_value}",
+        await safe_respond(
+            interaction,
+            content=f"Updated **{found_player.full_name}** `{field}`: {old_value} → {typed_value}",
             ephemeral=True,
         )
 
@@ -140,13 +144,17 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             league.id,
         )
         if not game_row:
-            await interaction.followup.send(
-                f"Game #{game_id} not found in this league.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"Game #{game_id} not found in this league.",
+                ephemeral=True,
             )
             return
         if game_row["status"] != "simmed":
-            await interaction.followup.send(
-                f"Game #{game_id} is not simmed (status: {game_row['status']}).", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"Game #{game_id} is not simmed (status: {game_row['status']}).",
+                ephemeral=True,
             )
             return
 
@@ -209,8 +217,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             detail=f"Game #{game_id} rolled back to scheduled; standings reversed.",
         )
 
-        await interaction.followup.send(
-            f"Game #{game_id} has been reset to scheduled and standings reversed.",
+        await safe_respond(
+            interaction,
+            content=f"Game #{game_id} has been reset to scheduled and standings reversed.",
             ephemeral=True,
         )
 
@@ -308,8 +317,10 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             detail=f"Recalculated from {n} simmed games for season {season}.",
         )
 
-        await interaction.followup.send(
-            f"Standings recalculated from {n} games.", ephemeral=True
+        await safe_respond(
+            interaction,
+            content=f"Standings recalculated from {n} games.",
+            ephemeral=True,
         )
 
     @app_commands.command(
@@ -339,26 +350,29 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
         matches = await player_repo.search_by_name(pool, league.id, player)
         if not matches:
-            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            await safe_respond(interaction, content=f"No player found matching '{player}'.", ephemeral=True)
             return
         if len(matches) > 1:
             names = ", ".join(p.full_name for p in matches)
-            await interaction.followup.send(f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
+            await safe_respond(interaction, content=f"Multiple matches for '{player}': {names}. Be more specific.", ephemeral=True)
             return
         found_player = matches[0]
         player_id = found_player.id
 
         if found_player.roster_status not in ("free_agent", "waived"):
-            await interaction.followup.send(
-                f"**{found_player.full_name}** is not a free agent or waived (status: {found_player.roster_status}).",
+            await safe_respond(
+                interaction,
+                content=f"**{found_player.full_name}** is not a free agent or waived (status: {found_player.roster_status}).",
                 ephemeral=True,
             )
             return
 
         team = await team_repo.get_by_code(pool, league.id, team_code.upper())
         if not team:
-            await interaction.followup.send(
-                f"No team found with code **{team_code.upper()}**.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"No team found with code **{team_code.upper()}**.",
+                ephemeral=True,
             )
             return
 
@@ -404,8 +418,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             detail=f"Signed {found_player.full_name} to {team.full_name} — ${salary:,}/yr x {years}yr.",
         )
 
-        await interaction.followup.send(
-            f"**{found_player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
+        await safe_respond(
+            interaction,
+            content=f"**{found_player.full_name}** signed to **{team.full_name}** — ${salary:,}/yr x {years} year(s).",
             ephemeral=True,
         )
 
@@ -444,8 +459,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         except FileNotFoundError:
             available = roster_seed_service.list_available_seed_years()
             supported = ", ".join(str(y) for y in available) if available else "none"
-            await interaction.followup.send(
-                f"No roster seed found for **{year}**. Supported years: {supported}",
+            await safe_respond(
+                interaction,
+                content=f"No roster seed found for **{year}**. Supported years: {supported}",
                 ephemeral=True,
             )
             return
@@ -495,7 +511,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                 )
 
             embed.set_footer(text="Run with mode:apply to commit these changes.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await safe_respond(interaction, embed=embed)
             return
 
         else:  # apply
@@ -518,7 +534,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                     error_text += f"\n… and {len(result['errors']) - 5} more"
                 embed.add_field(name="Errors", value=error_text, inline=False)
 
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await safe_respond(interaction, embed=embed)
 
             await admin_repo.log_commissioner_action(
                 pool,
@@ -547,13 +563,16 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         created = await league_service.ensure_channels(interaction.guild, pool, league.id)
 
         if created:
-            await interaction.followup.send(
-                f"Created {len(created)} missing channel(s): {', '.join(f'#{c}' for c in created)}",
+            await safe_respond(
+                interaction,
+                content=f"Created {len(created)} missing channel(s): {', '.join(f'#{c}' for c in created)}",
                 ephemeral=True,
             )
         else:
-            await interaction.followup.send(
-                "All expected channels already exist — nothing to do.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="All expected channels already exist — nothing to do.",
+                ephemeral=True,
             )
 
     @app_commands.command(
@@ -656,9 +675,9 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
             except discord.HTTPException:
                 pass
         if not sent:
-            # Last resort — try the followup (may 404 if issued from a deleted channel)
+            # Last resort — try editing the deferred placeholder (may 404 if issued from a deleted channel)
             try:
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                await safe_respond(interaction, embed=embed)
             except discord.HTTPException:
                 pass
 
@@ -700,7 +719,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
                 error_text += f"\n… and {len(errors) - 10} more"
             embed.add_field(name="Errors", value=error_text, inline=False)
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
         await admin_repo.log_commissioner_action(
             pool,
@@ -721,12 +740,14 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         pool = await get_pool()
         league = await league_repo.get_by_guild(pool, interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league.", ephemeral=True)
+            await safe_respond(interaction, content="No active league.", ephemeral=True)
             return
 
         if interaction.user.id != league.commissioner_user_id:
-            await interaction.followup.send(
-                "Only the commissioner can force-ready.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Only the commissioner can force-ready.",
+                ephemeral=True,
             )
             return
 
@@ -734,14 +755,15 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         human_teams = [t for t in teams if t.manager_user_id is not None]
 
         if not human_teams:
-            await interaction.followup.send("No managers to ready up.", ephemeral=True)
+            await safe_respond(interaction, content="No managers to ready up.", ephemeral=True)
             return
 
         for team in human_teams:
             await game_repo.set_ready(pool, league.id, team.id, team.manager_user_id, True)
 
-        await interaction.followup.send(
-            f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.",
+        await safe_respond(
+            interaction,
+            content=f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.",
             ephemeral=True,
         )
 

@@ -11,7 +11,7 @@ from bot.embeds import season_embeds
 from bot.embeds import sim_embeds
 from bot.embeds.sim_embeds import box_score_summary_embed, box_score_team_embed
 from bot.ui.box_score_views import BoxScoreView
-from core.errors import safe_defer
+from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, team_repo
@@ -40,8 +40,9 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
             game_count = await schedule_service.generate_season(league.id, season)
         except Exception as exc:
             log.error(f"/season start failed for league {league.id}: {exc}", exc_info=True)
-            await interaction.followup.send(
-                f"Schedule generation failed: {exc}\n\nCheck that the league has 30 teams (`/team list`).",
+            await safe_respond(
+                interaction,
+                content=f"Schedule generation failed: {exc}\n\nCheck that the league has 30 teams (`/team list`).",
                 ephemeral=True,
             )
             return
@@ -82,7 +83,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
             if channel:
                 await channel.send(embed=embed)
 
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
         log.info(f"Season {season} started for league {league.id} by {interaction.user.id}")
 
     @app_commands.command(name="import-players", description="Commissioner: import NBA rosters from nba_api")
@@ -100,9 +101,12 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         season = season_year if season_year is not None else league.current_season
 
         # Acknowledge immediately — import takes 2-5 min and Discord's token expires in 15 min
-        await interaction.followup.send(
-            f"Importing NBA rosters for season **{season}**. This takes a few minutes. "
-            "Results will be posted to **#league-news** when complete.",
+        await safe_respond(
+            interaction,
+            content=(
+                f"Importing NBA rosters for season **{season}**. This takes a few minutes. "
+                "Results will be posted to **#league-news** when complete."
+            ),
             ephemeral=True,
         )
 
@@ -182,7 +186,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         embed = season_embeds.season_info_embed(
             league, games_played, total_games, east_top3, west_top3
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="schedule", description="Show a team's next 10 scheduled games")
     @app_commands.describe(team_code="NBA team code (e.g. LAL) — defaults to your team")
@@ -198,15 +202,19 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         if team_code:
             team = await team_repo.get_by_code(pool, league.id, team_code)
             if not team:
-                await interaction.followup.send(
-                    f"No team found with code **{team_code.upper()}**.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"No team found with code **{team_code.upper()}**.",
+                    ephemeral=True,
                 )
                 return
         else:
             team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
             if not team:
-                await interaction.followup.send(
-                    "You don't manage a team. Provide a `team_code` argument.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Provide a `team_code` argument.",
+                    ephemeral=True,
                 )
                 return
 
@@ -229,7 +237,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         )
 
         if not rows:
-            await interaction.followup.send("No upcoming games found.", ephemeral=True)
+            await safe_respond(interaction, content="No upcoming games found.", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -246,7 +254,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
                 f"Game #{r['game_index']} — {r['scheduled_date']}  {venue} **{opp_code}**{user_marker}"
             )
         embed.description = "\n".join(lines)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
     @app_commands.command(name="standings", description="Show current standings")
@@ -285,8 +293,9 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
         await safe_defer(interaction, ephemeral=True)
 
         if game is None and game_id is None:
-            await interaction.followup.send(
-                "Provide either `game` (game number) or `game_id` (for playoff games).",
+            await safe_respond(
+                interaction,
+                content="Provide either `game` (game number) or `game_id` (for playoff games).",
                 ephemeral=True,
             )
             return
@@ -304,16 +313,19 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
             lookup_label = f"#{game}"
 
         if not game_row or game_row.get("status") != "simmed":
-            await interaction.followup.send(
-                f"Game {lookup_label} hasn't been simmed yet (or doesn't exist).",
+            await safe_respond(
+                interaction,
+                content=f"Game {lookup_label} hasn't been simmed yet (or doesn't exist).",
                 ephemeral=True,
             )
             return
 
         box_rows = await game_repo.get_box_scores_for_game(pool, game_row["id"])
         if not box_rows:
-            await interaction.followup.send(
-                f"No box score data found for game {lookup_label}.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"No box score data found for game {lookup_label}.",
+                ephemeral=True,
             )
             return
 
@@ -339,7 +351,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
             away_code=away_code,
             home_code=home_code,
         )
-        await interaction.followup.send(embed=summary_embed, view=view)
+        await safe_respond(interaction, embed=summary_embed, view=view)
 
 
 class SeasonCog(commands.Cog):

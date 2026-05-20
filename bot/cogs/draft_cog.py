@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from bot.embeds import draft_embeds
 from bot.ui.draft_views import DraftPickView, _build_summary
-from core.errors import safe_defer
+from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import draft_repo, league_repo
@@ -30,7 +30,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -39,7 +39,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
         ordered_picks = await draft_service.run_lottery(league.id, league.current_season)
 
         embed = draft_embeds.lottery_result_embed(ordered_picks)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
@@ -54,7 +54,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -67,7 +67,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
             selections = await draft_repo.get_selections(pool, draft.id)
             summary = await _build_summary(pool, selections)
             embed = draft_embeds.draft_complete_embed(summary)
-            await interaction.followup.send(embed=embed)
+            await safe_respond(interaction, embed=embed)
             return
 
         if state["status"] == "human_on_clock":
@@ -87,8 +87,10 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
                 if channel:
                     await channel.send(embed=embed, view=view)
 
-            await interaction.followup.send(
-                f"Pick #{state['pick_number']} posted to league news.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"Pick #{state['pick_number']} posted to league news.",
+                ephemeral=True,
             )
 
     @app_commands.command(name="board", description="Show the current draft board")
@@ -97,24 +99,24 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
         draft = await draft_repo.get_draft(pool, league.id, league.current_season)
         if not draft:
-            await interaction.followup.send("No draft found for this season.", ephemeral=True)
+            await safe_respond(interaction, content="No draft found for this season.", ephemeral=True)
             return
 
         selections = await draft_repo.get_selections(pool, draft.id)
         if not selections:
-            await interaction.followup.send("No picks have been made yet.", ephemeral=True)
+            await safe_respond(interaction, content="No picks have been made yet.", ephemeral=True)
             return
 
         summary = await _build_summary(pool, selections)
         embed = draft_embeds.draft_complete_embed(summary)
         embed.title = f"Draft Board — Season {league.current_season} (Pick {draft.current_pick_number - 1} of ?)"
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="prospects", description="Show available draft prospects")
     @app_commands.describe(position="Filter by position (PG, SG, SF, PF, C)")
@@ -125,7 +127,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -137,7 +139,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
         if not available:
             label = f" at {position.upper()}" if position else ""
-            await interaction.followup.send(f"No available prospects{label}.", ephemeral=True)
+            await safe_respond(interaction, content=f"No available prospects{label}.", ephemeral=True)
             return
 
         top = available[:20]
@@ -153,7 +155,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
         )
         pos_label = f" — {position.upper()}" if position else ""
         embed.set_footer(text=f"Showing top {len(top)} of {len(available)} available{pos_label}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="class", description="Generate or show the draft class for a year (commissioner only)")
     @app_commands.describe(year="Draft class year (e.g. 2029)")
@@ -163,7 +165,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league found.", ephemeral=True)
+            await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
 
         count = await draft_service.ensure_draft_class(league.id, year)
@@ -182,7 +184,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
             color=discord.Color.purple(),
         )
         embed.set_footer(text=f"{count} total prospects in this class")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
 
 class DraftCog(commands.Cog):

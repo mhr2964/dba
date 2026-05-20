@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.embeds import strategy_embeds
-from core.errors import DBAError, safe_defer
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo, strategy_repo
@@ -78,7 +78,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         strategy = await strategy_repo.get_strategy(pool, league_id, team["id"])
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team["id"])
         embed = strategy_embeds.strategy_embed(team, strategy, modifiers)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="offense", description="Set your team's offensive scheme")
     @app_commands.describe(scheme="Offensive scheme")
@@ -99,7 +99,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         strategy = await strategy_repo.get_strategy(pool, league_id, team["id"])
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team["id"])
         embed = strategy_embeds.strategy_embed(team, strategy, modifiers)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="defense", description="Set your team's defensive scheme")
     @app_commands.describe(scheme="Defensive scheme")
@@ -119,7 +119,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         strategy = await strategy_repo.get_strategy(pool, league_id, team["id"])
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team["id"])
         embed = strategy_embeds.strategy_embed(team, strategy, modifiers)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="intensity", description="Set your team's defensive intensity")
     @app_commands.describe(level="Intensity level")
@@ -138,14 +138,14 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         strategy = await strategy_repo.get_strategy(pool, league_id, team["id"])
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team["id"])
         embed = strategy_embeds.strategy_embed(team, strategy, modifiers)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="star-usage", description="Control how much shots go to your top-2 players (0-100)")
     @app_commands.describe(value="Star usage value (0 = spread it out, 100 = funnel everything to stars)")
     async def star_usage(self, interaction: discord.Interaction, value: int) -> None:
         await safe_defer(interaction)
         if not (0 <= value <= 100):
-            await interaction.followup.send("Star usage must be between 0 and 100.", ephemeral=True)
+            await safe_respond(interaction, content="Star usage must be between 0 and 100.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -156,7 +156,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         strategy = await strategy_repo.get_strategy(pool, league_id, team["id"])
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team["id"])
         embed = strategy_embeds.strategy_embed(team, strategy, modifiers)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="view", description="View a team's current strategy")
     @app_commands.describe(team="Team code (e.g. LAL). Defaults to your team.")
@@ -169,7 +169,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         strategy = await strategy_repo.get_strategy(pool, league_id, team_row["id"])
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team_row["id"])
         embed = strategy_embeds.strategy_embed(team_row, strategy, modifiers)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="auto", description="Toggle CPU coach mode (on = CPU picks strategy every game)")
     @app_commands.describe(value="on = CPU coach runs your gameplan; off = your manual settings are used")
@@ -191,11 +191,12 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
             interaction.user.id,
         )
         if not team_row and not is_commissioner:
-            await interaction.followup.send("You are not a team manager in this league.", ephemeral=True)
+            await safe_respond(interaction, content="You are not a team manager in this league.", ephemeral=True)
             return
         if not team_row:
-            await interaction.followup.send(
-                "Commissioner: use `/strategy auto` on a team by being their manager, or set coach_mode directly.",
+            await safe_respond(
+                interaction,
+                content="Commissioner: use `/strategy auto` on a team by being their manager, or set coach_mode directly.",
                 ephemeral=True,
             )
             return
@@ -203,7 +204,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         coach_mode = "auto" if value.value == "on" else "manual"
         await strategy_repo.set_strategy(pool, league_id, team_row["id"], coach_mode=coach_mode)
         label = "CPU coach enabled — the CPU will pick your gameplan each game." if coach_mode == "auto" else "Manual mode — your saved settings are used."
-        await interaction.followup.send(label)
+        await safe_respond(interaction, content=label)
 
     @app_commands.command(name="transition", description="Set your team's transition aggression")
     @app_commands.describe(value="How aggressively your team attacks in transition")
@@ -219,7 +220,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         team = await _require_team_manager(pool, league_id, interaction.user.id)
 
         await strategy_repo.set_strategy(pool, league_id, team["id"], transition_aggression=value.value)
-        await interaction.followup.send(f"Transition aggression set to **{value.name}**.")
+        await safe_respond(interaction, content=f"Transition aggression set to **{value.name}**.")
 
     @app_commands.command(name="bench-leash", description="Set how quickly you pull underperforming bench players")
     @app_commands.describe(value="Short = quick hook, Long = more patience")
@@ -235,7 +236,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         team = await _require_team_manager(pool, league_id, interaction.user.id)
 
         await strategy_repo.set_strategy(pool, league_id, team["id"], bench_leash=value.value)
-        await interaction.followup.send(f"Bench leash set to **{value.name}**.")
+        await safe_respond(interaction, content=f"Bench leash set to **{value.name}**.")
 
     @app_commands.command(name="reset", description="Reset your team's strategy to defaults")
     async def reset(self, interaction: discord.Interaction) -> None:
@@ -249,7 +250,7 @@ class StrategyGroup(app_commands.Group, name="strategy", description="Team strat
         modifiers = await strategy_service.get_sim_modifiers(pool, league_id, team["id"])
         embed = strategy_embeds.strategy_embed(team, strategy, modifiers)
         embed.title = f"{team.get('city', '')} {team.get('name', '')} — Strategy Reset to Defaults"
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
 
 class MinutesGroup(app_commands.Group, name="minutes", description="Player minutes management"):
@@ -262,7 +263,7 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
     async def set_minutes(self, interaction: discord.Interaction, player: str, minutes: int) -> None:
         await safe_defer(interaction)
         if not (0 <= minutes <= 48):
-            await interaction.followup.send("Minutes must be between 0 and 48.", ephemeral=True)
+            await safe_respond(interaction, content="Minutes must be between 0 and 48.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -271,18 +272,20 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
 
         matches = await player_repo.search_by_name(pool, league_id, player)
         if not matches:
-            await interaction.followup.send(f"No player found matching '{player}'.", ephemeral=True)
+            await safe_respond(interaction, content=f"No player found matching '{player}'.", ephemeral=True)
             return
         if len(matches) > 1:
             names = ", ".join(f"{p.first_name} {p.last_name}" for p in matches[:5])
-            await interaction.followup.send(
-                f"Multiple players match '{player}': {names}. Be more specific.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content=f"Multiple players match '{player}': {names}. Be more specific.",
+                ephemeral=True,
             )
             return
 
         found_player = matches[0]
         if found_player.team_id != team["id"]:
-            await interaction.followup.send("That player is not on your team.", ephemeral=True)
+            await safe_respond(interaction, content="That player is not on your team.", ephemeral=True)
             return
 
         await strategy_repo.set_player_minutes(pool, league_id, team["id"], found_player.id, minutes)
@@ -294,7 +297,7 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
         msg = f"Set target minutes for **{found_player.full_name}** to **{label}**."
         if total > 240:
             msg += f"\n**Warning:** Team total target minutes ({total}) exceed 240 and will be normalized at sim time."
-        await interaction.followup.send(msg)
+        await safe_respond(interaction, content=msg)
 
     @app_commands.command(name="view", description="View player minutes targets for a team")
     @app_commands.describe(team="Team code (e.g. LAL). Defaults to your team.")
@@ -323,7 +326,7 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
             players_for_embed.append(d)
 
         embed = strategy_embeds.minutes_embed(team_row, players_for_embed, minutes_plan)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="reset", description="Clear all target minutes for your team (set all to Auto)")
     async def reset_minutes(self, interaction: discord.Interaction) -> None:
@@ -333,7 +336,7 @@ class MinutesGroup(app_commands.Group, name="minutes", description="Player minut
         team = await _require_team_manager(pool, league_id, interaction.user.id)
 
         await strategy_repo.reset_player_minutes(pool, league_id, team["id"])
-        await interaction.followup.send("All player minutes targets cleared. Minutes will be auto-distributed at sim time.")
+        await safe_respond(interaction, content="All player minutes targets cleared. Minutes will be auto-distributed at sim time.")
 
 
 async def setup(bot: commands.Bot) -> None:

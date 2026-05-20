@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from bot.embeds import intel_embeds, league_embeds, season_embeds
 from bot.embeds.info_embeds import audit_embed, help_embed, status_embed
-from core.errors import DBAError, safe_defer
+from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import admin_repo, game_repo, league_repo, team_repo, trade_repo
@@ -83,7 +83,7 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
         )
 
         embed = league_embeds.created(league)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         pool = await get_pool()
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
@@ -112,8 +112,9 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
         await safe_defer(interaction)
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send(
-                "No active league found. Use `/league create` to set one up.",
+            await safe_respond(
+                interaction,
+                content="No active league found. Use `/league create` to set one up.",
                 ephemeral=True,
             )
             return
@@ -134,7 +135,7 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             inline=True,
         )
         embed.add_field(name="Teams Claimed", value=f"{claimed} / 30", inline=True)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="phase", description="Show current phase and what's available or blocking")
     async def phase(self, interaction: discord.Interaction) -> None:
@@ -178,8 +179,9 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send(
-                "No active league in this server. Use `/league create` to start one.",
+            await safe_respond(
+                interaction,
+                content="No active league in this server. Use `/league create` to start one.",
                 ephemeral=True,
             )
             return
@@ -240,7 +242,7 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             east_leader=east_leader,
             west_leader=west_leader,
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="philosophy-map",
@@ -251,8 +253,10 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send(
-                "No active league in this server.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="No active league in this server.",
+                ephemeral=True,
             )
             return
 
@@ -269,12 +273,12 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             league.id,
         )
         if not rows:
-            await interaction.followup.send("No teams found in this league.", ephemeral=True)
+            await safe_respond(interaction, content="No teams found in this league.", ephemeral=True)
             return
 
         teams = [dict(r) for r in rows]
         embed = intel_embeds.philosophy_map_embed(teams)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="digest",
@@ -290,8 +294,10 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send(
-                "No active league in this server.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="No active league in this server.",
+                ephemeral=True,
             )
             return
 
@@ -315,7 +321,7 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             pool, league, season, since_batch_index
         )
         embed = intel_embeds.league_digest_embed(digest, since_batches=since_batches)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="audit", description="Commissioner: view recent commissioner actions")
     async def audit(self, interaction: discord.Interaction) -> None:
@@ -327,7 +333,7 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
         pool = await get_pool()
         actions = await admin_repo.get_recent_commissioner_actions(pool, league.id)
         embed = audit_embed(actions)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="advance", description="Commissioner: manually advance the league phase")
     @app_commands.describe(phase_name="Target phase name (e.g. REGULAR_SEASON_ACTIVE)")
@@ -345,15 +351,17 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
         try:
             Phase(phase_name)
         except ValueError:
-            await interaction.followup.send(
-                f"Unknown phase `{phase_name}`.\nValid phases: {_VALID_PHASES}",
+            await safe_respond(
+                interaction,
+                content=f"Unknown phase `{phase_name}`.\nValid phases: {_VALID_PHASES}",
                 ephemeral=True,
             )
             return
 
         if phase_name == league.current_phase:
-            await interaction.followup.send(
-                f"League is already in phase `{phase_name}`.",
+            await safe_respond(
+                interaction,
+                content=f"League is already in phase `{phase_name}`.",
                 ephemeral=True,
             )
             return
@@ -375,17 +383,21 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
                 league.id, league.current_season,
             )
             if remaining and remaining > 0:
-                await interaction.followup.send(
-                    f"Cannot advance to `{phase_name}` — **{remaining} regular-season games still unsimmed** "
-                    f"for season {league.current_season}. Finish the season with `/sim season` or `/sim games`, "
-                    f"or use `/playoffs seed` after the season completes.",
+                await safe_respond(
+                    interaction,
+                    content=(
+                        f"Cannot advance to `{phase_name}` — **{remaining} regular-season games still unsimmed** "
+                        f"for season {league.current_season}. Finish the season with `/sim season` or `/sim games`, "
+                        f"or use `/playoffs seed` after the season completes."
+                    ),
                     ephemeral=True,
                 )
                 return
 
         await league_service.advance_phase(league.id, phase_name)
-        await interaction.followup.send(
-            f"Phase advanced from `{league.current_phase}` to `{phase_name}`.",
+        await safe_respond(
+            interaction,
+            content=f"Phase advanced from `{league.current_phase}` to `{phase_name}`.",
         )
 
     @app_commands.command(name="delete", description="Permanently delete the league and all its data")
@@ -396,13 +408,16 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         if confirm_name != league.name:
-            await interaction.followup.send(
-                f"Confirmation failed — you typed **{confirm_name}** but the league is **{league.name}**.\n"
-                "Pass the exact league name to confirm deletion.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"Confirmation failed — you typed **{confirm_name}** but the league is **{league.name}**.\n"
+                    "Pass the exact league name to confirm deletion."
+                ),
                 ephemeral=True,
             )
             return
@@ -451,9 +466,12 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
             await pool.execute("DELETE FROM leagues WHERE id = $1", league.id)
         except Exception as exc:
             log.error(f"Failed to delete league {league.id} from DB: {exc}", exc_info=True)
-            await interaction.followup.send(
-                "Discord channels/roles were deleted, but the league record could not be removed "
-                f"from the database. Contact the server admin. Error: {exc}",
+            await safe_respond(
+                interaction,
+                content=(
+                    "Discord channels/roles were deleted, but the league record could not be removed "
+                    f"from the database. Contact the server admin. Error: {exc}"
+                ),
                 ephemeral=True,
             )
             return
@@ -465,17 +483,21 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
                 f"League {league.id} DELETE appeared to succeed but row still exists — "
                 "possible FK constraint or trigger preventing deletion."
             )
-            await interaction.followup.send(
-                "Warning: the DELETE command ran without error but the league record still exists "
-                "in the database. Contact the server admin immediately.",
+            await safe_respond(
+                interaction,
+                content=(
+                    "Warning: the DELETE command ran without error but the league record still exists "
+                    "in the database. Contact the server admin immediately."
+                ),
                 ephemeral=True,
             )
             return
 
         log.info(f"League '{league.name}' (id={league.id}) deleted by {interaction.user.id}")
 
-        await interaction.followup.send(
-            f"League **{league.name}** has been permanently deleted. All data wiped.",
+        await safe_respond(
+            interaction,
+            content=f"League **{league.name}** has been permanently deleted. All data wiped.",
             ephemeral=True,
         )
 
@@ -506,7 +528,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league. Use `/league create` first.", ephemeral=True)
+            await safe_respond(interaction, content="No active league. Use `/league create` first.", ephemeral=True)
             return
 
         team = await league_service.assign_manager(
@@ -517,7 +539,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         )
 
         embed = league_embeds.team_assigned(team, member)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         pool = await get_pool()
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
@@ -540,7 +562,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league.", ephemeral=True)
+            await safe_respond(interaction, content="No active league.", ephemeral=True)
             return
 
         team = await league_service.remove_manager(
@@ -551,7 +573,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         )
 
         embed = league_embeds.manager_removed(team)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
         pool = await get_pool()
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
@@ -567,7 +589,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         await safe_defer(interaction)
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league.", ephemeral=True)
+            await safe_respond(interaction, content="No active league.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -595,7 +617,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         claimed = sum(1 for t in teams if t.manager_user_id is not None)
         embed.set_footer(text=f"{claimed} / 30 teams claimed")
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="rename", description="Rename a team's city and name")
     @app_commands.describe(
@@ -613,36 +635,42 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         await safe_defer(interaction)
 
         if len(name) > 20:
-            await interaction.followup.send("Team name must be 20 characters or fewer.", ephemeral=True)
+            await safe_respond(interaction, content="Team name must be 20 characters or fewer.", ephemeral=True)
             return
         if len(city) > 20:
-            await interaction.followup.send("City name must be 20 characters or fewer.", ephemeral=True)
+            await safe_respond(interaction, content="City name must be 20 characters or fewer.", ephemeral=True)
             return
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         pool = await get_pool()
 
         if team_code:
             if interaction.user.id != league.commissioner_user_id:
-                await interaction.followup.send(
-                    "Only the commissioner can rename another team.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content="Only the commissioner can rename another team.",
+                    ephemeral=True,
                 )
                 return
             target_team = await team_repo.get_by_code(pool, league.id, team_code.upper())
             if not target_team:
-                await interaction.followup.send(
-                    f"No team found with code **{team_code.upper()}**.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"No team found with code **{team_code.upper()}**.",
+                    ephemeral=True,
                 )
                 return
         else:
             target_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
             if not target_team:
-                await interaction.followup.send(
-                    "You don't manage a team in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team in this league.",
+                    ephemeral=True,
                 )
                 return
 
@@ -665,8 +693,9 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             if ch:
                 await ch.send(f"**{old_full_name}** has rebranded to **{new_full_name}**!")
 
-        await interaction.followup.send(
-            f"Team renamed: **{old_full_name}** → **{new_full_name}**."
+        await safe_respond(
+            interaction,
+            content=f"Team renamed: **{old_full_name}** → **{new_full_name}**.",
         )
 
     # ------------------------------------------------------------------
@@ -710,7 +739,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -718,12 +747,15 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         if team is None:
             if code:
-                await interaction.followup.send(
-                    f"Team `{code.upper()}` not found in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Team `{code.upper()}` not found in this league.",
+                    ephemeral=True,
                 )
             else:
-                await interaction.followup.send(
-                    "You don't manage a team. Use `/team posture LAL` to view any team.",
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Use `/team posture LAL` to view any team.",
                     ephemeral=True,
                 )
             return
@@ -738,8 +770,10 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             recent_pivots = await team_intel.get_recent_pivots(pool, league.id, team_id, season)
         except Exception as exc:
             log.error(f"team posture fetch failed for team {team_id}: {exc}", exc_info=True)
-            await interaction.followup.send(
-                "Failed to compute posture — the data may not be ready yet.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Failed to compute posture — the data may not be ready yet.",
+                ephemeral=True,
             )
             return
 
@@ -751,7 +785,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             philosophy=philosophy,
             recent_pivots=recent_pivots,
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="plan",
@@ -767,7 +801,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -775,12 +809,15 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         if team is None:
             if code:
-                await interaction.followup.send(
-                    f"Team `{code.upper()}` not found in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Team `{code.upper()}` not found in this league.",
+                    ephemeral=True,
                 )
             else:
-                await interaction.followup.send(
-                    "You don't manage a team. Use `/team plan LAL` to view any team.",
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Use `/team plan LAL` to view any team.",
                     ephemeral=True,
                 )
             return
@@ -791,23 +828,28 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             plan = await team_intel.get_team_plan(pool, league.id, team_id, league.current_season)
         except Exception as exc:
             log.error(f"team plan fetch failed for team {team_id}: {exc}", exc_info=True)
-            await interaction.followup.send(
-                "Failed to retrieve the franchise plan.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Failed to retrieve the franchise plan.",
+                ephemeral=True,
             )
             return
 
         if plan is None:
             team_name = f"{team['city']} {team['name']}"
-            await interaction.followup.send(
-                f"No franchise plan has been derived yet for **{team_name}**. "
-                "The plan is generated automatically after the season begins.",
+            await safe_respond(
+                interaction,
+                content=(
+                    f"No franchise plan has been derived yet for **{team_name}**. "
+                    "The plan is generated automatically after the season begins."
+                ),
                 ephemeral=True,
             )
             return
 
         team_name = f"{team['city']} {team['name']}"
         embed = intel_embeds.plan_embed(team_name=team_name, plan=plan)
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="philosophy",
@@ -823,7 +865,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league in this server.", ephemeral=True)
+            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -831,12 +873,15 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         if team is None:
             if code:
-                await interaction.followup.send(
-                    f"Team `{code.upper()}` not found in this league.", ephemeral=True
+                await safe_respond(
+                    interaction,
+                    content=f"Team `{code.upper()}` not found in this league.",
+                    ephemeral=True,
                 )
             else:
-                await interaction.followup.send(
-                    "You don't manage a team. Use `/team philosophy LAL` to view any team.",
+                await safe_respond(
+                    interaction,
+                    content="You don't manage a team. Use `/team philosophy LAL` to view any team.",
                     ephemeral=True,
                 )
             return
@@ -850,8 +895,10 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             )
         except Exception as exc:
             log.error(f"team philosophy fetch failed for team {team_id}: {exc}", exc_info=True)
-            await interaction.followup.send(
-                "Failed to retrieve philosophy data.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="Failed to retrieve philosophy data.",
+                ephemeral=True,
             )
             return
 
@@ -861,7 +908,7 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
             philosophy=philosophy,
             recent_role_changes=recent_role_changes,
         )
-        await interaction.followup.send(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(
         name="ready",
@@ -873,20 +920,22 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
         pool = await get_pool()
         league = await league_repo.get_by_guild(pool, interaction.guild_id)
         if not league:
-            await interaction.followup.send("No active league.", ephemeral=True)
+            await safe_respond(interaction, content="No active league.", ephemeral=True)
             return
 
         await _require_phase(league, "ready")
 
         team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
         if not team:
-            await interaction.followup.send(
-                "You don't manage a team in this league.", ephemeral=True
+            await safe_respond(
+                interaction,
+                content="You don't manage a team in this league.",
+                ephemeral=True,
             )
             return
 
         await game_repo.set_ready(pool, league.id, team.id, interaction.user.id, True)
-        await interaction.followup.send("Ready.", ephemeral=True)
+        await safe_respond(interaction, content="Ready.", ephemeral=True)
 
         teams = await team_repo.get_all(pool, league.id)
         human_teams = [t for t in teams if t.manager_user_id is not None]
@@ -940,7 +989,7 @@ class SetupCog(commands.Cog):
                 ),
                 color=discord.Color.blurple(),
             )
-            await interaction.followup.send(embed=no_league_embed, ephemeral=True)
+            await safe_respond(interaction, embed=no_league_embed)
             return
 
         phase = league.current_phase
@@ -957,7 +1006,7 @@ class SetupCog(commands.Cog):
             available_groups=available,
             unavailable_groups=unavailable,
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
