@@ -812,22 +812,31 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
         )
         workdir = os.path.dirname(main_py)
 
-        if sys.platform == "win32":
-            # CREATE_NEW_CONSOLE alone — it already detaches the child from the
-            # parent console and gives it a new one. Combining with
-            # DETACHED_PROCESS raises ValueError (mutually exclusive flags).
-            subprocess.Popen(
-                [sys.executable, main_py],
-                cwd=workdir,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                close_fds=True,
-            )
-        else:
-            subprocess.Popen(
-                [sys.executable, main_py],
-                cwd=workdir,
-                start_new_session=True,
-                close_fds=True,
+        try:
+            if sys.platform == "win32":
+                # `cmd /c start "" python main.py` is the reliable Windows
+                # detach pattern. CREATE_NEW_CONSOLE via subprocess.Popen has
+                # been flaky from inside the asyncio event loop in our
+                # environment. The empty "" is the window title that `start`
+                # requires before the program path.
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", sys.executable, main_py],
+                    cwd=workdir,
+                )
+            else:
+                subprocess.Popen(
+                    [sys.executable, main_py],
+                    cwd=workdir,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except Exception as spawn_exc:
+            log.error(f"Failed to spawn replacement bot process: {spawn_exc}", exc_info=True)
+            # Don't close — user gets to keep the running bot rather than
+            # losing it to a half-restart.
+            raise DBAError(
+                f"Could not spawn the replacement bot process: {spawn_exc}. "
+                "Bot is still running; check the host machine."
             )
 
         # Give the new process a head start before the lock file disappears.
