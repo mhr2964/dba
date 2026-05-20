@@ -10,3 +10,27 @@ build/
 .pytest_cache/
 .DS_Store
 data/seeds/nba_2k_ratings_raw.csv
+
+# Claude Code worktrees and local tooling
+.claude/
+
+# Runtime + local state
+*.log
+.bot.lock
+.log_baseline
+dba.db
+data/dba.db
+
+# Test-run artifacts
+.test-screenshots/
+.test-brief.md
+
+# Refactor artifacts (not source)
+log.md
+
+# Large runtime caches — fetched on demand, not source
+data/bdl_cache/
+data/tendency_cache/
+
+# Nested checkout (separate working copy, has its own .git)
+/dba/
