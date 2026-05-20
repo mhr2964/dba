@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -162,7 +163,7 @@ async def update_status(
     commissioner_by: Optional[int] = None,
     reason: Optional[str] = None,
 ) -> None:
-    resolved_statuses = {"approved", "vetoed", "declined", "expired"}
+    resolved_statuses = {"approved", "vetoed", "declined", "rejected", "expired", "superseded"}
     if status in resolved_statuses:
         await pool.execute(
             """
@@ -312,6 +313,70 @@ async def get_all_approved_trades(
             {
                 "trade": trade,
                 "assets": [_asset_from_record(a) for a in assets],
+            }
+        )
+    return result
+
+
+async def set_context_signals(pool: asyncpg.Pool, trade_id: int, signals: dict) -> None:
+    """Persist context signals for a CPU trade decision.
+
+    Signals computed at evaluation time are stored as JSONB so /trade why and
+    /trade signals can surface them without re-deriving from team state that
+    may have changed since the trade was evaluated.
+    """
+    await pool.execute(
+        "UPDATE trades SET context_signals = $1::jsonb WHERE id = $2",
+        json.dumps(signals),
+        trade_id,
+    )
+
+
+async def get_context_signals(pool: asyncpg.Pool, trade_id: int) -> dict | None:
+    """Return the stored context signals for a trade, or None if not present."""
+    row = await pool.fetchrow("SELECT context_signals FROM trades WHERE id = $1", trade_id)
+    if not row or not row["context_signals"]:
+        return None
+    raw = row["context_signals"]
+    # asyncpg may return the JSONB column already decoded to a dict.
+    return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+async def get_trades_with_signals_for_team(
+    pool: asyncpg.Pool,
+    league_id: int,
+    team_id: int,
+    limit: int = 20,
+) -> list[dict]:
+    """Return recent trades involving *team_id* that have stored context signals.
+
+    Used by /trade signals to aggregate historical signal patterns.  Each row
+    includes the trade id, status, created_at timestamp, and the raw signals dict.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT t.id, t.context_signals, t.proposed_at AS created_at, t.status
+        FROM trades t
+        WHERE (t.proposer_team_id = $1 OR t.counterparty_team_id = $1)
+          AND t.league_id = $2
+          AND t.context_signals IS NOT NULL
+        ORDER BY t.proposed_at DESC
+        LIMIT $3
+        """,
+        team_id,
+        league_id,
+        limit,
+    )
+    result: list[dict] = []
+    for row in rows:
+        raw = row["context_signals"]
+        signals = raw if isinstance(raw, dict) else json.loads(raw)
+        result.append(
+            {
+                "id": row["id"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "context_signals": signals,
             }
         )
     return result

@@ -201,11 +201,15 @@ async def seed_draft_class(
     league_id: int,
     class_year: int,
     prospects: list[dict],
+    source: str = "generated",
 ) -> int:
     """
     Inserts each prospect into players (roster_status='prospect') then into draft_classes.
     Skips prospects that would violate the UNIQUE(league_id, class_year, player_id) constraint.
     Returns count of newly inserted entries.
+
+    source: value written to draft_classes.source — callers pass 'nba_real',
+            'projected_consensus', or leave default 'generated'.
     """
     inserted = 0
     async with pool.acquire() as conn:
@@ -267,13 +271,14 @@ async def seed_draft_class(
                 await conn.execute(
                     """
                     INSERT INTO draft_classes (league_id, class_year, player_id, mock_rank, is_generated, source)
-                    VALUES ($1, $2, $3, $4, TRUE, 'generated')
+                    VALUES ($1, $2, $3, $4, TRUE, $5)
                     ON CONFLICT (league_id, class_year, player_id) DO NOTHING
                     """,
                     league_id,
                     class_year,
                     player_id,
                     p.get("_mock_rank"),
+                    source,
                 )
                 inserted += 1
 
