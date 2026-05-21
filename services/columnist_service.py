@@ -372,6 +372,13 @@ async def generate(  # noqa: PLR0912, PLR0915
         )
         raw = message.content[0].text.strip()
 
+        # DIAGNOSTIC — log first 800 chars of every LLM response so we can
+        # verify each persona's actual output shape.  Leave in place.
+        log.info(
+            "columnist_service [RAW] persona=%s category=%s | %.800s",
+            _persona_id, _category, raw,
+        )
+
         parsed = _tolerant_json_parse(raw, _persona_id, _category)
 
         if parsed is None:
@@ -550,31 +557,29 @@ def _assemble_default(parsed: dict, persona_display: str) -> str:
         parts.append(lede)
 
     if key_stats:
-        parts.append("")
-        parts.append("__Key Numbers__")
-        for stat in key_stats[:4]:
+        stat_lines = ["## Key Numbers"]
+        for stat in key_stats[:3]:
             label = str(stat.get("label", "")).strip()
             value = str(stat.get("value", "")).strip()
             if label and value:
-                parts.append(f"> • **{label}**: {value}")
+                stat_lines.append(f"> • **{label}**: {value}")
+        parts.append("\n".join(stat_lines))
 
     if bullets:
-        parts.append("")
-        parts.append("__The Read__")
+        bullet_lines = ["## The Read"]
         for bullet in bullets[:3]:
             text = str(bullet).strip()
             if text:
-                parts.append(f"• {text}")
+                bullet_lines.append(f"• {text}")
+        parts.append("\n".join(bullet_lines))
 
     if verdict:
-        parts.append("")
         parts.append(f"**Verdict:** {verdict}")
 
     if persona_display:
-        parts.append("")
         parts.append(f"— *{persona_display}*")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def _assemble_analytics(parsed: dict, persona_display: str) -> str:
@@ -624,18 +629,17 @@ def _assemble_analytics(parsed: dict, persona_display: str) -> str:
     if lede:
         parts.append(lede)
 
-    for bullet in bullets[:3]:
-        text = str(bullet).strip()
-        if text:
-            parts.append(f"• {text}")
+    bullet_parts = [f"• {str(b).strip()}" for b in bullets[:3] if str(b).strip()]
+    if bullet_parts:
+        parts.append("\n".join(bullet_parts))
 
     if verdict:
-        parts.append(f"\n**Bottom line:** {verdict}")
+        parts.append(f"**Bottom line:** {verdict}")
 
     if persona_display:
         parts.append(f"— *{persona_display}*")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def _assemble_hot_take(parsed: dict, persona_display: str) -> str:
@@ -706,7 +710,8 @@ def _assemble_tactical(parsed: dict, persona_display: str) -> str:
             stat_note = f"*({', '.join(stat_parts)})*"
 
     # Split bullets into "what worked" (first half) and "what didn't" (second half).
-    clean_bullets = [str(b).strip() for b in bullets[:4] if str(b).strip()]
+    # Cap at 3 total so we never get 4-bullet walls of text.
+    clean_bullets = [str(b).strip() for b in bullets[:3] if str(b).strip()]
     mid = max(1, len(clean_bullets) // 2)
     worked = clean_bullets[:mid]
     didnt = clean_bullets[mid:]
@@ -720,22 +725,22 @@ def _assemble_tactical(parsed: dict, persona_display: str) -> str:
             parts.append(lede)
 
     if worked:
-        parts.append("\n**What Worked**")
+        parts.append("## What Worked")
         for b in worked:
-            parts.append(f"{b}")
+            parts.append(f"• {b}")
 
     if didnt:
-        parts.append("\n**What Didn't**")
+        parts.append("## What Didn't")
         for b in didnt:
-            parts.append(f"{b}")
+            parts.append(f"• {b}")
 
     if verdict:
-        parts.append(f"\n**The Adjustment**\n{verdict}")
+        parts.append(f"## The Adjustment\n{verdict}")
 
     if persona_display:
-        parts.append(f"\n— *{persona_display}*")
+        parts.append(f"— *{persona_display}*")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def _assemble_recap(parsed: dict, persona_display: str) -> str:
