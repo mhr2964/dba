@@ -371,6 +371,7 @@ async def _persist_injuries(
     season: int,
     result: dict,
     injury_channel: Optional[discord.TextChannel],
+    guild: Optional[discord.Guild] = None,
 ) -> None:
     raw_injuries = result.get("injuries", [])
     if not raw_injuries:
@@ -437,6 +438,27 @@ async def _persist_injuries(
                     f"<@{_mgr_row['manager_user_id']}> — **{player_name}** just went down."
                 )
 
+            # Fire triage_report columnist article for significant injuries when
+            # guild is available (not headless/test paths).
+            if guild is not None:
+                try:
+                    await _maybe_post_triage_report(
+                        pool,
+                        league_id=game["league_id"],
+                        season=season,
+                        guild=guild,
+                        injury_info={
+                            "player_name": player_name,
+                            "team_code": team_code,
+                            "severity": severity,
+                            "human_severity": human_severity,
+                            "games_missed": games_missed,
+                            "season": season,
+                        },
+                    )
+                except Exception as _triage_exc:
+                    log.warning(f"_persist_injuries: triage_report failed: {_triage_exc}")
+
     await game_repo.insert_injuries(pool, rows)
 
 
@@ -450,6 +472,7 @@ async def _persist_game_result(
     news_channel: Optional[discord.TextChannel],
     injury_channel: Optional[discord.TextChannel] = None,
     records_channel: Optional[discord.TextChannel] = None,
+    guild: Optional[discord.Guild] = None,
 ) -> dict:
     game_id = game["id"]
     _quarter_keys = ("q1_home", "q1_away", "q2_home", "q2_away",
@@ -512,7 +535,7 @@ async def _persist_game_result(
         _streak_ch = records_channel or news_channel
         await _streak_ch.send(embed=embed)
 
-    await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel)
+    await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel, guild=guild)
 
     # Inject team IDs that records_service needs to resolve team names.
     # sim_engine result has winner_team_id but not home_team_id/away_team_id.
@@ -541,6 +564,7 @@ async def _sim_single_game(
     news_channel: Optional[discord.TextChannel],
     injury_channel: Optional[discord.TextChannel] = None,
     records_channel: Optional[discord.TextChannel] = None,
+    guild: Optional[discord.Guild] = None,
 ) -> Optional[dict]:
     home_team = await team_repo.get_by_id(pool, game["home_team_id"])
     away_team = await team_repo.get_by_id(pool, game["away_team_id"])
@@ -621,7 +645,7 @@ async def _sim_single_game(
     for line in result.get("home_box", []) + result.get("away_box", []):
         line["player_name"] = _name_by_id.get(line.get("player_id"), "")
 
-    await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel, injury_channel, records_channel)
+    await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel, injury_channel, records_channel, guild=guild)
     return {
         "game": game,
         "home_team": home_team,
@@ -1469,7 +1493,33 @@ async def _maybe_post_power_list(
     try:
         context = await _build_batch_game_context(batch_results)
         standings = await game_repo.get_standings(pool, league_id, season)
+        if not standings:
+            log.info("_maybe_post_power_list: no standings data — skipping")
+            return
         context["standings"] = standings
+
+        # Add win/loss streaks for richer power-ranking narrative.
+        streak_rows = await pool.fetch(
+            """
+            SELECT t.nba_team_code, sc.wins, sc.losses,
+                   sc.win_streak, sc.loss_streak
+            FROM standings_cache sc
+            JOIN teams t ON t.id = sc.team_id
+            WHERE sc.league_id = $1 AND sc.season = $2
+            ORDER BY sc.wins DESC, sc.losses ASC
+            """,
+            league_id, season,
+        )
+        context["power_rankings_data"] = [
+            {
+                "team": r["nba_team_code"],
+                "record": f"{r['wins']}-{r['losses']}",
+                "win_streak": r["win_streak"] or 0,
+                "loss_streak": r["loss_streak"] or 0,
+            }
+            for r in streak_rows
+        ]
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
@@ -1516,6 +1566,33 @@ async def _maybe_post_rookie_watch(
 
     try:
         context = await _build_batch_game_context(batch_results)
+
+        # Fetch rookie players and their recent stat averages.
+        rookie_rows = await pool.fetch(
+            """
+            SELECT p.id, p.first_name || ' ' || p.last_name AS name,
+                   t.nba_team_code AS team,
+                   ROUND(AVG(b.points)::numeric, 1) AS ppg,
+                   ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
+                   ROUND(AVG(b.assists)::numeric, 1) AS apg,
+                   COUNT(b.id) AS gp
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            LEFT JOIN game_box_scores b ON b.player_id = p.id
+            LEFT JOIN games g ON g.id = b.game_id AND g.season = $2
+            WHERE p.league_id = $1 AND p.is_rookie = true
+            GROUP BY p.id, t.nba_team_code
+            ORDER BY AVG(b.points) DESC NULLS LAST
+            LIMIT 10
+            """,
+            league_id, season,
+        )
+        rookies = [dict(r) for r in rookie_rows]
+        if not rookies:
+            log.info("_maybe_post_rookie_watch: no rookies found — skipping")
+            return
+        context["rookies"] = rookies
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
@@ -1564,6 +1641,30 @@ async def _maybe_post_big_picture(
         context = await _build_batch_game_context(batch_results)
         standings = await game_repo.get_standings(pool, league_id, season)
         context["standings"] = standings
+
+        # Top performers season-to-date for thematic anchor.
+        top_performers = await pool.fetch(
+            """
+            SELECT p.first_name || ' ' || p.last_name AS name,
+                   t.nba_team_code AS team,
+                   ROUND(AVG(b.points)::numeric, 1) AS ppg,
+                   ROUND(AVG(b.assists)::numeric, 1) AS apg,
+                   ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
+                   COUNT(b.id) AS gp
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+            JOIN game_box_scores b ON b.player_id = p.id
+            JOIN games g ON g.id = b.game_id
+            WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
+            GROUP BY p.id, t.nba_team_code
+            HAVING COUNT(b.id) >= 5
+            ORDER BY AVG(b.points) DESC
+            LIMIT 8
+            """,
+            league_id, season,
+        )
+        context["top_performers"] = [dict(r) for r in top_performers]
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
@@ -1610,6 +1711,67 @@ async def _maybe_post_ledger(
 
     try:
         context = await _build_batch_game_context(batch_results)
+
+        # Fetch recent approved trades with asset summaries.
+        trade_rows = await pool.fetch(
+            """
+            SELECT tr.id, t1.nba_team_code AS proposer, t2.nba_team_code AS counterparty,
+                   tr.proposed_at
+            FROM trades tr
+            JOIN teams t1 ON t1.id = tr.proposer_team_id
+            JOIN teams t2 ON t2.id = tr.counterparty_team_id
+            WHERE tr.league_id = $1 AND tr.status = 'approved'
+            ORDER BY tr.id DESC LIMIT 5
+            """,
+            league_id,
+        )
+        recent_trades: list[dict] = []
+        for tr in trade_rows:
+            asset_rows = await pool.fetch(
+                """
+                SELECT ta.from_team_id, ta.asset_type,
+                       p.first_name || ' ' || p.last_name AS player_name, p.overall
+                FROM trade_assets ta
+                LEFT JOIN players p ON p.id = ta.player_id
+                WHERE ta.trade_id = $1
+                """,
+                tr["id"],
+            )
+            recent_trades.append({
+                "teams": f"{tr['proposer']} / {tr['counterparty']}",
+                "assets": [
+                    {"from": a["from_team_id"], "type": a["asset_type"],
+                     "name": a["player_name"], "ovr": a["overall"]}
+                    for a in asset_rows
+                ],
+            })
+
+        # Fetch team cpu_mode / win-loss records for mode changes.
+        team_mode_rows = await pool.fetch(
+            """
+            SELECT t.nba_team_code, t.cpu_mode,
+                   sc.wins, sc.losses
+            FROM teams t
+            LEFT JOIN standings_cache sc ON sc.team_id = t.id
+                AND sc.league_id = $1 AND sc.season = $2
+            WHERE t.league_id = $1
+            ORDER BY (sc.wins + sc.losses) DESC NULLS LAST
+            """,
+            league_id, season,
+        )
+        team_modes = [
+            {"team": r["nba_team_code"], "mode": r["cpu_mode"] or "default",
+             "record": f"{r['wins'] or 0}-{r['losses'] or 0}"}
+            for r in team_mode_rows
+        ]
+
+        if not recent_trades and not team_modes:
+            log.info("_maybe_post_ledger: no trade/mode data — skipping")
+            return
+
+        context["recent_trades"] = recent_trades
+        context["team_modes"] = team_modes
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
@@ -1656,6 +1818,56 @@ async def _maybe_post_the_race(
 
     try:
         context = await _build_batch_game_context(batch_results)
+
+        # Fetch top-5 per award race with player names and stat averages.
+        race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=5)
+        if not race_leaders:
+            log.info("_maybe_post_the_race: no award race data — skipping")
+            return
+
+        # Enrich with player names and per-game averages.
+        all_pids = [p["player_id"] for candidates in race_leaders.values() for p in candidates]
+        if all_pids:
+            name_rows = await pool.fetch(
+                """
+                SELECT p.id, p.first_name || ' ' || p.last_name AS name,
+                       t.nba_team_code AS team,
+                       ROUND(AVG(b.points)::numeric, 1) AS ppg,
+                       ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
+                       ROUND(AVG(b.assists)::numeric, 1) AS apg,
+                       COUNT(b.id) AS gp
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                LEFT JOIN game_box_scores b ON b.player_id = p.id
+                LEFT JOIN games g ON g.id = b.game_id AND g.season = $2
+                WHERE p.id = ANY($1)
+                GROUP BY p.id, t.nba_team_code
+                """,
+                all_pids, season,
+            )
+            player_info = {r["id"]: dict(r) for r in name_rows}
+        else:
+            player_info = {}
+
+        enriched_races: dict[str, list[dict]] = {}
+        for award, candidates in race_leaders.items():
+            enriched = []
+            for c in candidates:
+                pid = c["player_id"]
+                info = player_info.get(pid, {})
+                enriched.append({
+                    "player": info.get("name", f"Player #{pid}"),
+                    "team": info.get("team", "???"),
+                    "ppg": info.get("ppg"),
+                    "rpg": info.get("rpg"),
+                    "apg": info.get("apg"),
+                    "gp": info.get("gp"),
+                    "score": c.get("score"),
+                })
+            enriched_races[award] = enriched
+
+        context["award_races"] = enriched_races
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
@@ -2375,9 +2587,10 @@ async def _maybe_post_columnist(
             f"for batch ending at game {batch_end_index}"
         )
 
-    # Darius Cole — every ~50 games, independently.  Covers bottom-5 teams and lottery odds.
+    # Darius Cole — every ~30 games, independently.  Covers bottom-5 teams and lottery odds.
     # Counter was already incremented at the top of this function (before channel guard).
-    if _darius_game_counter.get(league_id, 0) >= 50:
+    # Threshold is 30 (not 50) so he fires in early-season testing with fewer games played.
+    if _darius_game_counter.get(league_id, 0) >= 30:
         _darius_game_counter[league_id] = 0
         dc_persona = _PERSONAS.get("darius_cole")
         if not dc_persona:
@@ -2760,7 +2973,7 @@ async def sim_until_rival(
         if game.get("status") == "simmed":
             continue
 
-        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel)
+        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel, guild=guild)
         if sim_result is None:
             continue
 
@@ -2931,7 +3144,7 @@ async def sim_range(
         if game.get("status") == "simmed":
             continue
 
-        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel)
+        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel, guild=guild)
         if sim_result is None:
             continue
 
@@ -3056,4 +3269,4 @@ async def sim_single_matchup(
     news_channel = await _get_news_channel(guild, pool, league_id)
     injury_channel = await _get_injury_channel(guild, pool, league_id)
     records_channel = await _ensure_records_channel(guild, pool, league_id)
-    return await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel)
+    return await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel, guild=guild)

@@ -121,6 +121,37 @@ def _tolerant_json_parse(raw: str, persona_id: str, category: str) -> dict | Non
         return None
 
 
+_REFUSAL_PREFIXES: tuple[str, ...] = (
+    "i appreciate",
+    "i cannot",
+    "i can't",
+    "i need to flag",
+    "i'm unable",
+    "i am unable",
+    "without sufficient",
+    "the context doesn't",
+    "the context does not",
+    "based on the limited",
+    "based on the provided context",
+    "unfortunately, i",
+    "i don't have",
+    "i do not have",
+)
+
+
+def _is_refusal(body: str) -> bool:
+    """Return True when the LLM responded with meta-commentary instead of an article.
+
+    Checks whether the assembled body starts with any known refusal/explanation
+    prefix (case-insensitive).  When True the caller should return None so the
+    post is silently skipped rather than spamming Discord with refusal text.
+    """
+    if not body:
+        return False
+    low = body.strip().lower()
+    return any(low.startswith(p) for p in _REFUSAL_PREFIXES)
+
+
 async def generate(  # noqa: PLR0912, PLR0915
     pool,
     league_id: int,
@@ -456,6 +487,12 @@ async def generate(  # noqa: PLR0912, PLR0915
         if "headline" in parsed and "body" in parsed and "lede" not in parsed:
             headline = str(parsed["headline"]).strip()
             body = str(parsed["body"]).strip()[:1400]
+            if _is_refusal(body):
+                log.warning(
+                    "columnist_service: %s/%s returned meta-commentary (old shape), skipping: %r",
+                    _persona_id, _category, body[:80],
+                )
+                return None
             await article_repo.insert(
                 pool, league_id=league_id, season=season,
                 persona_id=_persona_id, category=_category,
@@ -506,6 +543,19 @@ async def generate(  # noqa: PLR0912, PLR0915
         _fmt = persona.category_overrides.get(_category, persona.format_style)
         body = _assemble_article(parsed, persona_display, _fmt, ctx=_context)
 
+        # Passthrough renderer returns None when body is empty — skip the post.
+        if body is None:
+            return None
+
+        # Refusal detector: if the LLM explained lack of data instead of writing
+        # an article, skip silently rather than posting the refusal to Discord.
+        if _is_refusal(body):
+            log.warning(
+                "columnist_service: %s/%s returned meta-commentary, skipping: %r",
+                _persona_id, _category, body[:80],
+            )
+            return None
+
         await article_repo.insert(
             pool,
             league_id=league_id,
@@ -553,13 +603,14 @@ def _dedupe_headline(headline: str, body: str) -> str:
     return body
 
 
-def _assemble_passthrough(parsed: dict, persona_display: str) -> str:
+def _assemble_passthrough(parsed: dict, persona_display: str) -> str | None:
     """Passthrough renderer — emits body verbatim, never adds structured fields.
 
     Used for Maya Chen, Jordan Rivera, Keisha Williams, and Dr. Pat Chen.
     These personas format their own Discord markdown inside the body; the
     renderer's only job is to bolt on the headline and byline.
-    If body is empty a one-line stub is emitted so Discord never gets a blank post.
+    Returns None when body is missing so callers can skip the post entirely
+    rather than emitting an empty stub.
     """
     headline = str(parsed.get("headline", "")).strip()
     body = str(parsed.get("body", "")).strip()
@@ -567,13 +618,17 @@ def _assemble_passthrough(parsed: dict, persona_display: str) -> str:
     # Remove headline duplication at the top of body.
     body = _dedupe_headline(headline, body)
 
+    if not body:
+        log.warning(
+            "columnist_service: passthrough persona %r returned empty body — skipping post",
+            persona_display,
+        )
+        return None
+
     parts: list[str] = []
     if headline:
         parts.append(f"**{headline}**")
-    if body:
-        parts.append(body)
-    else:
-        parts.append(f"*{persona_display} is working on this one.*")
+    parts.append(body)
     parts.append(f"— *{persona_display}*")
     return "\n\n".join(parts)
 
@@ -1266,12 +1321,14 @@ def _assemble_article(
     persona_display: str,
     format_style: str = "default",
     ctx: dict | None = None,
-) -> str:
+) -> str | None:
     """Dispatch to the correct renderer based on persona format_style.
 
     Falls back to _assemble_default when the style key is unrecognised.
     `ctx` is only consumed by renderers that need extra structural data
     (currently just `potm`); other renderers ignore it.
+    Returns None when the renderer signals the post should be skipped
+    (currently only passthrough when body is empty).
     """
     renderer = _RENDERERS.get(format_style, _assemble_default)
     if format_style in ("potm", "trade_report", "tank_watch"):
