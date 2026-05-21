@@ -201,8 +201,19 @@ async def _get_eligible_players(
             continue
         if award_type in _ALL_NBA_AWARDS and not majority_starter:
             continue
-        if award_type == "dpoy" and (row_dict.get("defense") or 0) < 65:
-            continue
+        if award_type == "dpoy":
+            # Defensive rating floor — must be a real defender, not just
+            # marginal. Luka-type wings around 70 def_attr were sneaking onto
+            # the ballot at the old floor of 65.
+            if (row_dict.get("defense") or 0) < 75:
+                continue
+            # Production floor — must produce defensive impact (steals or
+            # blocks), not just be rated for it. Combined spg+bpg under 1.5
+            # is below DPOY-tier output.
+            _spg = float(row_dict.get("spg") or 0)
+            _bpg = float(row_dict.get("bpg") or 0)
+            if _spg + _bpg < 1.5:
+                continue
 
         eligible.append(row_dict)
 
