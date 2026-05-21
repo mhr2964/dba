@@ -1166,6 +1166,8 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
     # Framing and analysis live inside `body` with [FRAMING] / [ANALYSIS] sentinels.
     # Fall back to the raw body verbatim if a marker is absent so output is never blank.
     raw_body = str(parsed.get("body", "")).strip()
+    # Strip headline duplication before parsing sentinels (defense-in-depth).
+    raw_body = _dedupe_headline(headline, raw_body)
     framing, analysis = _parse_trade_body(raw_body)
 
     # Backward-compat: if the LLM returned the older shape with framing/analysis
@@ -1312,6 +1314,8 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
     # Body uses [EAST] / [WEST] / [CLOSER] sentinels.  Fall back to the raw body
     # string rendered verbatim if any marker is missing (never produce blank output).
     raw_body = str(parsed.get("body", "")).strip()
+    # Strip headline duplication before parsing sentinels (defense-in-depth).
+    raw_body = _dedupe_headline(headline, raw_body)
     east_blurb, west_blurb, closer = _parse_potm_body(raw_body)
 
     # Backward-compat: if LLM returned the older shape with east_blurb/west_blurb/
