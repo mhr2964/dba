@@ -460,10 +460,16 @@ async def generate(  # noqa: PLR0912, PLR0915
 
         # Require headline. For standard shapes also require lede; custom-shape
         # personas (output_shape_override set) only need headline to be valid.
+        # Personas with a named format_style that has its own renderer also pass
+        # with headline alone — the renderer handles empty optional fields.
         headline = str(parsed.get("headline", "")).strip()
         lede = str(parsed.get("lede", "")).strip()
         _uses_custom_shape = bool(persona.output_shape_override)
-        _required_ok = headline and (lede or _uses_custom_shape)
+        _has_named_renderer = persona.format_style in (
+            "moment", "verdict", "index", "hot_take",
+            "analytics", "tactical", "recap", "potm", "trade_report",
+        )
+        _required_ok = headline and (lede or _uses_custom_shape or _has_named_renderer)
         if not _required_ok:
             log.warning(
                 "columnist_service: missing required fields (headline%s) from %s — prose fallback | got keys: %r",
@@ -622,41 +628,47 @@ def _assemble_analytics(parsed: dict, persona_display: str) -> str:
 
 
 def _assemble_hot_take(parsed: dict, persona_display: str) -> str:
-    """Hot-take format — no headers, no bullets, no stat block.
+    """Hot Take Hour debate renderer.
 
-    Used by opinionated/confrontational writers (Jordan Rivera).
-    Short, spicy, reads as a single charged paragraph.
-    The verdict or first bullet becomes a bold punchline embedded in prose.
+    Prefers the new `turns` array shape: assembles SPEAKER: line pairs separated
+    by a blank line so each exchange reads as a back-and-forth.  Falls back to
+    the old `body` string for any cached articles that used the previous shape.
     """
-    lede = str(parsed.get("lede", "")).strip()
-    bullets: list[str] = parsed.get("bullets", []) or []
-    verdict = str(parsed.get("verdict", "")).strip()
+    headline = str(parsed.get("headline", "")).strip()
+    turns: list = parsed.get("turns") or []
 
     parts: list[str] = []
 
-    # Punchline: pull from verdict first, then first bullet if verdict is empty.
-    punchline = verdict or (str(bullets[0]).strip() if bullets else "")
+    if headline:
+        parts.append(f"**{headline}**")
 
-    # Lede + bold punchline on one block.
-    if lede and punchline:
-        parts.append(f"{lede} **{punchline}**")
-    elif lede:
-        parts.append(lede)
-    elif punchline:
-        parts.append(f"**{punchline}**")
+    if turns:
+        # New shape: [{speaker, line}, ...]
+        turn_lines: list[str] = []
+        for t in turns[:4]:
+            speaker = str(t.get("speaker", "")).strip().upper()
+            line = str(t.get("line", "")).strip()
+            if speaker and line:
+                turn_lines.append(f"**{speaker}:** {line}")
+        if turn_lines:
+            parts.append("\n\n".join(turn_lines))
+    else:
+        # Old shape fallback: body is a pre-formatted DAVE: / TONY: string.
+        body = str(parsed.get("body", "")).strip()
+        if body:
+            # Bold the speaker labels for Discord readability.
+            import re as _re
+            body = _re.sub(r"\b(DAVE|TONY):", r"**\1:**", body)
+            parts.append(body)
 
-    # Remaining bullets joined as prose (skip the one already used as punchline).
-    remaining = bullets[1:] if verdict else bullets[1:]
-    if remaining:
-        # Two sentences max; join with a space so it reads as a paragraph.
-        prose = " ".join(str(b).strip() for b in remaining[:2] if str(b).strip())
-        if prose:
-            parts.append(prose)
+    if not parts or (len(parts) == 1 and headline):
+        # Nothing useful came back — emit at least the headline.
+        pass
 
     if persona_display:
-        parts.append(f"\n— *{persona_display}*")
+        parts.append(f"— *{persona_display}*")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def _assemble_tactical(parsed: dict, persona_display: str) -> str:
@@ -751,6 +763,8 @@ def _assemble_moment(parsed: dict, persona_display: str) -> str:
 
     Vignette structure: headline → italic scene-setter → play-by-play → The why.
     Isolates one cinematic sequence; no game summary.
+    Falls back to a single-line summary when only headline is present so
+    Discord never receives a blank post.
     """
     headline = str(parsed.get("headline", "")).strip()
     scene = str(parsed.get("scene", "")).strip()
@@ -771,6 +785,10 @@ def _assemble_moment(parsed: dict, persona_display: str) -> str:
     if meaning:
         parts.append(f"**The why:** {meaning}")
 
+    # If only the headline came back, emit a one-liner so the post isn't empty.
+    if not scene and not moment and not meaning and headline:
+        parts.append(f"*Maya Chen on {headline}*")
+
     if persona_display:
         parts.append(f"— *{persona_display}*")
 
@@ -781,6 +799,7 @@ def _assemble_verdict(parsed: dict, persona_display: str) -> str:
     """Jordan Rivera — 'The Verdict' format.
 
     Courtroom structure: case callout → argument → receipts blockquote → verdict ruling.
+    Falls back to a single-line ruling when only headline is present.
     """
     headline = str(parsed.get("headline", "")).strip()
     case = str(parsed.get("case", "")).strip()
@@ -809,10 +828,14 @@ def _assemble_verdict(parsed: dict, persona_display: str) -> str:
 
     if verdict:
         parts.append(
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            "━" * 20 + "\n"
             f"## VERDICT: {verdict}\n"
-            "━━━━━━━━━━━━━━━━━━━━"
+            + "━" * 20
         )
+
+    # If only the headline came back, emit a minimal ruling so the post isn't empty.
+    if not case and not argument and not verdict and headline:
+        parts.append(f"*Jordan Rivera: The verdict is in on {headline}.*")
 
     if persona_display:
         parts.append(f"— *{persona_display}*")
@@ -868,6 +891,10 @@ def _assemble_index(parsed: dict, persona_display: str) -> str:
 
     if implication:
         parts.append(f"*Why it matters:* {implication}")
+
+    # If only the headline came back, emit a minimal stat note so the post isn't empty.
+    if not headline_value and not definition and not standouts and not implication and headline:
+        parts.append(f"*Keisha Williams: The numbers tell the story on {headline}.*")
 
     if persona_display:
         parts.append(f"— *{persona_display}*")

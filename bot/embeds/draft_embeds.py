@@ -7,21 +7,37 @@ def lottery_result_embed(ordered_picks: list[dict]) -> discord.Embed:
     """
     Full lottery order. Picks 1-4 are the lottery winners; highlight if they
     diverge from expected (expected = worst team gets pick 1).
+
+    Rendered as a fixed-width code block table so columns stay aligned on
+    mobile and desktop without relying on bold/italics tricks.
     """
     embed = discord.Embed(
-        title="NBA Draft Lottery Results",
+        title="\U0001f3c0 DBA Draft Lottery Results",
         color=discord.Color.gold(),
     )
 
-    lines: list[str] = []
+    # Build a compact table: PICK | TEAM | FLAG
+    # Flag column only shows for top-4 picks to keep non-lottery rows clean.
+    rows: list[str] = []
     for entry in ordered_picks:
         pick = entry["pick_number"]
         name = entry["team_name"]
-        marker = " **LOTTERY WIN**" if pick <= 4 else ""
-        lines.append(f"**#{pick}** — {name}{marker}")
+        flag = "LOTTERY" if pick <= 4 else ""
+        rows.append((pick, name, flag))
+
+    # Dynamic column widths — cap team name at 22 chars to stay under Discord's
+    # ~45-char code-block line limit on mobile.
+    MAX_NAME = 22
+    lines: list[str] = ["```"]
+    lines.append(f"{'#':<4}  {'TEAM':<{MAX_NAME}}  {'':7}")
+    lines.append(f"{'─'*4}  {'─'*MAX_NAME}  {'─'*7}")
+    for pick, name, flag in rows:
+        trunc = name if len(name) <= MAX_NAME else name[:MAX_NAME - 1] + "…"
+        lines.append(f"{pick:<4}  {trunc:<{MAX_NAME}}  {flag}")
+    lines.append("```")
 
     embed.description = "\n".join(lines)
-    embed.set_footer(text="Lottery complete. Use /draft advance to begin the draft.")
+    embed.set_footer(text="Lottery complete · use /draft advance to begin the draft.")
     return embed
 
 
