@@ -951,6 +951,12 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
     raw_body = str(parsed.get("body", "")).strip()
     framing, analysis = _parse_trade_body(raw_body)
 
+    # Backward-compat: if the LLM returned the older shape with framing/analysis
+    # as their own top-level keys (and body is empty), use those directly.
+    if not framing and not analysis:
+        framing = str(parsed.get("framing", "")).strip()
+        analysis = str(parsed.get("analysis", "")).strip()
+
     ctx = ctx or {}
     teams: list[dict] = ctx.get("teams") or []
 
@@ -1077,6 +1083,13 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
     # string rendered verbatim if any marker is missing (never produce blank output).
     raw_body = str(parsed.get("body", "")).strip()
     east_blurb, west_blurb, closer = _parse_potm_body(raw_body)
+
+    # Backward-compat: if LLM returned the older shape with east_blurb/west_blurb/
+    # closer as their own top-level keys (and body is empty/missing), use those.
+    if not east_blurb and not west_blurb and not closer:
+        east_blurb = str(parsed.get("east_blurb", "")).strip()
+        west_blurb = str(parsed.get("west_blurb", "")).strip()
+        closer = str(parsed.get("closer", "")).strip()
 
     ctx = ctx or {}
     month_label = str(ctx.get("month_label", "")).strip()
