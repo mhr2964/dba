@@ -59,7 +59,7 @@ _coach_beat_game_counter: dict[int, int] = {}
 _last_columnist_game_index: dict[int, int] = {}
 
 # Columnist rotation — cycles through these personas on every batch (subject to reactive gate).
-_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole", "carla_knox"]
+_COLUMNIST_ROTATION = ["jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole", "carla_knox"]
 # Keyed by league_id so concurrent leagues each have their own rotation position.
 _columnist_rotation_index: dict[int, int] = {}
 
@@ -69,7 +69,7 @@ _columnist_rotation_index: dict[int, int] = {}
 _HTH_NARRATIVES: dict[int, dict] = {}
 
 # Playoff columnist rotation — cycles through recap-capable personas for post-game coverage.
-_PLAYOFF_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams"]
+_PLAYOFF_COLUMNIST_ROTATION = ["jordan_rivera", "keisha_williams", "carla_knox"]
 # Keyed by league_id.
 _playoff_rotation_index: dict[int, int] = {}
 
@@ -381,6 +381,10 @@ async def _persist_injuries(
 
     game_date: datetime.date = game.get("scheduled_date") or datetime.date.today()
     rows: list[dict] = []
+    # Dedupe within this game: a player can only appear once per injury pass.
+    # Without this, the same player_id can fire two announcements when the
+    # sim engine emits duplicate injury entries for the same player.
+    _announced_player_ids: set[int] = set()
     for inj in raw_injuries:
         severity = inj["severity"]
         lo, hi = _INJURY_GAMES_MISSED[severity]
@@ -403,6 +407,16 @@ async def _persist_injuries(
         })
 
         if severity in _ANNOUNCE_SEVERITIES and injury_channel:
+            # Skip duplicate announcement for same player in this game pass.
+            _pid = inj["player_id"]
+            if _pid in _announced_player_ids:
+                log.debug(
+                    "_persist_injuries: skipping duplicate injury announcement for player_id=%d in game_id=%d",
+                    _pid, game_id,
+                )
+                continue
+            _announced_player_ids.add(_pid)
+
             player_row = await pool.fetchrow(
                 "SELECT first_name, last_name, team_id, overall FROM players WHERE id = $1",
                 inj["player_id"],
@@ -1310,7 +1324,6 @@ async def _maybe_post_potm(
 
 
 _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
-    "maya_chen":      (255, 165, 0),
     "jordan_rivera":  (138, 43, 226),
     "keisha_williams": (0, 128, 255),
     "hot_take_hour":  (255, 0, 0),
@@ -1926,16 +1939,46 @@ async def _maybe_post_triage_report(
         return
 
     try:
+        # Enrich injury_info with the team's other players so the LLM can name
+        # a plausible replacement rather than writing "role to be determined."
+        triage_context = dict(injury_info)
+        try:
+            _team_rows = await pool.fetch(
+                """
+                SELECT p.first_name || ' ' || p.last_name AS name,
+                       p.position, p.overall,
+                       COALESCE(pr.role, 'rotation') AS role
+                FROM players p
+                LEFT JOIN player_roles pr ON pr.player_id = p.id AND pr.league_id = $1
+                WHERE p.league_id = $1 AND p.team_id = (
+                    SELECT team_id FROM players
+                    JOIN teams t ON t.id = players.team_id
+                    WHERE t.league_id = $1 AND t.nba_team_code = $2
+                    LIMIT 1
+                )
+                ORDER BY p.overall DESC
+                LIMIT 12
+                """,
+                league_id, injury_info.get("team_code", ""),
+            )
+            triage_context["team_roster"] = [
+                {"name": r["name"], "position": r["position"],
+                 "ovr": r["overall"], "role": r["role"]}
+                for r in _team_rows
+            ]
+        except Exception as _roster_exc:
+            log.debug(f"_maybe_post_triage_report: roster enrichment failed (non-fatal): {_roster_exc}")
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, injury_info.get("season", 1),
                 persona_id="triage_report",
                 category="injury_report",
-                context=injury_info,
+                context=triage_context,
             ),
             timeout=10.0,
         )
-        if article:
+        if article and article.get("body"):
             embed = discord.Embed(
                 title=f"🩺 {article['headline']}",
                 description=article["body"][:2000],

@@ -432,7 +432,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         client = anthropic.AsyncAnthropic(api_key=api_key)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=900,  # 400 was truncating mid-JSON, breaking parse
+            max_tokens=1400,  # raised from 900 — passthrough personas produce longer bodies; truncation broke JSON parse
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -519,7 +519,14 @@ async def generate(  # noqa: PLR0912, PLR0915
             return {"headline": headline, "body": body}
 
         # Accept old {"headline","body"} shape if it slips through.
-        if "headline" in parsed and "body" in parsed and "lede" not in parsed:
+        # Exception: trade_report must go through _assemble_trade_report so that
+        # [FRAMING]/[ANALYSIS] markers are stripped and asset blocks are rendered.
+        # Passthrough personas also must go through _assemble_article (not raw body)
+        # so _dedupe_headline and the empty-body guard fire correctly.
+        _bypass_old_shape = _category == "trade_report" or persona.format_style in (
+            "passthrough", "tank_watch", "potm",
+        )
+        if "headline" in parsed and "body" in parsed and "lede" not in parsed and not _bypass_old_shape:
             headline = str(parsed["headline"]).strip()
             body = str(parsed["body"]).strip()[:1400]
             if _is_refusal(body):
@@ -801,14 +808,13 @@ def _assemble_hot_take(parsed: dict, persona_display: str) -> str:
     Prefers the new `turns` array shape: assembles SPEAKER: line pairs separated
     by a blank line so each exchange reads as a back-and-forth.  Falls back to
     the old `body` string for any cached articles that used the previous shape.
+
+    Headline is NOT prepended — the Discord embed title already shows it, so
+    including it in the body would produce a doubled title.
     """
-    headline = str(parsed.get("headline", "")).strip()
     turns: list = parsed.get("turns") or []
 
     parts: list[str] = []
-
-    if headline:
-        parts.append(f"**{headline}**")
 
     if turns:
         # New shape: [{speaker, line}, ...]
