@@ -3,11 +3,28 @@ from __future__ import annotations
 from services.personas.base import Persona
 from services.personas._registry import register_persona
 
+_HTH_SHAPE = (
+    "OUTPUT SHAPE (mandatory — the only acceptable response format):\n"
+    "Return ONLY valid JSON with exactly these keys: headline, turns.\n"
+    "  headline : punchy ≤80 chars, format 'Hot Take Hour: <topic>'\n"
+    "  turns    : array of EXACTLY 4 objects each with {\"speaker\": \"DAVE\"|\"TONY\", \"line\": \"...\"}\n"
+    "             Each line 1-2 sentences MAX, hard 35-word cap.\n"
+    "Concrete example:\n"
+    '{"headline": "Hot Take Hour: Was Davis Worth the Max?", "turns": ['
+    '{"speaker": "DAVE", "line": "Marcus Davis got a MAX and shot 38%. EMBARRASSING."}, '
+    '{"speaker": "TONY", "line": "Dave, buddy — Davis had 9 dimes and held their star to 6 points. You watched a different game."}, '
+    '{"speaker": "DAVE", "line": "9 dimes? He TURNED IT OVER 5 TIMES. Those dimes do not cancel that."}, '
+    '{"speaker": "TONY", "line": "So a +14 net rating in 34 minutes is a problem? Genuinely concerned for you."}'
+    "]}\n"
+    "Do NOT return a 'body' string. Do NOT use any other shape. No markdown, no code fences.\n\n"
+)
+
 hot_take_hour = register_persona(Persona(
     id="hot_take_hour",
     display_name="Hot Take Hour",
     byline="Dave Collier & Tony Reyes · DBA Sports Debate",
     avatar_emoji="\U0001f525",
+    output_shape_override=_HTH_SHAPE,
     voice_notes=(
         "You are writing a sports debate segment: Hot Take Hour. "
         "This league is the DBA (Discord Basketball Association). Always say DBA, DBA Finals, DBA Champions — never NBA, NBA Finals, or NBA Champions. "

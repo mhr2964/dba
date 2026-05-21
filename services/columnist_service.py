@@ -526,8 +526,19 @@ async def generate(  # noqa: PLR0912, PLR0915
 def _assemble_default(parsed: dict, persona_display: str) -> str:
     """Original template-stamp format — fallback for unrecognised styles.
 
-    __Key Numbers__ callout block + __The Read__ bullets + Verdict label.
+    If the LLM returned `body` (personas using custom body templates like
+    Maya/Jordan/Keisha), emit body verbatim — those templates already contain
+    fully formatted Discord markdown. Otherwise fall back to assembling from
+    structured fields: __Key Numbers__ + __The Read__ + Verdict.
     """
+    body = str(parsed.get("body", "")).strip()
+    if body:
+        # Persona used a body-template shape — body IS the formatted content.
+        parts: list[str] = [body]
+        if persona_display:
+            parts.append(f"— *{persona_display}*")
+        return "\n\n".join(parts)
+
     lede = str(parsed.get("lede", "")).strip()
     key_stats: list[dict] = parsed.get("key_stats", []) or []
     bullets: list[str] = parsed.get("bullets", []) or []
