@@ -673,13 +673,14 @@ def sim_game(
 
     def _ppp(off: float, opp_def: float) -> float:
         # Base 1.11 → ~88.8 PPG per side at avg pace (~80 poss), giving league avg ~112.
-        # Offense scale reduced from 0.38 → 0.25 so an 8-OVR gap (e.g. 84 vs 76)
-        # produces a ~7-pt margin per game (~65% per-game win rate) instead of the
-        # previous ~17-pt margin that caused 7-of-8 first-round sweeps.
-        # At 0.25: 90-OVR → 1.32 PPP (105.6 pts), 70-OVR → 1.18 PPP (94.4 pts),
-        # 11-pt gap → ~68% win rate per game → ~85% series win probability.
+        # Offense scale bumped to 0.30 on 2026-05-20 — league scoring was
+        # tracking ~105 with leading scorers at 24 ppg (NBA leaders are 30+).
+        # 0.30 gives ~110 team avg, preserving most of the close-game
+        # calibration from the 0.25 cut (down from 0.38 which produced
+        # blowouts). At 0.30: 90-OVR → ~108 pts, 70-OVR → ~96 pts, 12-pt
+        # gap → ~70% per-game win rate.
         # Defense scale kept at 0.14 for complementary defensive impact.
-        base = 1.11 + (off - 60) / (95 - 60) * 0.25
+        base = 1.11 + (off - 60) / (95 - 60) * 0.30
         base *= 1 - (opp_def - 60) / (95 - 60) * 0.14
         base *= rng.gauss(1.0, 0.05)
         return base

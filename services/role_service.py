@@ -42,32 +42,36 @@ log = get_logger(__name__)
 
 ROLE_REGISTRY: dict[str, dict] = {
     # OFFENSIVE LEAD (high touches, primary scoring)
+    # Touch shares bumped 2026-05-20: league leading scorer was capping at
+    # ~24 ppg vs NBA's 33+. Raising star touch shares concentrates scoring
+    # on the offensive lead so post-normalization share-of-team for stars
+    # lands at NBA-realistic 27-32% (was ~18% at the old 0.25 cap).
     "iso_scorer": {
-        "touch_share": 0.25, "fga_3pa_pct": 0.32, "fta_per_fga": 0.30,
+        "touch_share": 0.38, "fga_3pa_pct": 0.32, "fta_per_fga": 0.30,
         "minutes_tier": "starter", "defensive_role": "general",
         "scheme_synergy": ["isolation"],
         "tendencies_boosted": ["tendency_drive", "tendency_3pt"],
     },
     "primary_initiator": {
-        "touch_share": 0.24, "fga_3pa_pct": 0.34, "fta_per_fga": 0.25,
+        "touch_share": 0.34, "fga_3pa_pct": 0.34, "fta_per_fga": 0.25,
         "minutes_tier": "starter", "defensive_role": "general",
         "scheme_synergy": ["pick_and_roll"],
         "tendencies_boosted": ["tendency_pass", "ast_tendency", "tendency_drive"],
     },
     "post_anchor": {
-        "touch_share": 0.23, "fga_3pa_pct": 0.05, "fta_per_fga": 0.40,
+        "touch_share": 0.31, "fga_3pa_pct": 0.05, "fta_per_fga": 0.40,
         "minutes_tier": "starter", "defensive_role": "anchor",
         "scheme_synergy": ["post_up"],
         "tendencies_boosted": ["reb_tendency"],
     },
     "movement_shooter": {
-        "touch_share": 0.22, "fga_3pa_pct": 0.65, "fta_per_fga": 0.18,
+        "touch_share": 0.28, "fga_3pa_pct": 0.65, "fta_per_fga": 0.18,
         "minutes_tier": "starter", "defensive_role": "perimeter",
         "scheme_synergy": ["ball_movement"],
         "tendencies_boosted": ["tendency_3pt"],
     },
     "slashing_lead": {
-        "touch_share": 0.23, "fga_3pa_pct": 0.20, "fta_per_fga": 0.45,
+        "touch_share": 0.31, "fga_3pa_pct": 0.20, "fta_per_fga": 0.45,
         "minutes_tier": "starter", "defensive_role": "general",
         "scheme_synergy": ["transition"],
         "tendencies_boosted": ["tendency_drive"],
