@@ -23,3 +23,6 @@ class Persona:
     # When the article category matches a key, that style is used instead of
     # the persona's base format_style.  E.g. {"game_recap": "recap"}.
     category_overrides: dict[str, str] = field(default_factory=dict)
+    # When set, replaces the global output_shape_rule injected by columnist_service.
+    # Use this for personas that require a non-standard JSON response shape.
+    output_shape_override: str = ""

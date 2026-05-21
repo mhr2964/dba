@@ -335,19 +335,23 @@ async def generate(  # noqa: PLR0912, PLR0915
     )
 
     output_shape_rule = (
-        "OUTPUT SHAPE (mandatory — the only acceptable response format):\n"
-        "You must return a JSON object with exactly these keys: "
-        "headline, lede, key_stats, bullets, verdict.\n"
-        "key_stats is an array of {label, value} objects (2-4 entries).\n"
-        "bullets is an array of strings (2-3 entries).\n"
-        "All other fields are strings.\n"
-        "Example:\n"
-        '{"headline": "OKC Stands Alone at the Top", '
-        '"lede": "SGA dropped 34 on 62% shooting and OKC won their 8th straight.", '
-        '"key_stats": [{"label": "SGA points", "value": "34 pts"}, {"label": "OKC streak", "value": "8 straight W"}], '
-        '"bullets": ["OKC outscored GSW by 22 in the paint — a size mismatch the Warriors had no answer for.", '
-        '"SGA has gone 30+ in 5 of the last 6 games, all wins."], '
-        '"verdict": "Until someone slows SGA down, this OKC run is far from over."}\n\n'
+        persona.output_shape_override
+        if persona.output_shape_override
+        else (
+            "OUTPUT SHAPE (mandatory — the only acceptable response format):\n"
+            "You must return a JSON object with exactly these keys: "
+            "headline, lede, key_stats, bullets, verdict.\n"
+            "key_stats is an array of {label, value} objects (2-4 entries).\n"
+            "bullets is an array of strings (2-3 entries).\n"
+            "All other fields are strings.\n"
+            "Example:\n"
+            '{"headline": "OKC Stands Alone at the Top", '
+            '"lede": "SGA dropped 34 on 62% shooting and OKC won their 8th straight.", '
+            '"key_stats": [{"label": "SGA points", "value": "34 pts"}, {"label": "OKC streak", "value": "8 straight W"}], '
+            '"bullets": ["OKC outscored GSW by 22 in the paint — a size mismatch the Warriors had no answer for.", '
+            '"SGA has gone 30+ in 5 of the last 6 games, all wins."], '
+            '"verdict": "Until someone slows SGA down, this OKC run is far from over."}\n\n'
+        )
     )
 
     system_prompt = (
@@ -454,12 +458,16 @@ async def generate(  # noqa: PLR0912, PLR0915
             )
             return {"headline": headline, "body": body}
 
-        # Require only headline + lede; fill optional fields with empty defaults.
+        # Require headline. For standard shapes also require lede; custom-shape
+        # personas (output_shape_override set) only need headline to be valid.
         headline = str(parsed.get("headline", "")).strip()
         lede = str(parsed.get("lede", "")).strip()
-        if not headline or not lede:
+        _uses_custom_shape = bool(persona.output_shape_override)
+        _required_ok = headline and (lede or _uses_custom_shape)
+        if not _required_ok:
             log.warning(
-                "columnist_service: missing required fields (headline/lede) from %s — prose fallback | got keys: %r",
+                "columnist_service: missing required fields (headline%s) from %s — prose fallback | got keys: %r",
+                "" if _uses_custom_shape else "/lede",
                 _persona_id, list(parsed.keys()),
             )
             persona_display = persona.display_name
@@ -720,6 +728,135 @@ def _assemble_recap(parsed: dict, persona_display: str) -> str:
     return "\n".join(parts)
 
 
+def _assemble_moment(parsed: dict, persona_display: str) -> str:
+    """Maya Chen — 'The Moment' format.
+
+    Vignette structure: headline → italic scene-setter → play-by-play → The why.
+    Isolates one cinematic sequence; no game summary.
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    scene = str(parsed.get("scene", "")).strip()
+    moment = str(parsed.get("moment", "")).strip()
+    meaning = str(parsed.get("meaning", "")).strip()
+
+    parts: list[str] = []
+
+    if headline:
+        parts.append(f"**{headline}**")
+
+    if scene:
+        parts.append(f"*{scene}*")
+
+    if moment:
+        parts.append(moment)
+
+    if meaning:
+        parts.append(f"**The why:** {meaning}")
+
+    if persona_display:
+        parts.append(f"— *{persona_display}*")
+
+    return "\n\n".join(parts)
+
+
+def _assemble_verdict(parsed: dict, persona_display: str) -> str:
+    """Jordan Rivera — 'The Verdict' format.
+
+    Courtroom structure: case callout → argument → receipts blockquote → verdict ruling.
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    case = str(parsed.get("case", "")).strip()
+    argument = str(parsed.get("argument", "")).strip()
+    receipts: list = parsed.get("receipts", []) or []
+    verdict = str(parsed.get("verdict", "")).strip()
+
+    parts: list[str] = []
+
+    if headline:
+        parts.append(f"**{headline}**")
+
+    if case:
+        parts.append(f"> ⚖️ **The Case:** {case}")
+
+    if argument:
+        parts.append(argument)
+
+    if receipts:
+        receipt_lines = ["**THE RECEIPTS**"]
+        for r in receipts[:4]:
+            text = str(r).strip()
+            if text:
+                receipt_lines.append(f"> • {text}")
+        parts.append("\n".join(receipt_lines))
+
+    if verdict:
+        parts.append(
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"## VERDICT: {verdict}\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    if persona_display:
+        parts.append(f"— *{persona_display}*")
+
+    return "\n\n".join(parts)
+
+
+def _assemble_index(parsed: dict, persona_display: str) -> str:
+    """Keisha Williams — 'The Index' format.
+
+    Analyst structure: metric code block → definition → standouts bullets → implication.
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    metric_name = str(parsed.get("metric_name", "THE INDEX")).strip()
+    headline_value = str(parsed.get("headline_value", "")).strip()
+    definition = str(parsed.get("definition", "")).strip()
+    standouts: list = parsed.get("standouts", []) or []
+    implication = str(parsed.get("implication", "")).strip()
+
+    parts: list[str] = []
+
+    if headline:
+        parts.append(f"**{headline}**")
+
+    # Monospaced metric block
+    metric_lines = [
+        "```",
+        f"THE INDEX: {metric_name}",
+        "─────────────────────────",
+    ]
+    if headline_value:
+        metric_lines.append(headline_value)
+    metric_lines.append("```")
+    parts.append("\n".join(metric_lines))
+
+    if definition:
+        parts.append(definition)
+
+    if standouts:
+        standout_lines = ["__Standouts__"]
+        for s in standouts[:3]:
+            name = str(s.get("name", "")).strip()
+            value = str(s.get("value", "")).strip()
+            note = str(s.get("note", "")).strip()
+            if name:
+                entry = f"> • **{name}**"
+                if value:
+                    entry += f" — {value}"
+                if note:
+                    entry += f", {note}"
+                standout_lines.append(entry)
+        parts.append("\n".join(standout_lines))
+
+    if implication:
+        parts.append(f"*Why it matters:* {implication}")
+
+    if persona_display:
+        parts.append(f"— *{persona_display}*")
+
+    return "\n\n".join(parts)
+
+
 # Maps format_style strings to renderer functions.
 # Each renderer takes (parsed: dict, persona_display: str) → str.
 _RENDERERS = {
@@ -727,6 +864,9 @@ _RENDERERS = {
     "hot_take": _assemble_hot_take,
     "tactical": _assemble_tactical,
     "recap": _assemble_recap,
+    "moment": _assemble_moment,
+    "verdict": _assemble_verdict,
+    "index": _assemble_index,
     "default": _assemble_default,
 }
 
