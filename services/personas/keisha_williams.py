@@ -21,4 +21,6 @@ keisha_williams = register_persona(Persona(
         "Return ONLY valid JSON: {\"headline\": \"...\", \"body\": \"...\"}. No markdown, no code fences."
     ),
     categories=("analysis", "game_recap", "playoff_recap"),
+    format_style="analytics",
+    category_overrides={"game_recap": "recap", "playoff_recap": "recap"},
 ))

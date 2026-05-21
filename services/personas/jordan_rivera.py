@@ -20,4 +20,5 @@ jordan_rivera = register_persona(Persona(
         "Return ONLY valid JSON: {\"headline\": \"...\", \"body\": \"...\"}. No markdown, no code fences."
     ),
     categories=("headline", "hot_take", "playoff_recap"),
+    format_style="hot_take",
 ))

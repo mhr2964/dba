@@ -19,4 +19,5 @@ maya_chen = register_persona(Persona(
         "SIGNATURE MOVE: Maya occasionally opens with a 'Moment of the Night' pull — she isolates the single most cinematic sequence from the game (a clutch bucket, a defensive stop, a momentum swing) and describes it in two charged sentences before zooming out to the larger story. Gets most vivid when the context shows a close margin or a late-game comeback."
     ),
     categories=("headline", "game_recap", "playoff_recap"),
+    format_style="recap",
 ))

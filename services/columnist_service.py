@@ -413,7 +413,8 @@ async def generate(  # noqa: PLR0912, PLR0915
                     _json_candidate.setdefault("verdict", "")
                     _h = str(_json_candidate.get("headline", "")).strip()
                     if _h:
-                        _body = _assemble_article(_json_candidate, persona_display)
+                        _fmt = persona.category_overrides.get(_category, persona.format_style)
+                        _body = _assemble_article(_json_candidate, persona_display, _fmt)
                         await article_repo.insert(
                             pool, league_id=league_id, season=season,
                             persona_id=_persona_id, category=_category,
@@ -480,7 +481,8 @@ async def generate(  # noqa: PLR0912, PLR0915
         parsed.setdefault("verdict", "")
 
         persona_display = persona.display_name
-        body = _assemble_article(parsed, persona_display)
+        _fmt = persona.category_overrides.get(_category, persona.format_style)
+        body = _assemble_article(parsed, persona_display, _fmt)
 
         await article_repo.insert(
             pool,
@@ -507,11 +509,10 @@ async def generate(  # noqa: PLR0912, PLR0915
         return None
 
 
-def _assemble_article(parsed: dict, persona: str) -> str:
-    """Assemble Discord markdown from structured LLM output.
+def _assemble_default(parsed: dict, persona_display: str) -> str:
+    """Original template-stamp format — fallback for unrecognised styles.
 
-    Format is guaranteed by code — the LLM provides semantic content only.
-    Returns a string suitable for use as an embed description.
+    __Key Numbers__ callout block + __The Read__ bullets + Verdict label.
     """
     lede = str(parsed.get("lede", "")).strip()
     key_stats: list[dict] = parsed.get("key_stats", []) or []
@@ -544,8 +545,198 @@ def _assemble_article(parsed: dict, persona: str) -> str:
         parts.append("")
         parts.append(f"**Verdict:** {verdict}")
 
-    if persona:
+    if persona_display:
         parts.append("")
-        parts.append(f"— *{persona}*")
+        parts.append(f"— *{persona_display}*")
 
     return "\n".join(parts)
+
+
+def _assemble_analytics(parsed: dict, persona_display: str) -> str:
+    """Analytics format — stat table in a code block, minimal prose, no section headers.
+
+    Used by data-driven writers (Marcus Brooks, Keisha Williams, Darius Cole).
+    Leads with a fixed-width stat table so numbers stay scannable.
+    Ends with 'Bottom line:' instead of 'Verdict:' — the label itself signals the voice.
+    """
+    lede = str(parsed.get("lede", "")).strip()
+    key_stats: list[dict] = parsed.get("key_stats", []) or []
+    bullets: list[str] = parsed.get("bullets", []) or []
+    verdict = str(parsed.get("verdict", "")).strip()
+
+    parts: list[str] = []
+
+    # Fixed-width stat table inside a code block so Discord renders it monospaced.
+    if key_stats:
+        table_lines = ["```", f"{'Stat':<22} {'Value':>10}"]
+        table_lines.append(f"{'─' * 22} {'─' * 10}")
+        for stat in key_stats[:4]:
+            label = str(stat.get("label", "")).strip()[:22]
+            value = str(stat.get("value", "")).strip()[:10]
+            if label and value:
+                table_lines.append(f"{label:<22} {value:>10}")
+        table_lines.append("```")
+        parts.append("\n".join(table_lines))
+
+    if lede:
+        parts.append(lede)
+
+    for bullet in bullets[:3]:
+        text = str(bullet).strip()
+        if text:
+            parts.append(f"• {text}")
+
+    if verdict:
+        parts.append(f"\n**Bottom line:** {verdict}")
+
+    if persona_display:
+        parts.append(f"— *{persona_display}*")
+
+    return "\n".join(parts)
+
+
+def _assemble_hot_take(parsed: dict, persona_display: str) -> str:
+    """Hot-take format — no headers, no bullets, no stat block.
+
+    Used by opinionated/confrontational writers (Jordan Rivera).
+    Short, spicy, reads as a single charged paragraph.
+    The verdict or first bullet becomes a bold punchline embedded in prose.
+    """
+    lede = str(parsed.get("lede", "")).strip()
+    bullets: list[str] = parsed.get("bullets", []) or []
+    verdict = str(parsed.get("verdict", "")).strip()
+
+    parts: list[str] = []
+
+    # Punchline: pull from verdict first, then first bullet if verdict is empty.
+    punchline = verdict or (str(bullets[0]).strip() if bullets else "")
+
+    # Lede + bold punchline on one block.
+    if lede and punchline:
+        parts.append(f"{lede} **{punchline}**")
+    elif lede:
+        parts.append(lede)
+    elif punchline:
+        parts.append(f"**{punchline}**")
+
+    # Remaining bullets joined as prose (skip the one already used as punchline).
+    remaining = bullets[1:] if verdict else bullets[1:]
+    if remaining:
+        # Two sentences max; join with a space so it reads as a paragraph.
+        prose = " ".join(str(b).strip() for b in remaining[:2] if str(b).strip())
+        if prose:
+            parts.append(prose)
+
+    if persona_display:
+        parts.append(f"\n— *{persona_display}*")
+
+    return "\n".join(parts)
+
+
+def _assemble_tactical(parsed: dict, persona_display: str) -> str:
+    """Tactical/coaching format — What Worked / What Didn't / The Adjustment sections.
+
+    Used by coaching beat and film-room writers (Quinn Park, Dr. Pat Chen).
+    Stats are embedded inline in the section bodies rather than in a callout block.
+    """
+    lede = str(parsed.get("lede", "")).strip()
+    key_stats: list[dict] = parsed.get("key_stats", []) or []
+    bullets: list[str] = parsed.get("bullets", []) or []
+    verdict = str(parsed.get("verdict", "")).strip()
+
+    # Build an inline stat note to append to the lede (e.g. "(12 AST, +18 net)").
+    stat_note = ""
+    if key_stats:
+        stat_parts = []
+        for stat in key_stats[:3]:
+            label = str(stat.get("label", "")).strip()
+            value = str(stat.get("value", "")).strip()
+            if label and value:
+                stat_parts.append(f"{value} {label}")
+        if stat_parts:
+            stat_note = f"*({', '.join(stat_parts)})*"
+
+    # Split bullets into "what worked" (first half) and "what didn't" (second half).
+    clean_bullets = [str(b).strip() for b in bullets[:4] if str(b).strip()]
+    mid = max(1, len(clean_bullets) // 2)
+    worked = clean_bullets[:mid]
+    didnt = clean_bullets[mid:]
+
+    parts: list[str] = []
+
+    if lede:
+        if stat_note:
+            parts.append(f"{lede} {stat_note}")
+        else:
+            parts.append(lede)
+
+    if worked:
+        parts.append("\n**What Worked**")
+        for b in worked:
+            parts.append(f"{b}")
+
+    if didnt:
+        parts.append("\n**What Didn't**")
+        for b in didnt:
+            parts.append(f"{b}")
+
+    if verdict:
+        parts.append(f"\n**The Adjustment**\n{verdict}")
+
+    if persona_display:
+        parts.append(f"\n— *{persona_display}*")
+
+    return "\n".join(parts)
+
+
+def _assemble_recap(parsed: dict, persona_display: str) -> str:
+    """Game recap format — tight and Twitter-paced.
+
+    Used by game reporters (Maya Chen, Keisha Williams on recaps).
+    Lede → 2 game beats as bullets → verdict as a closing line.
+    No section headers. Player names in the lede/verdict stay bolded by the LLM;
+    we don't add extra markup beyond what the LLM already chose.
+    """
+    lede = str(parsed.get("lede", "")).strip()
+    bullets: list[str] = parsed.get("bullets", []) or []
+    verdict = str(parsed.get("verdict", "")).strip()
+
+    parts: list[str] = []
+
+    if lede:
+        parts.append(lede)
+
+    for bullet in bullets[:2]:
+        text = str(bullet).strip()
+        if text:
+            parts.append(f"• {text}")
+
+    if verdict:
+        parts.append(f"\n{verdict}")
+
+    if persona_display:
+        parts.append(f"— *{persona_display}*")
+
+    return "\n".join(parts)
+
+
+# Maps format_style strings to renderer functions.
+# Each renderer takes (parsed: dict, persona_display: str) → str.
+_RENDERERS = {
+    "analytics": _assemble_analytics,
+    "hot_take": _assemble_hot_take,
+    "tactical": _assemble_tactical,
+    "recap": _assemble_recap,
+    "default": _assemble_default,
+}
+
+
+def _assemble_article(parsed: dict, persona_display: str, format_style: str = "default") -> str:
+    """Dispatch to the correct renderer based on persona format_style.
+
+    Falls back to _assemble_default when the style key is unrecognised.
+    The Persona object owns format_style; call sites that already pass
+    persona.display_name should also pass persona.format_style.
+    """
+    renderer = _RENDERERS.get(format_style, _assemble_default)
+    return renderer(parsed, persona_display)

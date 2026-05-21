@@ -21,4 +21,5 @@ COACH_BEAT = register_persona(Persona(
     ),
     categories=("coaching_beat",),
     context_keys=("posture", "plan", "philosophy", "recent_role_changes"),
+    format_style="tactical",
 ))

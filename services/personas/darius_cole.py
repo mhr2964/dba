@@ -23,4 +23,5 @@ darius_cole = register_persona(Persona(
     ),
     categories=("draft_report", "tank_watch", "pick_analysis"),
     context_keys=("plan", "posture"),
+    format_style="analytics",
 ))

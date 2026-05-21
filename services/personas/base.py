@@ -15,3 +15,11 @@ class Persona:
     # in columnist_service — only declared slices are injected.  Empty tuple means
     # no intel block; existing personas behave exactly as before.
     context_keys: tuple[str, ...] = field(default_factory=tuple)
+    # Controls which renderer _assemble_article uses to format the Discord body.
+    # Valid values: "analytics", "hot_take", "tactical", "recap", "default".
+    # "default" reproduces the previous template-stamp format as a safe fallback.
+    format_style: str = "default"
+    # Per-category overrides: maps a category string to a format_style string.
+    # When the article category matches a key, that style is used instead of
+    # the persona's base format_style.  E.g. {"game_recap": "recap"}.
+    category_overrides: dict[str, str] = field(default_factory=dict)

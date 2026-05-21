@@ -23,4 +23,5 @@ marcus_brooks = register_persona(Persona(
     ),
     categories=("analysis", "headline"),
     context_keys=("posture", "plan", "recent_pivots"),
+    format_style="analytics",
 ))
