@@ -192,5 +192,13 @@ class DBABot(commands.Bot):
 
 
     async def close(self) -> None:
+        # Columnist ride-along: write session_end record and release any pending
+        # pause before the event loop tears down.  Best-effort — never blocks shutdown.
+        try:
+            from services import columnist_ride_along as _cra
+            if _cra.is_enabled():
+                await _cra.stop()
+        except Exception as _cra_exc:
+            log.warning("columnist_ride_along: stop() failed during close: %s", _cra_exc)
         await close_pool()
         await super().close()

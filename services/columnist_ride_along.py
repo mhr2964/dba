@@ -208,28 +208,21 @@ async def _feedback_intake_task() -> None:
                     "severity": _pending_sev,
                     "action": "quit",
                 })
-                _write_log({
-                    "kind": "session_end",
-                    "ts": datetime.datetime.now(timezone.utc).isoformat(),
-                    "persona_id": target_persona_id(),
-                    "total_fires": _fires,
-                    "reason": "quit",
-                })
                 evt = _pending_event
                 _pending_event = None
                 _pending_article_id = None
                 _pending_tag = None
                 _pending_sev = None
                 evt.set()
-            else:
-                _write_log({
-                    "kind": "session_end",
-                    "ts": datetime.datetime.now(timezone.utc).isoformat(),
-                    "persona_id": target_persona_id(),
-                    "total_fires": _fires,
-                    "reason": "quit",
-                })
-            break
+            # Stay alive in drain mode — auto-release every future pause event
+            # without prompting the user.  The sim runs to completion; the user
+            # exits via Ctrl+C or natural sim end.
+            print(
+                "[columnist_ride_along] Drain mode: all future pauses will be "
+                "auto-released.  Ctrl+C to stop the bot entirely.",
+                flush=True,
+            )
+            continue
 
         # ── skip (explicit or empty) ──────────────────────────────────────────
         is_skip = stripped.lower() in (":skip", "")
@@ -300,11 +293,40 @@ def start_feedback_intake(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def stop() -> None:
-    """Signal the intake task to exit and flush the session summary."""
-    global _stop_flag
-    _stop_flag = True
-    if _feedback_queue is not None:
-        await _feedback_queue.put(":quit")
+    """Signal the intake task to exit and flush the session_end record.
+
+    Called from bot/client.py::close() on every clean shutdown path so the
+    JSONL always gets a closing record.  Safe to call multiple times.
+    """
+    global _stop_flag, _pending_event, _pending_article_id
+    if _stop_flag:
+        # Already in drain/stop state; just write the end record if needed.
+        pass
+    else:
+        _stop_flag = True
+        # Release any currently pending pause so request_pause() returns.
+        if _pending_event is not None:
+            _write_log({
+                "kind": "feedback",
+                "ts": datetime.datetime.now(timezone.utc).isoformat(),
+                "article_id": _pending_article_id,
+                "user_feedback": None,
+                "tag": None,
+                "severity": None,
+                "action": "shutdown",
+            })
+            evt = _pending_event
+            _pending_event = None
+            _pending_article_id = None
+            evt.set()
+
+    _write_log({
+        "kind": "session_end",
+        "ts": datetime.datetime.now(timezone.utc).isoformat(),
+        "persona_id": target_persona_id(),
+        "total_fires": _fires,
+        "reason": "stop",
+    })
 
 
 async def request_pause(article_record: dict[str, Any]) -> None:
@@ -320,6 +342,22 @@ async def request_pause(article_record: dict[str, Any]) -> None:
 
     if _feedback_queue is None:
         # Intake not started — this shouldn't happen in normal use, but guard it.
+        return
+
+    # Drain mode: user typed :quit — auto-release this pause immediately so the
+    # sim runs to completion without blocking.
+    if _stop_flag:
+        _fires += 1
+        article_id = _make_article_id()
+        _write_log({
+            "kind": "feedback",
+            "ts": datetime.datetime.now(timezone.utc).isoformat(),
+            "article_id": article_id,
+            "user_feedback": None,
+            "tag": None,
+            "severity": None,
+            "action": "drain",
+        })
         return
 
     _fires += 1
