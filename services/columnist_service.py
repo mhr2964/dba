@@ -574,17 +574,35 @@ def _assemble_analytics(parsed: dict, persona_display: str) -> str:
 
     parts: list[str] = []
 
-    # Fixed-width stat table inside a code block so Discord renders it monospaced.
+    # Stat table inside a code block — column widths computed from actual
+    # content so nothing gets clipped, with a hard cap on total line width
+    # so Discord mobile doesn't wrap awkwardly. Long values that would
+    # exceed the cap break onto their own indented line below the label.
     if key_stats:
-        table_lines = ["```", f"{'Stat':<22} {'Value':>10}"]
-        table_lines.append(f"{'─' * 22} {'─' * 10}")
-        for stat in key_stats[:4]:
-            label = str(stat.get("label", "")).strip()[:22]
-            value = str(stat.get("value", "")).strip()[:10]
-            if label and value:
-                table_lines.append(f"{label:<22} {value:>10}")
-        table_lines.append("```")
-        parts.append("\n".join(table_lines))
+        cleaned = [
+            (str(s.get("label", "")).strip(), str(s.get("value", "")).strip())
+            for s in key_stats[:4]
+        ]
+        cleaned = [(l, v) for l, v in cleaned if l and v]
+        if cleaned:
+            MAX_LINE = 64  # safe on Discord mobile in a code block
+            label_w = max(len("Stat"), *(len(l) for l, _ in cleaned))
+            label_w = min(label_w, 32)  # don't let one giant label dominate
+            value_w = MAX_LINE - label_w - 2  # 2 for the spacer
+            value_w = max(value_w, 10)
+            table_lines = ["```", f"{'Stat':<{label_w}}  {'Value'}"]
+            table_lines.append(f"{'─' * label_w}  {'─' * value_w}")
+            for label, value in cleaned:
+                # Truncate label only if it exceeds our dynamic width.
+                lbl = label if len(label) <= label_w else label[:label_w - 1] + "…"
+                if len(value) <= value_w:
+                    table_lines.append(f"{lbl:<{label_w}}  {value}")
+                else:
+                    # Long value — put label on one line, value indented below.
+                    table_lines.append(f"{lbl}")
+                    table_lines.append(f"{' ' * (label_w + 2)}{value}")
+            table_lines.append("```")
+            parts.append("\n".join(table_lines))
 
     if lede:
         parts.append(lede)
