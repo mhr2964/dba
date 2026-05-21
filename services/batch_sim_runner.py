@@ -1549,6 +1549,33 @@ async def _maybe_post_power_list(
             for r in streak_rows
         ]
 
+        # Build rank_deltas from the most recent previous power_rankings article.
+        # Positive delta = team moved up; negative = down; 0 = unchanged; missing = NEW.
+        rank_deltas: dict[str, int] = {}
+        prev_articles = await article_repo.recent_by_persona(pool, league_id, "power_list", limit=1)
+        if prev_articles:
+            import re as _re
+            prev_body = prev_articles[0].get("body", "") or ""
+            # Extract team code → rank from "> **N.** TEAM_CODE" lines.
+            prev_ranks: dict[str, int] = {}
+            for m in _re.finditer(r">\s*\*\*(\d+)\.\*\*\s+([A-Z]{2,4})", prev_body):
+                prev_ranks[m.group(2)] = int(m.group(1))
+            # Current rank is positional in the streak_rows (sorted by wins DESC already).
+            for cur_rank, row in enumerate(streak_rows, start=1):
+                code = row["nba_team_code"]
+                if code in prev_ranks:
+                    rank_deltas[code] = prev_ranks[code] - cur_rank  # positive = moved up
+                # else: not in prev_ranks → missing key → LLM uses NEW
+            if not prev_ranks:
+                log.debug("_maybe_post_power_list: previous article had no parseable ranks — all NEW")
+        else:
+            log.debug("_maybe_post_power_list: no prior ranking this season — all NEW")
+
+        context["rank_deltas"] = rank_deltas
+        if not rank_deltas:
+            # Tell the LLM explicitly so it doesn't invent arrows.
+            context["rank_deltas_note"] = "No prior ranking exists this season; use NEW for every team's arrow position."
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
