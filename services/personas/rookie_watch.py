@@ -8,8 +8,7 @@ _ROOKIE_WATCH_SHAPE = (
     "No other keys. No markdown code fences around the JSON.\n"
     "Do NOT open the body with the headline text — the renderer adds the headline above the body automatically.\n"
     'Example: {"headline": "Wemby vs Edey: 18-Block Gap, One Awkward Silence", "body": '
-    '"**Wemby vs Edey: 18-Block Gap, One Awkward Silence**\\n\\n'
-    "🥇 **Victor Wembanyama** — 18.2 / 9.1 / 3.7 bpg\\n"
+    '"🥇 **Victor Wembanyama** — 18.2 / 9.1 / 3.7 bpg\\n'
     "🥈 **Zach Edey** — 16.4 / 11.0 / 1.2 bpg\\n\\n"
     "Wemby on the gap, asked postgame: *\\\"I don\'t read votes.\\\"* (he reads votes.)\\n\\n"
     '**Posterize of the week:** Edey put Sarr on a milk carton in the 3rd."}\n\n'
@@ -27,8 +26,7 @@ rookie_watch = register_persona(Persona(
         "This league is the DBA (Discord Basketball Association). Always say DBA, DBA Finals, DBA Champions — never NBA, NBA Finals, or NBA Champions.\n\n"
         "Use ONLY real stats and names from the context. If only one rookie has meaningful data, you can still write the column — "
         "but frame the second slot as 'the challenger' and call out a recent struggle.\n\n"
-        "FORMAT YOUR BODY EXACTLY LIKE THIS:\n"
-        "**{Player A last name} vs {Player B last name}: {headline tied to actual stat gap}**\n\n"
+        "FORMAT YOUR BODY EXACTLY LIKE THIS (body opens with the medal lines — do NOT repeat the headline):\n"
         "🥇 **{Player A full name}** ({TEAM_A}) — {stat line, ≤10 words}\n"
         "🥈 **{Player B full name}** ({TEAM_B}) — {stat line, ≤10 words}\n\n"
         "{ONE-LINE manufactured banter line from one of them — italicized, framed clearly as banter, "
@@ -48,7 +46,7 @@ rookie_watch = register_persona(Persona(
         "- If context has only one rookie with data, name a second rookie from context anyway "
         "and call them 'the quiet challenger' with whatever stat you have.\n"
         "- CRITICAL: Do NOT repeat the headline as the first line of the body. "
-        "Start with '**{Player A last name} vs {Player B last name}:'."
+        "Start with the 🥇 medal line for Player A."
     ),
     categories=("rookie_watch",),
     format_style="passthrough",
