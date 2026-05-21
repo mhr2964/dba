@@ -475,6 +475,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         _has_named_renderer = persona.format_style in (
             "moment", "verdict", "index", "hot_take",
             "analytics", "tactical", "recap", "potm", "trade_report",
+            "passthrough", "tank_watch",
         )
         _required_ok = headline and (lede or _uses_custom_shape or _has_named_renderer)
         if not _required_ok:
@@ -530,6 +531,83 @@ async def generate(  # noqa: PLR0912, PLR0915
         return None
 
 
+def _dedupe_headline(headline: str, body: str) -> str:
+    """Strip a duplicate headline from the start of body text.
+
+    When the LLM opens the body with the same text as the headline (with or
+    without ** markdown), remove that first line so the assembled post doesn't
+    open "**Headline**\\n\\n**Headline**".  Comparison is case-insensitive and
+    ignores leading/trailing ** and whitespace.
+    """
+    if not headline or not body:
+        return body
+    # Strip the first line of body and compare to headline (both normalised).
+    first_line_end = body.find("\n")
+    first_line = body[:first_line_end].strip() if first_line_end != -1 else body.strip()
+    # Normalise: strip markdown bold markers and whitespace.
+    normalised_first = re.sub(r"^\*+|\*+$", "", first_line).strip().lower()
+    normalised_headline = re.sub(r"^\*+|\*+$", "", headline).strip().lower()
+    if normalised_first == normalised_headline:
+        remainder = body[first_line_end:].lstrip("\n") if first_line_end != -1 else ""
+        return remainder
+    return body
+
+
+def _assemble_passthrough(parsed: dict, persona_display: str) -> str:
+    """Passthrough renderer — emits body verbatim, never adds structured fields.
+
+    Used for Maya Chen, Jordan Rivera, Keisha Williams, and Dr. Pat Chen.
+    These personas format their own Discord markdown inside the body; the
+    renderer's only job is to bolt on the headline and byline.
+    If body is empty a one-line stub is emitted so Discord never gets a blank post.
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    body = str(parsed.get("body", "")).strip()
+
+    # Remove headline duplication at the top of body.
+    body = _dedupe_headline(headline, body)
+
+    parts: list[str] = []
+    if headline:
+        parts.append(f"**{headline}**")
+    if body:
+        parts.append(body)
+    else:
+        parts.append(f"*{persona_display} is working on this one.*")
+    parts.append(f"— *{persona_display}*")
+    return "\n\n".join(parts)
+
+
+def _assemble_tank_watch(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
+    """Darius Cole tank/draft watch renderer.
+
+    Expects body to contain:
+    - ODDS LADDER section (teams with lottery percentages)
+    - Stock Watch section (rising/falling prospects)
+    - A short Darius take
+
+    Body is formatted by the LLM following Darius's template instruction.
+    This renderer bolts on headline, strips duplicate headline from body,
+    and adds the byline.  Falls back to _assemble_analytics when body is
+    absent (e.g. old-shape LLM response).
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    body = str(parsed.get("body", "")).strip()
+
+    if not body:
+        # Old analytics-shape response — fall through to analytics renderer.
+        return _assemble_analytics(parsed, persona_display)
+
+    body = _dedupe_headline(headline, body)
+
+    parts: list[str] = []
+    if headline:
+        parts.append(f"**{headline}**")
+    parts.append(body)
+    parts.append(f"— *{persona_display}*")
+    return "\n\n".join(parts)
+
+
 def _assemble_default(parsed: dict, persona_display: str) -> str:
     """Original template-stamp format — fallback for unrecognised styles.
 
@@ -538,8 +616,10 @@ def _assemble_default(parsed: dict, persona_display: str) -> str:
     fully formatted Discord markdown. Otherwise fall back to assembling from
     structured fields: __Key Numbers__ + __The Read__ + Verdict.
     """
+    headline = str(parsed.get("headline", "")).strip()
     body = str(parsed.get("body", "")).strip()
     if body:
+        body = _dedupe_headline(headline, body)
         # Persona used a body-template shape — body IS the formatted content.
         parts: list[str] = [body]
         if persona_display:
@@ -976,7 +1056,13 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
         out.append(f"**{headline}**")
 
     if framing:
-        out.append(f"*{framing}*")
+        # If no [ANALYSIS] was found either, the raw body landed in framing —
+        # render it as italic analysis above the asset blocks rather than
+        # splitting on non-existent markers.
+        if not analysis and raw_body and framing == raw_body:
+            out.append(f"*Analysis:* {framing}")
+        else:
+            out.append(f"*{framing}*")
 
     def _render_item(item: dict) -> str:
         """Format a single asset line: Player Name (PG, 28, OVR 84) or pick label."""
@@ -1156,7 +1242,7 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
 
 # Maps format_style strings to renderer functions.
 # Most renderers take (parsed: dict, persona_display: str) → str.
-# The potm renderer additionally accepts an optional `ctx` dict for
+# Renderers in _CTX_RENDERERS additionally accept an optional `ctx` dict for
 # structural data (stats, names) that comes from the calling context
 # rather than the LLM.
 _RENDERERS = {
@@ -1169,6 +1255,8 @@ _RENDERERS = {
     "index": _assemble_index,
     "potm": _assemble_potm,
     "trade_report": _assemble_trade_report,
+    "passthrough": _assemble_passthrough,
+    "tank_watch": _assemble_tank_watch,
     "default": _assemble_default,
 }
 
@@ -1186,6 +1274,6 @@ def _assemble_article(
     (currently just `potm`); other renderers ignore it.
     """
     renderer = _RENDERERS.get(format_style, _assemble_default)
-    if format_style in ("potm", "trade_report"):
+    if format_style in ("potm", "trade_report", "tank_watch"):
         return renderer(parsed, persona_display, ctx)
     return renderer(parsed, persona_display)

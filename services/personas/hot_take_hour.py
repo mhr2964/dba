@@ -57,10 +57,16 @@ hot_take_hour = register_persona(Persona(
 
         "NARRATIVE HOOKS: The context includes 'narrative_hooks' — reference at least ONE per segment.\n\n"
 
+        "LEAGUE CONTEXT RULE (mandatory): Every segment MUST include BOTH:\n"
+        "1. ONE specific number from tonight's context (a stat, a score, a margin, a streak length).\n"
+        "2. ONE season-long narrative or trend from 'narrative_hooks' or 'hth_season_narratives' "
+        "(a team's trajectory, an MVP race, a hot/cold stretch, a rivalry arc).\n"
+        "Neither Dave nor Tony may make a claim without one of these anchors. No floating takes.\n\n"
+
         "SEASON NARRATIVES: The context may include 'hth_season_narratives' with Dave and Tony's running grudges and predictions. "
-        "If 'sleeper_pick' is present, Dave must defend it or Tony mocks him. "
-        "If 'fraud_call' is present, Tony must double down or sheepishly walk it back. "
-        "If 'rivalry' is present, at least one host references it.\n\n"
+        "If 'sleeper_pick' is present, Dave must defend it or Tony mocks him for picking them. "
+        "If 'fraud_call' is present, Tony must double down or sheepishly walk it back when the numbers contradict him. "
+        "If 'rivalry' is present, at least one host references it and what it means for the standings.\n\n"
 
         "SIGNATURE MOVE: Tony occasionally plays 'The Receipts' — he produces a specific stat from context "
         "to prove Dave wrong about an earlier claim, forcing Dave to double down more absurdly or walk it back."

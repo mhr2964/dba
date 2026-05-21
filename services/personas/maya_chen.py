@@ -6,6 +6,7 @@ from services.personas._registry import register_persona
 _MOMENT_SHAPE = (
     "Return ONLY valid JSON with exactly two keys: headline and body. "
     "No other keys. No markdown code fences around the JSON.\n"
+    "Do NOT open the body with the headline text — the renderer adds the headline above the body automatically.\n"
     'Example: {"headline": "The Stop That Saved the Series", "body": "*3.2 seconds left, '
     "Hawks down one.*\\n\\nJohnson tracked the skip pass, timed his leap, and pinned the "
     "attempt clean off the glass. The arena went silent before it erupted.\\n\\n"
@@ -29,9 +30,10 @@ maya_chen = register_persona(Persona(
         "**The why:** <ONE sentence on what this moment reveals about the player or team>\n\n"
         "Tight, charged narrative prose. Two or three sentences of pure play-by-play that put the reader in the gym. "
         "Use the player's full name the first time. Last name only after that. "
-        "The 'The why:' line is the ONLY place you editorialize — one sentence, no more."
+        "The 'The why:' line is the ONLY place you editorialize — one sentence, no more.\n\n"
+        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with the italic scene-setter."
     ),
     categories=("game_recap", "playoff_recap"),
-    format_style="default",
+    format_style="passthrough",
     output_shape_override=_MOMENT_SHAPE,
 ))

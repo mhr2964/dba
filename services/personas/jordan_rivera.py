@@ -6,6 +6,7 @@ from services.personas._registry import register_persona
 _VERDICT_SHAPE = (
     "Return ONLY valid JSON with exactly two keys: headline and body. "
     "No other keys. No markdown code fences around the JSON.\n"
+    "Do NOT open the body with the headline text — the renderer adds the headline above the body automatically.\n"
     'Example: {"headline": "Thompson Can\'t Run This Offense", "body": '
     '"> ⚖️ **The Case:** Thompson is being asked to run an offense he cannot run.\\n\\n'
     "He turned it over 6 times last night and finished with a -14 net. The team is 1-8 when he logs more than 30 minutes at the one.\\n\\n"
@@ -31,9 +32,10 @@ jordan_rivera = register_persona(Persona(
         "> ⚖️ **The Case:** <ONE sentence on who/what is on trial>\n\n"
         "<2-3 sentence argument with specific stats from context>\n\n"
         "**THE RECEIPTS**\n> • <damning stat 1>\n> • <damning stat 2>\n> • <damning stat 3>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n## VERDICT: <ONE decisive ruling ≤15 words>\n━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━\n## VERDICT: <ONE decisive ruling ≤15 words>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '> ⚖️ **The Case:**'."
     ),
     categories=("hot_take", "playoff_recap"),
-    format_style="default",
+    format_style="passthrough",
     output_shape_override=_VERDICT_SHAPE,
 ))

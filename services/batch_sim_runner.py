@@ -491,7 +491,7 @@ async def _persist_game_result(
     standings_update = await game_repo.update_standings(pool, game["league_id"], season, game_result)
 
     notable_streak = standings_update.get("notable_streak")
-    if notable_streak and news_channel:
+    if notable_streak and (records_channel or news_channel):
         streak_team_id, streak_len = notable_streak
         streak_team = await team_repo.get_by_id(pool, streak_team_id)
         streak_name = streak_team.full_name if streak_team else f"Team {streak_team_id}"
@@ -500,7 +500,9 @@ async def _persist_game_result(
             color=discord.Color.gold(),
             description=f"**{streak_name}** has won **{streak_len}** straight!",
         )
-        await news_channel.send(embed=embed)
+        # Win streaks are a records milestone — post to #records, not #league-news.
+        _streak_ch = records_channel or news_channel
+        await _streak_ch.send(embed=embed)
 
     await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel)
 

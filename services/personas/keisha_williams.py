@@ -7,6 +7,7 @@ _INDEX_SHAPE = (
     "Return ONLY valid JSON with exactly two keys: headline and body. "
     "No other keys. No markdown code fences around the outer JSON. "
     "The body field may contain an inner ``` code block — that is fine.\n"
+    "Do NOT open the body with the headline text — the renderer adds the headline above the body automatically.\n"
     'Example: {"headline": "Net Rating Tells the Real Story Tonight", "body": '
     '"```\\nTHE INDEX: NET RATING\\n─────────────────────────\\n+21.4 across 18 bench minutes\\n```\\n'
     "Net rating measures point differential per 100 possessions — the cleanest read on a lineup's real impact.\\n\\n"
@@ -33,9 +34,10 @@ keisha_williams = register_persona(Persona(
         "```\nTHE INDEX: <METRIC NAME ALL CAPS>\n─────────────────────────\n<top-line number or headline value>\n```\n\n"
         "<ONE sentence definition of the metric>\n\n"
         "__Standouts__\n> • **<name>** — <value>, <one clause on what it means>\n> • **<name>** — <value>, <one clause>\n\n"
-        "*Why it matters:* <ONE sentence implication>"
+        "*Why it matters:* <ONE sentence implication>\n\n"
+        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start directly with the ``` code block."
     ),
     categories=("analysis", "game_recap", "playoff_recap"),
-    format_style="default",
+    format_style="passthrough",
     output_shape_override=_INDEX_SHAPE,
 ))
