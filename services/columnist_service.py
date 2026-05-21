@@ -366,7 +366,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         task_line,
         "",
         "Context:",
-        json.dumps(_context, indent=2),
+        json.dumps(_context, indent=2, default=str),
     ]
     if signals_block:
         user_content_parts += ["", signals_block]
