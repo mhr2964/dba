@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -181,6 +182,13 @@ class DBABot(commands.Bot):
             except Exception as e:
                 log.warning(f"Failed to sync commands to guild {guild.id}: {e}")
         await self._process_restart_marker()
+        # Columnist ride-along: start stdin intake task when the mode is active.
+        try:
+            from services import columnist_ride_along as _cra
+            if _cra.is_enabled():
+                _cra.start_feedback_intake(asyncio.get_event_loop())
+        except Exception as _cra_exc:
+            log.warning(f"columnist_ride_along: failed to start feedback intake: {_cra_exc}")
 
 
     async def close(self) -> None:

@@ -20,6 +20,7 @@ from services import awards_service, columnist_service, cpu_coach_service, cpu_t
 from services.personas import PERSONAS as _PERSONAS
 from services.player_style_service import context_summary as _player_style_context
 from services.role_service import ROLE_REGISTRY, get_or_derive_roles
+from services import columnist_ride_along as _columnist_ride_along
 
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
@@ -1018,6 +1019,7 @@ async def _run_cpu_trades_inner(
         # Trades involving a human-managed team land as "pending_commissioner" and
         # must not trigger a columnist article — the deal hasn't happened yet.
         mc_article = None
+        _mc_ra_capture: dict | None = None  # populated inside the elif when ride-along is active
         if status != "approved":
             log.info(
                 f"Marcus Cole: skipping trade #{trade_id} — not executed "
@@ -1147,12 +1149,19 @@ async def _run_cpu_trades_inner(
                     },
                 ],
             }
+            _mc_ra_capture: dict | None = (
+                {} if (
+                    _columnist_ride_along.is_enabled()
+                    and "marcus_cole" == _columnist_ride_along.target_persona_id()
+                ) else None
+            )
             mc_article = await columnist_service.generate(
                 pool, league_id, season,
                 persona_id="marcus_cole",
                 category="trade_report",
                 context=trade_context,
                 subject_team_ids=[proposer_id, counterparty_id],
+                _capture_prompt=_mc_ra_capture,
             )
         if mc_article:
             analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
@@ -1167,6 +1176,27 @@ async def _run_cpu_trades_inner(
                 if mc_persona:
                     embed.set_footer(text=f"by {mc_persona.display_name} · {mc_persona.byline}")
                 await analysis_channel.send(embed=embed)
+                # Ride-along: pause AFTER embed lands in Discord.
+                if _mc_ra_capture is not None:
+                    await _columnist_ride_along.request_pause({
+                        "persona_id": "marcus_cole",
+                        "persona_display_name": mc_persona.display_name if mc_persona else "Marcus Cole",
+                        "league_id": league_id,
+                        "season": season,
+                        "game_index_at_post": 0,
+                        "category": "trade_report",
+                        "prompt": _mc_ra_capture,
+                        "context_dict": trade_context,
+                        "article": {
+                            "headline": mc_article.get("headline", ""),
+                            "body": mc_article.get("body", ""),
+                            "raw_llm_response": _mc_ra_capture.get("raw_llm_response", ""),
+                        },
+                        "embed_preview": (
+                            f"{mc_article.get('headline', '')}\n\n"
+                            + mc_article.get("body", "")[:400]
+                        ),
+                    })
 
 
 def _interest_score_from_batch_result(br: dict) -> float:
@@ -2684,6 +2714,13 @@ async def _maybe_post_columnist(
 
     # Only post a regular-season article if something interesting happened.
     if _batch_is_interesting:
+        # Ride-along: capture the prompt when the chosen persona is about to fire.
+        _ra_capture: dict | None = (
+            {} if (
+                _columnist_ride_along.is_enabled()
+                and persona_id == _columnist_ride_along.target_persona_id()
+            ) else None
+        )
         try:
             article = await asyncio.wait_for(
                 columnist_service.generate(
@@ -2692,6 +2729,7 @@ async def _maybe_post_columnist(
                     category="game_recap",
                     context=columnist_context,
                     subject_team_ids=subject_team_ids,
+                    _capture_prompt=_ra_capture,
                 ),
                 timeout=20.0,
             )
@@ -2722,6 +2760,28 @@ async def _maybe_post_columnist(
                 if persona:
                     embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
             await analysis_channel.send(embed=embed)
+            # Ride-along: pause AFTER the embed lands in Discord.
+            if _ra_capture is not None:
+                _persona_obj = _PERSONAS.get(persona_id)
+                await _columnist_ride_along.request_pause({
+                    "persona_id": persona_id,
+                    "persona_display_name": _persona_obj.display_name if _persona_obj else persona_id,
+                    "league_id": league_id,
+                    "season": season,
+                    "game_index_at_post": batch_end_index,
+                    "category": "game_recap",
+                    "prompt": _ra_capture,
+                    "context_dict": columnist_context,
+                    "article": {
+                        "headline": article.get("headline", ""),
+                        "body": article.get("body", ""),
+                        "raw_llm_response": _ra_capture.get("raw_llm_response", ""),
+                    },
+                    "embed_preview": (
+                        f"{article.get('headline', '')}\n\n"
+                        + article.get("body", "")[:400]
+                    ),
+                })
     else:
         log.debug(
             f"_maybe_post_columnist: skipping regular-season article (no interesting condition met) "
@@ -2769,6 +2829,12 @@ async def _maybe_post_columnist(
                     "Focus on which teams are best positioned in the lottery."
                 )
                 log.info(f"Darius Cole: firing article (bottom_5={[t['team'] for t in _bottom5]})")
+                _dc_ra_capture: dict | None = (
+                    {} if (
+                        _columnist_ride_along.is_enabled()
+                        and "darius_cole" == _columnist_ride_along.target_persona_id()
+                    ) else None
+                )
                 dc_article = await asyncio.wait_for(
                     columnist_service.generate(
                         pool, league_id, season,
@@ -2776,6 +2842,7 @@ async def _maybe_post_columnist(
                         category="tank_watch",
                         context=_dc_context,
                         subject_team_ids=_bottom5_team_ids,
+                        _capture_prompt=_dc_ra_capture,
                     ),
                     timeout=20.0,
                 )
@@ -2784,6 +2851,7 @@ async def _maybe_post_columnist(
                     f"_maybe_post_columnist: darius_cole timed out or failed: {_dc_exc}",
                     exc_info=True,
                 )
+                _dc_ra_capture = None
             if dc_article:
                 dc_embed = discord.Embed(
                     title=f"📋 {dc_article['headline']}",
@@ -2794,6 +2862,27 @@ async def _maybe_post_columnist(
                 try:
                     await analysis_channel.send(embed=dc_embed)
                     log.info("Darius Cole article posted to #analysis")
+                    # Ride-along: pause AFTER embed lands in Discord.
+                    if _dc_ra_capture is not None:
+                        await _columnist_ride_along.request_pause({
+                            "persona_id": "darius_cole",
+                            "persona_display_name": dc_persona.display_name,
+                            "league_id": league_id,
+                            "season": season,
+                            "game_index_at_post": batch_end_index,
+                            "category": "tank_watch",
+                            "prompt": _dc_ra_capture,
+                            "context_dict": _dc_context,
+                            "article": {
+                                "headline": dc_article.get("headline", ""),
+                                "body": dc_article.get("body", ""),
+                                "raw_llm_response": _dc_ra_capture.get("raw_llm_response", ""),
+                            },
+                            "embed_preview": (
+                                f"{dc_article.get('headline', '')}\n\n"
+                                + dc_article.get("body", "")[:400]
+                            ),
+                        })
                 except Exception as _dc_send_exc:
                     log.warning(f"_maybe_post_columnist: darius_cole send failed: {_dc_send_exc}")
             else:
@@ -2804,6 +2893,12 @@ async def _maybe_post_columnist(
     if _marcus_game_counter.get(league_id, 0) >= 200:
         _marcus_game_counter[league_id] = 0
         mb_persona = _PERSONAS.get("marcus_brooks")
+        _mb_ra_capture: dict | None = (
+            {} if (
+                _columnist_ride_along.is_enabled()
+                and "marcus_brooks" == _columnist_ride_along.target_persona_id()
+            ) else None
+        )
         try:
             mb_article = await asyncio.wait_for(
                 columnist_service.generate(
@@ -2812,6 +2907,7 @@ async def _maybe_post_columnist(
                     category="power_rankings",
                     context=batch_context,
                     subject_team_ids=subject_team_ids,
+                    _capture_prompt=_mb_ra_capture,
                 ),
                 timeout=20.0,
             )
@@ -2827,6 +2923,28 @@ async def _maybe_post_columnist(
             if mb_persona:
                 embed.set_footer(text=f"by {mb_persona.display_name} · {mb_persona.byline}")
             await analysis_channel.send(embed=embed)
+            # Ride-along: pause AFTER embed lands in Discord.
+            if _mb_ra_capture is not None:
+                _mb_p = mb_persona
+                await _columnist_ride_along.request_pause({
+                    "persona_id": "marcus_brooks",
+                    "persona_display_name": _mb_p.display_name if _mb_p else "Marcus Brooks",
+                    "league_id": league_id,
+                    "season": season,
+                    "game_index_at_post": batch_end_index,
+                    "category": "power_rankings",
+                    "prompt": _mb_ra_capture,
+                    "context_dict": batch_context,
+                    "article": {
+                        "headline": mb_article.get("headline", ""),
+                        "body": mb_article.get("body", ""),
+                        "raw_llm_response": _mb_ra_capture.get("raw_llm_response", ""),
+                    },
+                    "embed_preview": (
+                        f"{mb_article.get('headline', '')}\n\n"
+                        + mb_article.get("body", "")[:400]
+                    ),
+                })
 
 
 async def _maybe_post_playoff_columnist(

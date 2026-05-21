@@ -216,6 +216,7 @@ async def generate(  # noqa: PLR0912, PLR0915
     context: dict | None = None,
     subject_team_ids: list[int] | None = None,
     subject_player_ids: list[int] | None = None,
+    _capture_prompt: dict | None = None,
 ) -> dict | None:
     """Generate one article from a persona.
 
@@ -475,6 +476,15 @@ async def generate(  # noqa: PLR0912, PLR0915
         persona.voice_notes
     )
 
+    # _capture_prompt is a ride-along-only internal hook (see services/columnist_ride_along.py).
+    # Populate it before the API call so the full prompt is preserved even if the call fails.
+    # Default None is a no-op — production callers pay zero cost.
+    if _capture_prompt is not None:
+        _capture_prompt["system"] = system_prompt
+        _capture_prompt["user"] = user_content
+        _capture_prompt["model"] = "claude-haiku-4-5-20251001"
+        _capture_prompt["max_tokens"] = 1400
+
     try:
         import anthropic
 
@@ -486,6 +496,10 @@ async def generate(  # noqa: PLR0912, PLR0915
             messages=[{"role": "user", "content": user_content}],
         )
         raw = message.content[0].text.strip()
+
+        # Ride-along: capture the raw LLM response alongside the prompt.
+        if _capture_prompt is not None:
+            _capture_prompt["raw_llm_response"] = raw
 
         # DIAGNOSTIC — log first 800 chars of every LLM response so we can
         # verify each persona's actual output shape.  Leave in place.
