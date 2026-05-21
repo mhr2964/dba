@@ -87,7 +87,7 @@ function Remove-IfExists {
 # ---------------------------------------------------------------------------
 if ($List) {
     $personas = Get-ValidPersonas
-    foreach ($pid in $personas.Keys) { Write-Output $pid }
+    foreach ($pId in $personas.Keys) { Write-Output $pId }
     exit 0
 }
 
@@ -102,8 +102,8 @@ if ($PersonaArg -eq "") {
     Write-Host "  Columnist Ride-Along v2 — choose a persona"
     Write-Host ""
     for ($i = 0; $i -lt $personaIds.Count; $i++) {
-        $pid = $personaIds[$i]
-        Write-Host ("  [{0,2}]  {1,-20}  {2}" -f ($i + 1), $pid, $personas[$pid])
+        $pId = $personaIds[$i]
+        Write-Host ("  [{0,2}]  {1,-20}  {2}" -f ($i + 1), $pId, $personas[$pId])
     }
     Write-Host ""
     $sel = Read-Host "  Enter number or persona id"
