@@ -1127,7 +1127,7 @@ def _assemble_index(parsed: dict, persona_display: str) -> str:
 
 
 def _parse_trade_body(body: str) -> tuple[str, str]:
-    """Split a trade report body string on [FRAMING] / [ANALYSIS] sentinels.
+    """Split a trade report body string on [FRAMING] / [ANALYSIS] sentinels (legacy scheme).
 
     Returns (framing, analysis).  If sentinels are missing, framing gets the
     raw body verbatim and analysis is empty string — caller renders verbatim
@@ -1154,27 +1154,64 @@ def _parse_trade_body(body: str) -> tuple[str, str]:
     return chunks.get("FRAMING", ""), chunks.get("ANALYSIS", "")
 
 
+def _parse_marcus_cole_body(body: str) -> tuple[str, str]:
+    """Split a Marcus Cole trade body on [TEAM_A] / [TEAM_B] sentinels (new scheme).
+
+    Returns (team_a_blurb, team_b_blurb).  If sentinels are absent, returns
+    ("", "") so the caller falls through to legacy or raw-body rendering.
+
+    Lenient match handles LLM variants like **[TEAM_A]**, *[TEAM_A]*, or bare [TEAM_A].
+    """
+    import re
+    pattern = re.compile(r"\*{0,2}\[(?:TEAM_A|TEAM_B)\]\*{0,2}", re.IGNORECASE)
+    _kw = re.compile(r"\b(TEAM_A|TEAM_B)\b", re.IGNORECASE)
+    markers = []
+    for m in pattern.finditer(body):
+        kw_m = _kw.search(m.group(0))
+        if kw_m:
+            markers.append((kw_m.group(1).upper(), m.start(), m.end()))
+    if not markers:
+        return "", ""
+
+    chunks: dict[str, str] = {}
+    for i, (key, _start, end) in enumerate(markers):
+        text_start = end
+        text_end = markers[i + 1][1] if i + 1 < len(markers) else len(body)
+        chunks[key] = body[text_start:text_end].strip()
+
+    return chunks.get("TEAM_A", ""), chunks.get("TEAM_B", "")
+
+
 def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
     """Trade report — structured swap blocks that make get/give visible at a glance.
 
     Structural data (teams, assets) comes from ctx; the LLM supplies headline,
-    framing, analysis, and optional grades.  Falls back to prose if ctx is absent
-    or malformed so the function never crashes.
+    per-team blurbs, and optional grades.
+
+    Marker scheme detection (three paths, in priority order):
+    1. New scheme: [TEAM_A] / [TEAM_B] — per-team blurbs interleaved with asset blocks.
+    2. Legacy scheme: [FRAMING] / [ANALYSIS] — backward-compat for articles already in DB.
+    3. No markers: render raw body as *Analysis:* prose above asset blocks.
+
+    Falls back gracefully if ctx is absent or malformed.
     """
     headline = str(parsed.get("headline", "")).strip()
 
-    # Framing and analysis live inside `body` with [FRAMING] / [ANALYSIS] sentinels.
-    # Fall back to the raw body verbatim if a marker is absent so output is never blank.
     raw_body = str(parsed.get("body", "")).strip()
     # Strip headline duplication before parsing sentinels (defense-in-depth).
     raw_body = _dedupe_headline(headline, raw_body)
-    framing, analysis = _parse_trade_body(raw_body)
 
-    # Backward-compat: if the LLM returned the older shape with framing/analysis
-    # as their own top-level keys (and body is empty), use those directly.
-    if not framing and not analysis:
-        framing = str(parsed.get("framing", "")).strip()
-        analysis = str(parsed.get("analysis", "")).strip()
+    # Detect marker scheme.
+    team_a_blurb, team_b_blurb = _parse_marcus_cole_body(raw_body)
+    use_new_scheme = bool(team_a_blurb or team_b_blurb)
+
+    framing = analysis = ""
+    if not use_new_scheme:
+        framing, analysis = _parse_trade_body(raw_body)
+        # Backward-compat: older top-level keys (pre-body era).
+        if not framing and not analysis:
+            framing = str(parsed.get("framing", "")).strip()
+            analysis = str(parsed.get("analysis", "")).strip()
 
     ctx = ctx or {}
     teams: list[dict] = ctx.get("teams") or []
@@ -1188,15 +1225,6 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
 
     if headline:
         out.append(f"**{headline}**")
-
-    if framing:
-        # If no [ANALYSIS] was found either, the raw body landed in framing —
-        # render it as italic analysis above the asset blocks rather than
-        # splitting on non-existent markers.
-        if not analysis and raw_body and framing == raw_body:
-            out.append(f"*Analysis:* {framing}")
-        else:
-            out.append(f"*{framing}*")
 
     def _render_item(item: dict) -> str:
         """Format a single asset line: Player Name (PG, 28, OVR 84) or pick label."""
@@ -1220,25 +1248,59 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
             # cash or unknown
             return f"• {name}" if name else "• Cash considerations"
 
+    def _render_team_block(team: dict, blurb: str) -> list[str]:
+        """Render one team's receives block with optional per-team blurb."""
+        team_name = str(team.get("name", "")).strip()
+        gets: list[dict] = team.get("gets") or []
+        MAX_ITEMS = 8
+        shown = gets[:MAX_ITEMS]
+        overflow = len(gets) - MAX_ITEMS
+        block_lines = [f"> 🔄 **{team_name}** receives"]
+        if shown:
+            for item in shown:
+                block_lines.append(f"> {_render_item(item)}")
+            if overflow > 0:
+                block_lines.append(f"> *(…and {overflow} more)*")
+        else:
+            block_lines.append("> *(nothing)*")
+        lines: list[str] = ["\n".join(block_lines)]
+        if blurb:
+            lines.append(blurb)
+        return lines
+
     if teams:
-        for i, team in enumerate(teams[:3]):
-            team_name = str(team.get("name", f"Team {i + 1}")).strip()
-            gets: list[dict] = team.get("gets") or []
-            # Cap at 8 items; show truncation notice if exceeded.
-            MAX_ITEMS = 8
-            shown = gets[:MAX_ITEMS]
-            overflow = len(gets) - MAX_ITEMS
-            block_lines = [f"> 🔄 **{team_name}** receives"]
-            if shown:
-                for item in shown:
-                    block_lines.append(f"> {_render_item(item)}")
-                if overflow > 0:
-                    block_lines.append(f"> *(…and {overflow} more)*")
-            else:
-                block_lines.append("> *(nothing)*")
-            out.append("\n".join(block_lines))
+        if use_new_scheme:
+            # New scheme: per-team blurb follows each asset block.
+            blurbs = [team_a_blurb, team_b_blurb]
+            for i, team in enumerate(teams[:3]):
+                blurb = blurbs[i] if i < len(blurbs) else ""
+                out.extend(_render_team_block(team, blurb))
+        else:
+            # Legacy scheme: framing above all blocks, analysis below.
+            if framing:
+                if not analysis and raw_body and framing == raw_body:
+                    out.append(f"*Analysis:* {framing}")
+                else:
+                    out.append(f"*{framing}*")
+            for i, team in enumerate(teams[:3]):
+                team_name = str(team.get("name", f"Team {i + 1}")).strip()
+                gets: list[dict] = team.get("gets") or []
+                MAX_ITEMS = 8
+                shown = gets[:MAX_ITEMS]
+                overflow = len(gets) - MAX_ITEMS
+                block_lines = [f"> 🔄 **{team_name}** receives"]
+                if shown:
+                    for item in shown:
+                        block_lines.append(f"> {_render_item(item)}")
+                    if overflow > 0:
+                        block_lines.append(f"> *(…and {overflow} more)*")
+                else:
+                    block_lines.append("> *(nothing)*")
+                out.append("\n".join(block_lines))
+            if analysis:
+                out.append(analysis)
     else:
-        # ctx missing or malformed — fall back to prose from the existing fields
+        # ctx missing or malformed — fall back to prose from existing fields.
         proposer_sends = ctx.get("proposer_sends") or []
         counterparty_sends = ctx.get("counterparty_sends") or []
         proposer = ctx.get("proposer_team", "Team A")
@@ -1246,9 +1308,14 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
         if proposer_sends or counterparty_sends:
             out.append(f"> 🔄 **{counterparty}** receives\n> " + "\n> ".join(f"• {l}" for l in counterparty_sends))
             out.append(f"> 🔄 **{proposer}** receives\n> " + "\n> ".join(f"• {l}" for l in proposer_sends))
-
-    if analysis:
-        out.append(analysis)
+        # Fallback prose when no ctx at all.
+        if not use_new_scheme and raw_body and framing:
+            out.append(f"*Analysis:* {framing}")
+        elif use_new_scheme:
+            if team_a_blurb:
+                out.append(team_a_blurb)
+            if team_b_blurb:
+                out.append(team_b_blurb)
 
     if grades:
         # Pair each grade with its team name when possible.
