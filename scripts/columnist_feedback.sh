@@ -230,6 +230,7 @@ if [ "$ATTACHED" -eq 0 ]; then
 fi
 
 LOG_PATH="$(read_state_field "log_path")"
+ORIGINAL_BOT_PID="$(read_state_field "bot_pid")"
 echo ""
 echo "  attached -> $CHOSEN_ID | log: $LOG_PATH"
 echo "  Waiting for $CHOSEN_DISPLAY posts... (Ctrl+C to quit cleanly)"
@@ -279,6 +280,16 @@ except Exception:
 " 2>/dev/null || echo 0)"
         if [ "$AGE" -gt 60 ]; then
             printf "\r\n  Bot appears unresponsive (state.json is ${AGE}s old) — exiting.\n"
+            break
+        fi
+        CURRENT_BOT_PID="$(read_state_field "bot_pid" 2>/dev/null || echo "")"
+        if [ -n "$ORIGINAL_BOT_PID" ] && [ -n "$CURRENT_BOT_PID" ] && [ "$ORIGINAL_BOT_PID" != "$CURRENT_BOT_PID" ]; then
+            printf "\r\n  Bot restarted — detaching.\n"
+            break
+        fi
+        CURRENT_STATUS="$(read_state_field "status" 2>/dev/null || echo "")"
+        if [ "$CURRENT_STATUS" = "detached" ]; then
+            printf "\r\n  Bot detached — exiting.\n"
             break
         fi
     fi

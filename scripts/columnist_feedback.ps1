@@ -186,6 +186,7 @@ if (-not $attached) {
 }
 
 $logPath = $state.log_path
+$ORIGINAL_BOT_PID = $state.bot_pid
 Write-Host ""
 Write-Host ("  attached -> {0} | log: {1}" -f $ChosenId, $logPath)
 Write-Host "  Waiting for $ChosenDisplay posts... (Ctrl+C to quit cleanly)"
@@ -235,9 +236,13 @@ try {
                 Write-Host "`n  Bot appears unresponsive (state.json is $([int]$age)s old) — exiting."
                 break
             }
-            if ($state.bot_pid -ne $state.bot_pid -or $state.status -eq "detached") {
+            if ($state.bot_pid -ne $ORIGINAL_BOT_PID -or $state.status -eq "detached") {
                 # Bot restarted (new bot_pid) or detached us.
-                Write-Host "`n  Bot detached or restarted — exiting."
+                if ($state.bot_pid -ne $ORIGINAL_BOT_PID) {
+                    Write-Host "`n  Bot restarted — detaching."
+                } else {
+                    Write-Host "`n  Bot detached — exiting."
+                }
                 break
             }
         }
