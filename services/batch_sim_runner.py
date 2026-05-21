@@ -88,6 +88,7 @@ _power_list_game_counter: dict[int, int] = {}      # fires every ~70 games (week
 _rookie_watch_game_counter: dict[int, int] = {}    # fires every ~70 games (weekly)
 _big_picture_game_counter: dict[int, int] = {}     # fires every ~70 games (weekly)
 _ledger_game_counter: dict[int, int] = {}          # fires every ~280 games (monthly)
+_ledger_first_post_done: dict[int, bool] = {}      # True after first post in post-deadline phase
 _race_game_counter: dict[int, int] = {}            # fires every ~280 games (monthly)
 
 # ---------------------------------------------------------------------------
@@ -1374,7 +1375,8 @@ async def _maybe_post_coach_beat(
     _coach_beat_game_counter[league_id] = _coach_beat_game_counter.get(league_id, 0) + len(batch_results)
     if _coach_beat_game_counter[league_id] < 50:
         return
-    _coach_beat_game_counter[league_id] = 0
+    # Counter is NOT reset here — it resets only after a successful post below.
+    # This lets the column fire on the next batch that has actual content to say.
 
     analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
     analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
@@ -1413,25 +1415,38 @@ async def _maybe_post_coach_beat(
             include=("posture", "plan", "philosophy", "recent_role_changes"),
         )
 
-        # Prioritise chaos and vet_overrater; then youth_developer; else any.
-        _PRIORITY_PHILOSOPHIES = ("chaos", "vet_overrater", "youth_developer")
+        # Prioritise chaos, vet_overrater, and youth_developer teams.
+        # Use random.choice among ALL matching teams rather than iterating in
+        # tuple order — previously "chaos" always won because it came first,
+        # causing every Coach Beat post to be about a chaos team.
+        _PRIORITY_PHILOSOPHIES = {"chaos", "vet_overrater", "youth_developer"}
+        priority_candidates = [
+            tid for tid, data in intel.items()
+            if data.get("philosophy") in _PRIORITY_PHILOSOPHIES
+        ]
         subject_team_id: int | None = None
-        for philosophy in _PRIORITY_PHILOSOPHIES:
-            for tid, data in intel.items():
-                if data.get("philosophy") == philosophy:
-                    subject_team_id = tid
-                    break
-            if subject_team_id is not None:
-                break
-        if subject_team_id is None and batch_team_ids:
-            subject_team_id = batch_team_ids[0]
+        if priority_candidates:
+            subject_team_id = random.choice(priority_candidates)
+        elif batch_team_ids:
+            subject_team_id = random.choice(batch_team_ids)
         if subject_team_id is None:
             return
 
         subject_intel = intel.get(subject_team_id, {})
 
-        # Pull recent role changes for the subject team.
+        # Content gate: skip the post (but don't reset the counter) when the selected
+        # team has nothing interesting to say — no role changes AND a boring default
+        # philosophy. The counter stays at ≥50 so the next batch with real content
+        # fires the column immediately rather than waiting another 50 games.
         recent_role_changes = subject_intel.get("recent_role_changes", [])
+        subject_philosophy = subject_intel.get("philosophy", "tendency_respecter")
+        if not recent_role_changes and subject_philosophy not in _PRIORITY_PHILOSOPHIES:
+            log.debug(
+                f"_maybe_post_coach_beat: league={league_id} team={subject_team_id} "
+                f"has no role changes and philosophy={subject_philosophy!r} — skipping, "
+                "counter retained at ≥50 for next batch"
+            )
+            return
 
         # Fetch team code for context.
         team_row = await pool.fetchrow(
@@ -1442,7 +1457,7 @@ async def _maybe_post_coach_beat(
         cb_context = {
             "posture":             subject_intel.get("posture"),
             "plan":                subject_intel.get("plan"),
-            "philosophy":          subject_intel.get("philosophy", "tendency_respecter"),
+            "philosophy":          subject_philosophy,
             "recent_role_changes": recent_role_changes,
             "subject_team_code":   team_code,
         }
@@ -1465,6 +1480,9 @@ async def _maybe_post_coach_beat(
             )
             embed.set_footer(text=f"by {cb_persona.display_name} · {cb_persona.byline}")
             await analysis_channel.send(embed=embed)
+            # Reset counter only after a successful post so empty-content batches
+            # can retry immediately on the next batch.
+            _coach_beat_game_counter[league_id] = 0
     except Exception as exc:
         log.warning(f"_maybe_post_coach_beat failed: {exc}", exc_info=True)
 
@@ -1749,11 +1767,34 @@ async def _maybe_post_ledger(
     batch_results: list[dict],
     guild: discord.Guild,
 ) -> None:
-    """Post The Ledger front-office grades every ~280 games (approx. monthly)."""
-    _ledger_game_counter[league_id] = _ledger_game_counter.get(league_id, 0) + len(batch_results)
-    if _ledger_game_counter[league_id] < 280:
+    """Post The Ledger front-office grades, gated to post-deadline phases only.
+
+    First post fires when the league transitions to TRADE_DEADLINE_OPEN or later,
+    regardless of counter. Subsequent posts fire every ~280 games (approx. monthly).
+    Before the trade deadline: no Ledger columns.
+    """
+    # Phase gate: bail entirely during pre-deadline phases so we never accumulate
+    # phantom counter increments. Counter only increments when phase qualifies.
+    _PRE_DEADLINE_PHASES = {
+        Phase.SETUP.value,
+        Phase.PRESEASON_READY.value,
+        Phase.REGULAR_SEASON_ACTIVE.value,
+    }
+    phase_row = await pool.fetchrow("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    current_phase = phase_row["current_phase"] if phase_row else ""
+    if current_phase in _PRE_DEADLINE_PHASES:
+        log.debug(f"_maybe_post_ledger: league={league_id} phase={current_phase!r} — pre-deadline, skipping")
         return
-    _ledger_game_counter[league_id] = 0
+
+    _ledger_game_counter[league_id] = _ledger_game_counter.get(league_id, 0) + len(batch_results)
+    _ledger_first_post_done.setdefault(league_id, False)
+
+    # Force-fire on the first post-deadline batch (regardless of counter).
+    force_fire = not _ledger_first_post_done[league_id]
+    if not force_fire and _ledger_game_counter[league_id] < 280:
+        return
+    if not force_fire:
+        _ledger_game_counter[league_id] = 0
 
     analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
     analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
@@ -1845,6 +1886,9 @@ async def _maybe_post_ledger(
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
             await analysis_channel.send(embed=embed)
+            # Mark first post done and reset counter after successful send.
+            _ledger_first_post_done[league_id] = True
+            _ledger_game_counter[league_id] = 0
     except Exception as exc:
         log.warning(f"_maybe_post_ledger failed: {exc}", exc_info=True)
 
