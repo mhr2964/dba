@@ -1,22 +1,14 @@
 # HANDOFF — DBA
 
 ```yaml
-last-model: claude-sonnet-4-6
+last-model: claude-haiku-4.5
 last-session: 2026-05-21
-state: yellow
+state: green
 ```
 
 ## Next action
 
-Run `>>team dual-account full DBA sim` to confirm the three landmark columnist fixes
-land correctly. Watch specifically for:
-
-- (a) `coach_beat` actually posting to #analysis (previously 0/season due to datetime TypeError)
-- (b) Carla Knox + Keisha Williams + Darius Cole hitting >50% post rate (previously 0% due to combined json.dumps + timeout failures)
-- (c) Marcus Cole articles ONLY for executed trades — `bot.log` should show "Marcus Cole: skipping trade #N (status='pending_commissioner')" for every human-involved proposal
-- (d) Headline-duplication regression on Pat Chen POTM + Darius Cole Tank Watch (separate fix — `_dedupe_headline` doesn't cover those renderers; out of scope for this session)
-
-After a clean dual-account sim, state flips to green.
+Three landmark columnist fixes have been verified clean across 433 simulated games / 5 batches in dual-account testing. All silent failures (78 JSON serialization, 39 timeouts) resolved; columnists now posting at expected rates. State is green. Next session should focus on the 5 new UX nits (error-message leaks, missing progress logging, `/league advance` auto-promotion) and the 4 pre-existing duplication/data-leak issues documented in "Known issues / backlog" below.
 
 ## What landed this session (2026-05-21, claude-sonnet-4-6)
 
@@ -39,6 +31,21 @@ Three landmark fixes committed in separate commits:
 - Win streaks post to `#records`, not `#league-news`. Records channel is lazy-created via `_ensure_records_channel`.
 - **Dual-account testing identity gate**: every `user-tester` dispatch MUST start with a `browser_evaluate` on Discord's bottom-left account panel and assert the username matches the expected account. Profile dirs cache auth tokens that survive in-page wipes — if there's any doubt, wipe `C:\Users\Owner\Desktop\AI\.playwright\profile1` and `profile2` first. Credentials in `system-secrets.md`: eyeleg → playwright1, foxplayer123 → playwright2, shared password ends in a trailing semicolon.
 - `Marcus Cole signal enrichment failed: column "scoring_tendency" does not exist` appears in bot.log — this is a pre-existing bug in the signal-enrichment enrichment path (the player query references a column not in the schema). It is caught and non-fatal; Marcus Cole still generates the article from the remaining context. Do NOT treat it as a Fix 3 regression.
+
+## Known issues / backlog
+
+**New UX nits (emerged 2026-05-21 dual-account test):**
+- (a) `/league create season:2025` errors with "season not supported. Run fetch_bdl_cache.py" — leaks internal dev tooling to Discord user. Should return user-facing error (e.g., "Season not available. Ask the commissioner to run data updates.").
+- (b) `/sim run` user-matchup warning is ephemeral and reads as a silent hang — no progress indicator during run. Add streaming game-count updates or a "X of N games complete" embed.
+- (c) `/team assign team_code:BOS user_id:<wrong>` swallows the lookup miss and gives a confusing reply — should surface "User not found" or "Team has no matching player slot."
+- (d) `/league create` has no progress logging during the 30-team seed loop (~1 min black hole) — users see no feedback. Add a progress embed or checkmark reactions.
+- (e) Flow `/league create` → `/team assign` → `/team ready` → `/sim run` is incomplete; bot rejects `/sim run` from SETUP phase. Missing `/league advance phase_name:PRESEASON_READY` + `/season start` steps. Suggestion: auto-advance after all managers ready to collapse the flow.
+
+**Pre-existing FEELS-OFF (out of scope this round; next builder's priority):**
+- Pat Chen POTM + Darius Cole Tank Watch show duplicate headlines (same story surface twice in quick succession). `_dedupe_headline` only covers non-persona renderers; persona prompts need filtering.
+- Darius Cole `plan.goal` internal-data leak in prose — "Goal: (int) 67 wins" shows the schema key. Requires rewrite of persona prompt or post-processing mask.
+- The Ledger monospace table wraps at Discord embed width (~60 chars) — horizontal scroll lost. Consider tab-separated-values render or a thread split.
+- `#general` shows "Message could not be loaded" placeholder during `/sim run` ack→complete swap — ephemeral state transition briefly deletes the message. Low priority UX polish.
 
 ## Do not touch
 

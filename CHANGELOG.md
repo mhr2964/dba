@@ -1,5 +1,18 @@
 # Changelog — DBA
 
+## 2026-05-21
+- **Coach Beat columnist now posts** — Was silently failing every batch on a JSON serialization crash in the context payload; added `default=str` to `json.dumps()` to handle datetime and Decimal objects.
+  Files: services/columnist_service.py
+
+- **Carla Knox, Keisha Williams, and heavy-prompt personas no longer time out** — Increased `asyncio.wait_for` timeouts from 8–10s to 15–20s across all columnist generators, recovering ~39 timeouts per full season.
+  Files: services/batch_sim_runner.py
+
+- **Marcus Cole articles now gated on executed trades only** — Restructured Marcus Cole generation gate in the sim loop; pending commissioner trades (human-involved) no longer leak BREAKING articles before approval. Added observability logging for verification.
+  Files: services/batch_sim_runner.py
+
+- **Marcus Cole trade-skip events surfaced in logs** — Elevated Marcus Cole skip notifications from DEBUG to INFO level so the trade-execution gate is visible during normal operation.
+  Files: services/batch_sim_runner.py
+
 ## 2026-05-15
 - **`#standings` channel receives dedicated posts** — After each batch sim, a standings-only embed (East/West sorted by win%) now posts to the `#standings` channel instead of lumping all standings into `#box-scores`.
   Files: services/batch_sim_runner.py
