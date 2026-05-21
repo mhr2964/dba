@@ -829,8 +829,12 @@ async def _run_cpu_trades_inner(
         # the blockbuster-importance check all have accurate data.
         _player_ids = [a.player_id for a in assets if a.asset_type == "player" and a.player_id]
         if _player_ids:
+            # players table has birth_date, not a precomputed age column —
+            # derive age from birth_date.
             _name_rows = await pool.fetch(
-                "SELECT id, first_name, last_name, overall, position, age FROM players WHERE id = ANY($1)",
+                """SELECT id, first_name, last_name, overall, position,
+                          EXTRACT(YEAR FROM AGE(birth_date))::int AS age
+                   FROM players WHERE id = ANY($1)""",
                 _player_ids,
             )
             _player_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in _name_rows}
