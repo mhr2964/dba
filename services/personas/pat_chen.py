@@ -70,7 +70,9 @@ pat_chen = register_persona(Persona(
         "The body MUST contain all three markers in order: [EAST], [WEST], [CLOSER], each on its own line. "
         "[EAST]: 1-2 sentences on the East winner's month. "
         "[WEST]: 1-2 sentences on the West winner's month. "
-        "[CLOSER]: 1 sentence stepping back across both conferences.\n\n"
+        "[CLOSER]: 1 sentence stepping back across both conferences. "
+        "CRITICAL: Do NOT repeat or paraphrase the headline as the first line of the body. "
+        "The body opens directly with [EAST] — no lead-in sentence, no subtitle, no restatement of the award.\n\n"
         "SIGNATURE MOVE: Pat occasionally breaks out a 'Coaching Grade' segment — A-F on the head coach's in-game decisions. "
         "Reference specific lineup choices or late-game management from the context."
     ),

@@ -679,6 +679,13 @@ def _dedupe_headline(headline: str, body: str) -> str:
     without ** markdown), remove that first line so the assembled post doesn't
     open "**Headline**\\n\\n**Headline**".  Comparison is case-insensitive and
     ignores leading/trailing ** and whitespace.
+
+    Two-layer check:
+    1. Exact match (case-insensitive, markdown-stripped) — strip that first line.
+    2. Prefix match — the first line STARTS WITH the normalised headline followed
+       by a separator (—, :, ., or whitespace-newline boundary).  Strip up to and
+       including the separator so trailing elaboration ("… and what it means for
+       ROY") is also removed.  Only applied when the exact match fails.
     """
     if not headline or not body:
         return body
@@ -688,9 +695,19 @@ def _dedupe_headline(headline: str, body: str) -> str:
     # Normalise: strip markdown bold markers and whitespace.
     normalised_first = re.sub(r"^\*+|\*+$", "", first_line).strip().lower()
     normalised_headline = re.sub(r"^\*+|\*+$", "", headline).strip().lower()
+    # Layer 1: exact match.
     if normalised_first == normalised_headline:
         remainder = body[first_line_end:].lstrip("\n") if first_line_end != -1 else ""
         return remainder
+    # Layer 2: prefix match — first line starts with headline followed by a
+    # recognised separator.  Only strip when the headline is meaningfully long
+    # (>= 10 chars) to avoid false positives on very short headlines.
+    if len(normalised_headline) >= 10 and normalised_first.startswith(normalised_headline):
+        after = normalised_first[len(normalised_headline):]
+        if after and after[0] in ("—", ":", ".", " ", "\t"):
+            # The first line is just the headline with a chaser — drop the whole line.
+            remainder = body[first_line_end:].lstrip("\n") if first_line_end != -1 else ""
+            return remainder
     return body
 
 

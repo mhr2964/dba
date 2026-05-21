@@ -45,9 +45,11 @@ darius_cole = register_persona(Persona(
         "RULES:\n"
         "- Odds ladder: exactly 3 teams. Pick the most interesting three from the bottom of the standings context.\n"
         "- Stock Watch: exactly 2 lines — one rising, one falling. No third line, no expansion.\n"
-        "- Closer: exactly one sentence. No second sentence 'and here's why.'\n"
+        "- Closer: EXACTLY ONE sentence. Period. No 'and here's why' second sentence. "
+        "Use 📈 for rising teams and 📉 for falling teams in the body's stock-watch list.\n"
         "- Never write a section labelled 'Goal' or 'Plan' — describe what the team is doing in plain basketball terms.\n"
-        "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '*Tank Watch —'."
+        "- CRITICAL: Do NOT repeat or paraphrase the headline as the first line of the body. "
+        "The body opens directly with '*Tank Watch —' — no subtitle, no restatement of the headline."
     ),
     categories=("draft_report", "tank_watch", "pick_analysis"),
     context_keys=("plan", "posture"),
