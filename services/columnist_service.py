@@ -69,17 +69,37 @@ def _tolerant_json_parse(raw: str, persona_id: str, category: str) -> dict | Non
     """
     text = raw.strip()
 
-    # 1. Strip markdown code fences.
-    if "```" in text:
-        # Match ```json ... ``` or ``` ... ```
-        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-        if fence_match:
-            text = fence_match.group(1).strip()
+    # 1. Strip markdown code fences (handles truncated responses where the
+    # closing ``` is missing).
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence_match:
+        text = fence_match.group(1).strip()
+    else:
+        # Truncated response — strip opening fence and trailing fence if any.
+        text = re.sub(r"^`+\s*(?:json)?\s*", "", text)
+        text = re.sub(r"`+\s*$", "", text)
 
-    # 2. Extract outermost {...} block to discard prose before/after JSON.
+    # 2. Extract outermost {...} block; fall back to starting-{ if no
+    # matching close exists (truncated response).
     brace_match = re.search(r"\{[\s\S]*\}", text)
     if brace_match:
         text = brace_match.group(0)
+    else:
+        start = text.find("{")
+        if start >= 0:
+            text = text[start:]
+            # Best-effort: balance braces by appending missing close.
+            opens = text.count("{")
+            closes = text.count("}")
+            if opens > closes:
+                # Trim trailing comma if any, then close to last clean state.
+                text = text.rstrip().rstrip(",")
+                # Close any open arrays first, then objects.
+                arr_open = text.count("[")
+                arr_close = text.count("]")
+                if arr_open > arr_close:
+                    text += "]" * (arr_open - arr_close)
+                text += "}" * (opens - closes)
 
     # 3. Drop trailing commas before } or ] (e.g. {"a": 1,} or [1, 2,]).
     text = re.sub(r",\s*([}\]])", r"\1", text)
@@ -342,7 +362,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         client = anthropic.AsyncAnthropic(api_key=api_key)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            max_tokens=900,  # 400 was truncating mid-JSON, breaking parse
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -360,7 +380,10 @@ async def generate(  # noqa: PLR0912, PLR0915
             )
             persona_display = persona.display_name
             _prose_raw = raw.strip()
-            if _prose_raw.startswith("{"):
+            # Treat fence-prefixed raw the same as JSON-prefixed — both are
+            # the LLM trying to return structured output. Never spill them.
+            _looks_like_json = _prose_raw.startswith("{") or _prose_raw.startswith("`")
+            if _looks_like_json:
                 # Attempt a best-effort field extraction from JSON-shaped text.
                 _json_candidate: dict | None = None
                 try:
