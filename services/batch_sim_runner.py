@@ -1013,9 +1013,16 @@ async def _run_cpu_trades_inner(
             log.warning(f"Failed to create trade thread for trade #{trade_id}: {_thread_exc}")
 
         # Marcus Cole — insider trade report to #analysis.
-        # Only fire for blockbuster trades that actually executed (not pending review).
+        # Gate: only fire when trade is fully executed (status == "approved" in DB).
+        # Trades involving a human-managed team land as "pending_commissioner" and
+        # must not trigger a columnist article — the deal hasn't happened yet.
         mc_article = None
-        if status == "approved" and _is_blockbuster_trade(assets, _player_ovrs):
+        if status != "approved":
+            log.debug(
+                f"Marcus Cole: skipping trade #{trade_id} — not executed "
+                f"(status={status!r})"
+            )
+        elif _is_blockbuster_trade(assets, _player_ovrs):
             # Build roster-fit context: for each traded player, look up who they'll
             # play alongside on their new team and what that team's build mode is.
             roster_fits: list[str] = []
