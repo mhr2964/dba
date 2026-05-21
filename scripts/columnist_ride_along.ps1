@@ -164,7 +164,17 @@ Write-Host "columnist_ride_along: Type :quit to stop cleanly."
 Write-Host ""
 
 # ── Launch bot with ride-along env vars set ───────────────────────────────────
+# Generate log path ONCE here so the bot process and the post-exit summary
+# subprocess both see the same DBA_COLUMNIST_RA_LOG value.  Without this,
+# each process imports the module at a different clock instant and gets a
+# different _SESSION_TS, causing the summary to look for a file that doesn't exist.
+$sessionTs = (Get-Date).ToString("yyyyMMdd_HHmmss")
+$logDir = Join-Path $projectRoot "headless_logs"
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+$env:DBA_COLUMNIST_RA_LOG = Join-Path $logDir ("columnist_ride_along_" + $PersonaId + "_" + $sessionTs + ".jsonl")
 $env:DBA_COLUMNIST_RIDE_ALONG = $PersonaId
+
+Write-Host ("columnist_ride_along: Log file: " + $env:DBA_COLUMNIST_RA_LOG)
 
 Set-Location $projectRoot
 & $python "$projectRoot\run.py"
@@ -173,6 +183,8 @@ Set-Location $projectRoot
 Write-Host ""
 Write-Host "columnist_ride_along: Bot exited. Printing session summary..."
 
+# DBA_COLUMNIST_RA_LOG is still set in this shell — the summary subprocess
+# inherits it and reads the exact same file the bot wrote.
 $summaryScript = [System.IO.Path]::GetTempFileName() + ".py"
 Set-Content -Path $summaryScript -Value @"
 import sys, pathlib, os

@@ -180,7 +180,17 @@ echo "[columnist_ride_along] Type :quit to stop cleanly."
 echo ""
 
 # ── Launch bot ────────────────────────────────────────────────────────────────
+# Generate log path ONCE here so the bot process and the post-exit summary
+# subprocess both see the same DBA_COLUMNIST_RA_LOG value.  Without this,
+# each process imports the module at a different clock instant and gets a
+# different _SESSION_TS, causing the summary to look for a file that doesn't exist.
+SESSION_TS="$(date '+%Y%m%d_%H%M%S')"
+LOG_DIR="$PROJECT_ROOT/headless_logs"
+mkdir -p "$LOG_DIR"
+export DBA_COLUMNIST_RA_LOG="$LOG_DIR/columnist_ride_along_${PERSONA_ID}_${SESSION_TS}.jsonl"
 export DBA_COLUMNIST_RIDE_ALONG="$PERSONA_ID"
+
+echo "[columnist_ride_along] Log file: $DBA_COLUMNIST_RA_LOG"
 
 cd "$PROJECT_ROOT"
 "$PYTHON" "$PROJECT_ROOT/run.py"
@@ -188,7 +198,9 @@ cd "$PROJECT_ROOT"
 # ── Post-exit summary ─────────────────────────────────────────────────────────
 echo ""
 echo "[columnist_ride_along] Bot exited. Printing session summary..."
-DBA_COLUMNIST_RIDE_ALONG="$PERSONA_ID" "$PYTHON" -c "
+# DBA_COLUMNIST_RA_LOG is still exported — the summary subprocess inherits it
+# and reads the exact same file the bot wrote.
+"$PYTHON" -c "
 import sys, pathlib
 sys.path.insert(0, '$PROJECT_ROOT')
 from dotenv import load_dotenv; load_dotenv(pathlib.Path('$PROJECT_ROOT') / '.env')
