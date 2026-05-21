@@ -61,6 +61,18 @@ _LOG_FILE: Path | None = None
 # Background task handle — stored so close() can cancel it.
 _ipc_task: asyncio.Task | None = None
 
+# state.json heartbeat cadence — written periodically to keep last_update_ts
+# fresh without hammering the filesystem.  Transition writes are immediate
+# (inside _write_state, which every handler calls directly) regardless of
+# this interval.  Sidecar "hung bot" threshold is 60 s — must be >= 2× value.
+_STATE_WRITE_INTERVAL_SEC: float = 5.0
+_last_state_write_ts: float = 0.0  # monotonic seconds; 0 forces write on first cadence tick
+
+# Cold sweep sentinel — True once _cold_sweep_ipc_dir() returns without raising.
+# Retry-until-done semantics: a transient permission error won't lock out the
+# feature for the whole bot lifetime.
+_cold_sweep_done: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Public gate queries  (same interface as v1 — callers in batch_sim_runner.py
@@ -157,8 +169,13 @@ def _delete_if_exists(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_state(status: str, **extra_fields: Any) -> None:
-    """Write state.json atomically.  Always includes bot identity fields."""
-    global _pauses_seen
+    """Write state.json atomically.  Always includes bot identity fields.
+
+    Also resets _last_state_write_ts so the next periodic heartbeat is
+    deferred by a full interval — no double-write right after a transition.
+    """
+    global _pauses_seen, _last_state_write_ts
+    import time
     payload: dict[str, Any] = {
         "status": status,
         "persona_id": _CHOSEN_PERSONA_ID,
@@ -184,6 +201,7 @@ def _write_state(status: str, **extra_fields: Any) -> None:
         _CHOICES_DIR = _IPC_DIR
         _CHOICES_DIR.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(_CHOICES_DIR / "state.json", payload)
+        _last_state_write_ts = time.monotonic()
     except Exception as exc:  # noqa: BLE001
         import sys
         print(f"[columnist_ride_along] WARNING: failed to write state.json: {exc}", file=sys.stderr)
@@ -194,17 +212,13 @@ def _write_state(status: str, **extra_fields: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def _cold_sweep_ipc_dir() -> None:
-    """Create the IPC dir and delete all transient files from prior bot sessions."""
-    try:
-        _IPC_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:  # noqa: BLE001
-        import sys
-        print(
-            f"[columnist_ride_along] ERROR: cannot create IPC dir {_IPC_DIR}: {exc} — "
-            "ride-along will be unavailable this session.",
-            file=sys.stderr,
-        )
-        return
+    """Create the IPC dir and delete all transient files from prior bot sessions.
+
+    Raises on IPC dir creation failure so ipc_watch_task() can retry without
+    marking _cold_sweep_done=True.  A transient permission error therefore does
+    not permanently disable ride-along for the bot lifetime.
+    """
+    _IPC_DIR.mkdir(parents=True, exist_ok=True)  # raises OSError on failure
 
     for name in ("start.cmd", "pause.json", "feedback.json", "stop.cmd", "sidecar_heartbeat.txt"):
         _delete_if_exists(_IPC_DIR / name)
@@ -259,6 +273,11 @@ def _apply_start_cmd(payload: dict) -> None:
         f"sidecar_pid={_SIDECAR_PID} log={_get_log_file()}",
         flush=True,
     )
+
+
+def _is_valid_feedback_payload(payload: dict) -> bool:
+    """Minimal structural check — must have article_id and action keys."""
+    return isinstance(payload, dict) and "article_id" in payload and "action" in payload
 
 
 def _apply_feedback(payload: dict) -> None:
@@ -444,20 +463,23 @@ async def ipc_watch_task() -> None:
     Runs for the lifetime of the bot process.  Started by bot/client.py::setup_hook().
     Does the cold sweep on first iteration, then no-ops until a start.cmd appears.
     """
-    global _HEARTBEAT_MISS_COUNT
+    global _HEARTBEAT_MISS_COUNT, _cold_sweep_done
 
-    first_iter = True
     while True:
         try:
-            if first_iter:
+            if not _cold_sweep_done:
                 _cold_sweep_ipc_dir()
-                first_iter = False
+                _cold_sweep_done = True
             else:
-                # Keep state.json last_update_ts fresh so sidecar can detect a hung bot.
-                _write_state(
-                    "paused" if _pending_event is not None else
-                    ("attached" if _CHOSEN_PERSONA_ID else "detached")
-                )
+                # Write state.json on cadence only (not every 300 ms poll).
+                # Transition writes happen immediately via _write_state() calls
+                # in the command handlers; this branch is the periodic heartbeat.
+                import time as _time
+                if _time.monotonic() - _last_state_write_ts >= _STATE_WRITE_INTERVAL_SEC:
+                    _write_state(
+                        "paused" if _pending_event is not None else
+                        ("attached" if _CHOSEN_PERSONA_ID else "detached")
+                    )
 
             # --- stop.cmd: highest priority — process before other commands ---
             stop_path = _IPC_DIR / "stop.cmd"
@@ -480,10 +502,21 @@ async def ipc_watch_task() -> None:
             # --- feedback.json (only relevant when a pause is in flight) ---
             fb_path = _IPC_DIR / "feedback.json"
             if fb_path.exists() and _pending_event is not None:
-                payload = _read_json_or_none(fb_path)
-                _delete_if_exists(fb_path)
-                if payload is not None:
-                    _apply_feedback(payload)
+                raw = _read_json_or_none(fb_path)
+                if raw is None:
+                    # File may be mid-write by sidecar; retry next iteration.
+                    pass
+                elif not _is_valid_feedback_payload(raw):
+                    import sys as _sys
+                    _delete_if_exists(fb_path)
+                    _sys.stderr.write(
+                        "[columnist_ride_along] invalid feedback payload — discarded\n"
+                    )
+                else:
+                    # Apply first, delete after — avoids losing a concurrent
+                    # sidecar write that arrives between read and delete.
+                    _apply_feedback(raw)
+                    _delete_if_exists(fb_path)
             elif fb_path.exists():
                 # feedback.json arrived with no pending pause — stale; discard.
                 try:
