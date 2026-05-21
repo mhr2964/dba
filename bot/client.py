@@ -138,6 +138,19 @@ class DBABot(commands.Bot):
         log.info(f"Tree commands: total={len(all_cmds)}, unique={len(name_counts)}, duplicates={dups}")
         log.info(f"Tree class: {type(self.tree).__name__} (expected DedupeTree)")
 
+        # Columnist ride-along v2: always-on IPC poll task (no-ops until a sidecar
+        # attaches via start.cmd — no env var gate needed).
+        try:
+            from services import columnist_ride_along as _cra
+            _cra_task = self.loop.create_task(
+                _cra.ipc_watch_task(), name="columnist-ra-ipc"
+            )
+            import services.columnist_ride_along as _cra_mod
+            _cra_mod._ipc_task = _cra_task
+            log.info("columnist_ride_along: IPC watch task started")
+        except Exception as _cra_exc:
+            log.warning("columnist_ride_along: failed to start IPC task: %s", _cra_exc)
+
     async def _process_restart_marker(self) -> None:
         marker_path = Path(".restart_marker.json")
         if not marker_path.exists():
@@ -182,23 +195,15 @@ class DBABot(commands.Bot):
             except Exception as e:
                 log.warning(f"Failed to sync commands to guild {guild.id}: {e}")
         await self._process_restart_marker()
-        # Columnist ride-along: start stdin intake task when the mode is active.
-        try:
-            from services import columnist_ride_along as _cra
-            if _cra.is_enabled():
-                _cra.start_feedback_intake(asyncio.get_event_loop())
-        except Exception as _cra_exc:
-            log.warning(f"columnist_ride_along: failed to start feedback intake: {_cra_exc}")
 
 
     async def close(self) -> None:
-        # Columnist ride-along: write session_end record and release any pending
+        # Columnist ride-along: write closing state.json and release any in-flight
         # pause before the event loop tears down.  Best-effort — never blocks shutdown.
         try:
             from services import columnist_ride_along as _cra
-            if _cra.is_enabled():
-                await _cra.stop()
+            await _cra.shutdown()
         except Exception as _cra_exc:
-            log.warning("columnist_ride_along: stop() failed during close: %s", _cra_exc)
+            log.warning("columnist_ride_along: shutdown() failed during close: %s", _cra_exc)
         await close_pool()
         await super().close()
