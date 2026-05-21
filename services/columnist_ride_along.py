@@ -1,22 +1,23 @@
-"""Columnist ride-along mode for DBA columnist voices.
+"""Columnist ride-along v2 — attach-only, file-IPC sidecar model.
 
-When DBA_COLUMNIST_RIDE_ALONG=<persona_id> is set, the sim pauses every time
-the chosen persona posts an article.  The user types feedback in the terminal;
-feedback is written to a JSONL log for later prompt-tuning work.  Feedback is
-NEVER injected back into the LLM prompt during the same session.
+The bot runs normally.  Feedback intake lives in a separate sidecar CLI
+(scripts/columnist_feedback.ps1 or .sh) that communicates via a small
+directory of JSON files the bot polls every 300 ms.
 
-All other personas post normally.  Only the chosen persona's fire pauses the sim.
+IPC directory: headless_logs/columnist_ride_along_ipc/
 
-Activation:
-    export DBA_COLUMNIST_RIDE_ALONG=marcus_cole   # any valid PERSONAS key
-    python run.py
+Five files, all written atomically via tmp+replace:
+  state.json    — long-lived, bot writes; sidecar reads
+  start.cmd     — transient; sidecar writes, bot deletes
+  pause.json    — transient; bot writes, sidecar deletes
+  feedback.json — transient; sidecar writes, bot deletes
+  stop.cmd      — transient; sidecar writes, bot deletes
+  sidecar_heartbeat.txt — sidecar touches every poll cycle; bot reads mtime
 
-Env vars:
-    DBA_COLUMNIST_RIDE_ALONG=<persona_id>  — enables the mode, names the persona
-    DBA_COLUMNIST_RA_LOG=<absolute_path>   — optional override for the JSONL path
+Feedback is log-only — never injected back into a live prompt.
+Only the chosen persona's articles pause the sim; all others post normally.
 
-Mutual exclusion: refuses to activate (logs a warning, returns is_enabled()=False)
-when DBA_RIDE_ALONG=1 is also set.  Two ride-along modes fight over stdin.
+Regular-season only (same scope as v1).
 """
 from __future__ import annotations
 
@@ -24,7 +25,6 @@ import asyncio
 import datetime
 import json
 import os
-import sys
 import uuid
 from datetime import timezone
 from pathlib import Path
@@ -32,75 +32,75 @@ from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOG_DIR = _PROJECT_ROOT / "headless_logs"
+_IPC_DIR = _LOG_DIR / "columnist_ride_along_ipc"
 
+# Captured once at import time so all JSONL files for one bot lifetime share the
+# same timestamp suffix (even when the same persona attaches twice).
 _SESSION_TS = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-_LOG_FILE: Path | None = None  # initialised lazily on first write
 
-# Module-level asyncio state — initialised by start_feedback_intake().
-_feedback_queue: asyncio.Queue[str] | None = None
+# Long-lived bot identity — written into every state.json.
+_BOT_PID: int = os.getpid()
+_BOT_STARTED_AT: str = datetime.datetime.now(timezone.utc).isoformat()
+
+# Module-level state — mutated only by ipc_watch_task() and request_pause().
+_CHOSEN_PERSONA_ID: str | None = None
+_SIDECAR_PID: int | None = None
+
+# Per-pause state — set by request_pause(), cleared by _apply_feedback() /
+# _apply_stop_cmd() / the heartbeat-timeout path.
 _pending_event: asyncio.Event | None = None
 _pending_article_id: str | None = None
-_stop_flag: bool = False
-_fires: int = 0   # total chosen-persona fires this session
+
+# Session counters
+_fires: int = 0
+_pauses_seen: int = 0
+
+# JSONL log — initialised lazily on first write for the active persona.
+_LOG_FILE: Path | None = None
+
+# Background task handle — stored so close() can cancel it.
+_ipc_task: asyncio.Task | None = None
 
 
 # ---------------------------------------------------------------------------
-# Public gate queries
+# Public gate queries  (same interface as v1 — callers in batch_sim_runner.py
+# use these two functions; only the implementations change)
 # ---------------------------------------------------------------------------
 
 def is_enabled() -> bool:
-    """True when DBA_COLUMNIST_RIDE_ALONG is set to a non-empty persona id
-    AND DBA_RIDE_ALONG is NOT 1 (mutual exclusion guard)."""
-    val = os.environ.get("DBA_COLUMNIST_RIDE_ALONG", "").strip()
-    if not val:
-        return False
-    if os.environ.get("DBA_RIDE_ALONG") == "1":
-        print(
-            "[columnist_ride_along] WARNING: DBA_RIDE_ALONG=1 and "
-            "DBA_COLUMNIST_RIDE_ALONG are both set — columnist ride-along "
-            "is DISABLED to avoid stdin collision.",
-            file=sys.stderr,
-        )
-        return False
-    return True
+    """True when a sidecar has attached and chosen a persona."""
+    return _CHOSEN_PERSONA_ID is not None
 
 
 def target_persona_id() -> str | None:
     """Return the chosen persona id, or None when ride-along is off."""
-    if not is_enabled():
-        return None
-    return os.environ.get("DBA_COLUMNIST_RIDE_ALONG", "").strip() or None
+    return _CHOSEN_PERSONA_ID
 
 
 # ---------------------------------------------------------------------------
-# JSONL log writer — mirrors ride_along.py conventions exactly
+# JSONL log writer — schema unchanged from v1
 # ---------------------------------------------------------------------------
 
 def _get_log_file() -> Path:
-    """Return the JSONL log path for this session, creating the directory if needed."""
+    """Return (and lazily create) the JSONL path for the current persona."""
     global _LOG_FILE
     if _LOG_FILE is None:
-        persona_id = target_persona_id() or "unknown"
-        override = os.environ.get("DBA_COLUMNIST_RA_LOG", "").strip()
-        if override:
-            _LOG_FILE = Path(override)
-            _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            _LOG_DIR.mkdir(parents=True, exist_ok=True)
-            _LOG_FILE = _LOG_DIR / f"columnist_ride_along_{persona_id}_{_SESSION_TS}.jsonl"
+        persona_id = _CHOSEN_PERSONA_ID or "unknown"
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _LOG_FILE = _LOG_DIR / f"columnist_ride_along_{persona_id}_{_SESSION_TS}.jsonl"
     return _LOG_FILE
 
 
 def _write_log(record: dict) -> None:
-    """Append one JSON line to the session log file. Never raises."""
+    """Append one JSON line to the session log. Never raises."""
+    import sys
     try:
         log_path = _get_log_file()
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
-        # Warn (but don't abort) if the session log grows unexpectedly large.
         try:
             size = log_path.stat().st_size
-            if size > 10 * 1024 * 1024:  # 10 MB
+            if size > 10 * 1024 * 1024:
                 print(
                     f"[columnist_ride_along] WARNING: log file exceeds 10 MB "
                     f"({size // (1024 * 1024)} MB): {log_path}",
@@ -109,11 +109,12 @@ def _write_log(record: dict) -> None:
         except OSError:
             pass
     except Exception as exc:  # noqa: BLE001
-        print(f"[columnist_ride_along] WARNING: failed to write log: {exc}", file=sys.stderr)
+        import sys as _sys
+        print(f"[columnist_ride_along] WARNING: failed to write log: {exc}", file=_sys.stderr)
 
 
 # ---------------------------------------------------------------------------
-# Article ID generator
+# Article ID generator  (unchanged from v1)
 # ---------------------------------------------------------------------------
 
 def _make_article_id() -> str:
@@ -123,232 +124,153 @@ def _make_article_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Stdin reader — runs in a thread via run_in_executor so it never blocks the
-# event loop.  Pushes each raw line into _feedback_queue.
+# Atomic file I/O helpers
 # ---------------------------------------------------------------------------
 
-def _stdin_reader_thread(queue: asyncio.Queue[str], loop: asyncio.AbstractEventLoop) -> None:
-    """Blocking thread: read stdin line-by-line and push into the asyncio queue.
+def _atomic_write_json(path: Path, obj: dict) -> None:
+    """Write *obj* to *path* atomically via a sibling .tmp file."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, default=str), encoding="utf-8")
+    os.replace(tmp, path)
 
-    Runs for the lifetime of the bot process.  Exits cleanly on EOF or any
-    readline error (treat both as ':quit').
-    """
-    while True:
+
+def _read_json_or_none(path: Path) -> dict | None:
+    """Read and parse a JSON file; return None on any error (treat as in-flight)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _delete_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        import sys
+        print(f"[columnist_ride_along] WARNING: could not delete {path}: {exc}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# State writer
+# ---------------------------------------------------------------------------
+
+def _write_state(status: str, **extra_fields: Any) -> None:
+    """Write state.json atomically.  Always includes bot identity fields."""
+    global _pauses_seen
+    payload: dict[str, Any] = {
+        "status": status,
+        "persona_id": _CHOSEN_PERSONA_ID,
+        "persona_display_name": None,
+        "bot_pid": _BOT_PID,
+        "bot_started_at": _BOT_STARTED_AT,
+        "last_update_ts": datetime.datetime.now(timezone.utc).isoformat(),
+        "log_path": str(_get_log_file()) if _CHOSEN_PERSONA_ID else None,
+        "pauses_seen": _pauses_seen,
+        "sidecar_pid": _SIDECAR_PID,
+    }
+    # Resolve display name from persona registry when possible.
+    if _CHOSEN_PERSONA_ID:
         try:
-            line = sys.stdin.readline()
-            if not line:
-                # EOF — treat as :quit
-                asyncio.run_coroutine_threadsafe(queue.put(":quit"), loop)
-                break
-            asyncio.run_coroutine_threadsafe(queue.put(line.rstrip("\n")), loop)
-        except (EOFError, KeyboardInterrupt, OSError):
-            asyncio.run_coroutine_threadsafe(queue.put(":quit"), loop)
-            break
+            from services.personas import PERSONAS as _p
+            persona = _p.get(_CHOSEN_PERSONA_ID)
+            if persona:
+                payload["persona_display_name"] = persona.display_name
+        except Exception:  # noqa: BLE001
+            pass
+    payload.update(extra_fields)
+    try:
+        _CHOICES_DIR = _IPC_DIR
+        _CHOICES_DIR.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(_CHOICES_DIR / "state.json", payload)
+    except Exception as exc:  # noqa: BLE001
+        import sys
+        print(f"[columnist_ride_along] WARNING: failed to write state.json: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
-# Feedback intake task — runs as a background asyncio task
+# IPC dir cold sweep
 # ---------------------------------------------------------------------------
 
-async def _feedback_intake_task() -> None:
-    """Consume lines from _feedback_queue.
+def _cold_sweep_ipc_dir() -> None:
+    """Create the IPC dir and delete all transient files from prior bot sessions."""
+    try:
+        _IPC_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        import sys
+        print(
+            f"[columnist_ride_along] ERROR: cannot create IPC dir {_IPC_DIR}: {exc} — "
+            "ride-along will be unavailable this session.",
+            file=sys.stderr,
+        )
+        return
 
-    When a pause is pending (_pending_event is set), resolve it with the
-    user's input and write a feedback record.  Lines arriving while no
-    pause is active are ignored (they'd be confusing noise from the user
-    typing ahead).
+    for name in ("start.cmd", "pause.json", "feedback.json", "stop.cmd", "sidecar_heartbeat.txt"):
+        _delete_if_exists(_IPC_DIR / name)
 
-    :tag and :sev modifiers accumulate until the next substantive input line
-    and then attach to the feedback record.
-    """
-    global _pending_event, _pending_article_id, _stop_flag, _fires
-
-    assert _feedback_queue is not None
-
-    # Per-pause accumulators — reset after each feedback record is written.
-    _pending_tag: str | None = None
-    _pending_sev: int | None = None
-
-    while True:
-        line = await _feedback_queue.get()
-        stripped = line.strip()
-
-        # ── modifier commands (accumulate for next feedback record) ──────────
-        if stripped.lower().startswith(":tag "):
-            _pending_tag = stripped[5:].strip() or None
-            print(f"   [tag set: {_pending_tag}]", flush=True)
-            continue
-
-        if stripped.lower().startswith(":sev "):
-            sev_raw = stripped[5:].strip()
-            try:
-                sev_val = int(sev_raw)
-                if 0 <= sev_val <= 3:
-                    _pending_sev = sev_val
-                    print(f"   [severity set: {_pending_sev}]", flush=True)
-                else:
-                    print("   [severity must be 0-3]", flush=True)
-            except ValueError:
-                print("   [invalid severity — use :sev 0..3]", flush=True)
-            continue
-
-        # ── quit ─────────────────────────────────────────────────────────────
-        if stripped.lower() == ":quit":
-            print("\n[columnist_ride_along] :quit received — stopping after current batch.",
-                  flush=True)
-            _stop_flag = True
-            if _pending_event is not None:
-                # Write a quit feedback record then release the gate.
-                _write_log({
-                    "kind": "feedback",
-                    "ts": datetime.datetime.now(timezone.utc).isoformat(),
-                    "article_id": _pending_article_id,
-                    "user_feedback": None,
-                    "tag": _pending_tag,
-                    "severity": _pending_sev,
-                    "action": "quit",
-                })
-                evt = _pending_event
-                _pending_event = None
-                _pending_article_id = None
-                _pending_tag = None
-                _pending_sev = None
-                evt.set()
-            # Stay alive in drain mode — auto-release every future pause event
-            # without prompting the user.  The sim runs to completion; the user
-            # exits via Ctrl+C or natural sim end.
-            print(
-                "[columnist_ride_along] Drain mode: all future pauses will be "
-                "auto-released.  Ctrl+C to stop the bot entirely.",
-                flush=True,
-            )
-            continue
-
-        # ── skip (explicit or empty) ──────────────────────────────────────────
-        is_skip = stripped.lower() in (":skip", "")
-        if is_skip or stripped:
-            if _pending_event is None:
-                # No pause active — ignore stray input.
-                continue
-
-            action = "skip" if is_skip else "feedback"
-            user_text: str | None = None if is_skip else stripped
-
-            _write_log({
-                "kind": "feedback",
-                "ts": datetime.datetime.now(timezone.utc).isoformat(),
-                "article_id": _pending_article_id,
-                "user_feedback": user_text,
-                "tag": _pending_tag,
-                "severity": _pending_sev,
-                "action": action,
-            })
-
-            label = f'"{user_text}"' if user_text else "(skipped)"
-            tag_str = f"  tag={_pending_tag}" if _pending_tag else ""
-            sev_str = f"  sev={_pending_sev}" if _pending_sev is not None else ""
-            print(f"   >> LOGGED {label}{tag_str}{sev_str}", flush=True)
-
-            evt = _pending_event
-            _pending_event = None
-            _pending_article_id = None
-            _pending_tag = None
-            _pending_sev = None
-            evt.set()
+    _write_state("detached")
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# IPC command handlers
 # ---------------------------------------------------------------------------
 
-def start_feedback_intake(loop: asyncio.AbstractEventLoop) -> None:
-    """Start the stdin reader thread and feedback intake task.
+def _apply_start_cmd(payload: dict) -> None:
+    """Bot side: process a valid start.cmd payload."""
+    global _CHOSEN_PERSONA_ID, _SIDECAR_PID, _LOG_FILE
 
-    Must be called once after the asyncio event loop is running (e.g. from
-    the bot's on_ready or setup_hook).  Idempotent — safe to call multiple
-    times (only the first call has any effect).
-    """
-    global _feedback_queue
+    import sys
+    from services.personas import PERSONAS as _p
 
-    if _feedback_queue is not None:
-        return  # already started
+    persona_id = str(payload.get("persona_id", "")).strip()
+    sidecar_pid = payload.get("sidecar_pid")
 
-    _feedback_queue = asyncio.Queue()
+    # Reject if already attached to a different persona.
+    if _CHOSEN_PERSONA_ID is not None:
+        _write_state(
+            "rejected",
+            reason=f"already attached to {_CHOSEN_PERSONA_ID}",
+        )
+        print(
+            f"[columnist_ride_along] start.cmd rejected — already attached to {_CHOSEN_PERSONA_ID}",
+            file=sys.stderr,
+        )
+        return
 
-    import threading
-    t = threading.Thread(
-        target=_stdin_reader_thread,
-        args=(_feedback_queue, loop),
-        daemon=True,
-        name="columnist-ra-stdin",
-    )
-    t.start()
+    # Validate persona id.
+    if persona_id not in _p:
+        _write_state("rejected", reason=f"unknown persona: {persona_id}")
+        print(
+            f"[columnist_ride_along] start.cmd rejected — unknown persona: {persona_id}. "
+            f"Valid: {sorted(_p.keys())}",
+            file=sys.stderr,
+        )
+        return
 
-    loop.create_task(_feedback_intake_task(), name="columnist-ra-intake")
+    _CHOSEN_PERSONA_ID = persona_id
+    _SIDECAR_PID = int(sidecar_pid) if sidecar_pid is not None else None
+    _LOG_FILE = None  # reset so _get_log_file() picks up the new persona name
+
+    attached_at = datetime.datetime.now(timezone.utc).isoformat()
+    _write_state("attached", attached_at=attached_at)
     print(
-        f"[columnist_ride_along] Ride-along active — target persona: "
-        f"{target_persona_id()}  log: {_get_log_file()}",
+        f"[columnist_ride_along] attached — persona={persona_id} "
+        f"sidecar_pid={_SIDECAR_PID} log={_get_log_file()}",
         flush=True,
     )
 
 
-async def stop() -> None:
-    """Signal the intake task to exit and flush the session_end record.
-
-    Called from bot/client.py::close() on every clean shutdown path so the
-    JSONL always gets a closing record.  Safe to call multiple times.
-    """
-    global _stop_flag, _pending_event, _pending_article_id
-    if _stop_flag:
-        # Already in drain/stop state; just write the end record if needed.
-        pass
-    else:
-        _stop_flag = True
-        # Release any currently pending pause so request_pause() returns.
-        if _pending_event is not None:
-            _write_log({
-                "kind": "feedback",
-                "ts": datetime.datetime.now(timezone.utc).isoformat(),
-                "article_id": _pending_article_id,
-                "user_feedback": None,
-                "tag": None,
-                "severity": None,
-                "action": "shutdown",
-            })
-            evt = _pending_event
-            _pending_event = None
-            _pending_article_id = None
-            evt.set()
-
-    _write_log({
-        "kind": "session_end",
-        "ts": datetime.datetime.now(timezone.utc).isoformat(),
-        "persona_id": target_persona_id(),
-        "total_fires": _fires,
-        "reason": "stop",
-    })
-
-
-async def request_pause(article_record: dict[str, Any]) -> None:
-    """Called from batch_sim_runner after the chosen persona's embed is sent.
-
-    Writes a pending record to JSONL, prints a one-screen summary panel,
-    then suspends until the user submits feedback (or :quit/:skip).
-
-    The asyncio.Event handshake ensures the sim freezes at exactly the right
-    moment — after the Discord send but before any further batch activity.
-    """
+def _apply_feedback(payload: dict) -> None:
+    """Bot side: process a feedback.json payload while a pause is in flight."""
     global _pending_event, _pending_article_id, _fires
 
-    if _feedback_queue is None:
-        # Intake not started — this shouldn't happen in normal use, but guard it.
-        return
+    import sys
 
-    # Drain mode: user typed :quit — auto-release this pause immediately so the
-    # sim runs to completion without blocking.
-    if _stop_flag:
-        _fires += 1
-        article_id = _make_article_id()
+    article_id = payload.get("article_id")
+
+    # Stale-feedback guard: reject if article_id doesn't match current pause.
+    if article_id != _pending_article_id:
         _write_log({
             "kind": "feedback",
             "ts": datetime.datetime.now(timezone.utc).isoformat(),
@@ -356,16 +278,267 @@ async def request_pause(article_record: dict[str, Any]) -> None:
             "user_feedback": None,
             "tag": None,
             "severity": None,
-            "action": "drain",
+            "action": "stale_feedback",
+            "reason": f"expected {_pending_article_id}, got {article_id}",
         })
+        print(
+            f"[columnist_ride_along] stale feedback discarded "
+            f"(expected={_pending_article_id} got={article_id})",
+            file=sys.stderr,
+        )
+        return
+
+    _write_log({
+        "kind": "feedback",
+        "ts": datetime.datetime.now(timezone.utc).isoformat(),
+        "article_id": article_id,
+        "user_feedback": payload.get("user_feedback"),
+        "tag": payload.get("tag"),
+        "severity": payload.get("severity"),
+        "action": payload.get("action", "feedback"),
+    })
+
+    # Release the gate.
+    evt = _pending_event
+    _pending_event = None
+    _pending_article_id = None
+    if evt is not None:
+        evt.set()
+
+    _write_state("attached")
+
+
+def _apply_stop_cmd(payload: dict) -> None:
+    """Bot side: process a stop.cmd — detach sidecar, clear chosen-persona state."""
+    global _CHOSEN_PERSONA_ID, _SIDECAR_PID, _fires, _pauses_seen, _LOG_FILE
+    global _pending_event, _pending_article_id
+
+    import sys
+
+    reason = payload.get("reason", "user_quit")
+
+    # Release any in-flight pause.
+    if _pending_event is not None:
+        _write_log({
+            "kind": "feedback",
+            "ts": datetime.datetime.now(timezone.utc).isoformat(),
+            "article_id": _pending_article_id,
+            "user_feedback": None,
+            "tag": None,
+            "severity": None,
+            "action": "quit",
+            "reason": reason,
+        })
+        evt = _pending_event
+        _pending_event = None
+        _pending_article_id = None
+        if evt is not None:
+            evt.set()
+
+    _write_log({
+        "kind": "session_end",
+        "ts": datetime.datetime.now(timezone.utc).isoformat(),
+        "persona_id": _CHOSEN_PERSONA_ID,
+        "total_fires": _fires,
+        "reason": reason,
+    })
+
+    print(
+        f"[columnist_ride_along] stop.cmd received (reason={reason}) — detaching "
+        f"persona={_CHOSEN_PERSONA_ID}",
+        flush=True,
+    )
+
+    _CHOSEN_PERSONA_ID = None
+    _SIDECAR_PID = None
+    _fires = 0
+    _pauses_seen = 0
+    _LOG_FILE = None
+    _write_state("detached")
+
+
+def _drain_dead_sidecar(reason: str) -> None:
+    """Release a mid-pause gate when the sidecar is no longer responsive."""
+    global _CHOSEN_PERSONA_ID, _SIDECAR_PID, _fires, _pauses_seen, _LOG_FILE
+    global _pending_event, _pending_article_id
+
+    import sys
+
+    print(f"[columnist_ride_along] draining dead sidecar: {reason}", file=sys.stderr)
+
+    if _pending_event is not None:
+        _write_log({
+            "kind": "feedback",
+            "ts": datetime.datetime.now(timezone.utc).isoformat(),
+            "article_id": _pending_article_id,
+            "user_feedback": None,
+            "tag": None,
+            "severity": None,
+            "action": "sidecar_died",
+            "reason": reason,
+        })
+        evt = _pending_event
+        _pending_event = None
+        _pending_article_id = None
+        if evt is not None:
+            evt.set()
+
+    _write_log({
+        "kind": "session_end",
+        "ts": datetime.datetime.now(timezone.utc).isoformat(),
+        "persona_id": _CHOSEN_PERSONA_ID,
+        "total_fires": _fires,
+        "reason": "sidecar_died",
+    })
+
+    _delete_if_exists(_IPC_DIR / "pause.json")
+
+    _CHOSEN_PERSONA_ID = None
+    _SIDECAR_PID = None
+    _fires = 0
+    _pauses_seen = 0
+    _LOG_FILE = None
+    _write_state("detached")
+
+
+# ---------------------------------------------------------------------------
+# Sidecar liveness check (heartbeat file; psutil optional)
+# ---------------------------------------------------------------------------
+
+_HEARTBEAT_TIMEOUT_S: float = 10.0   # sidecar writes heartbeat every ~0.3 s; 10 s is generous
+_HEARTBEAT_MISS_COUNT: int = 0        # consecutive polls with stale heartbeat while paused
+
+def _sidecar_alive() -> bool:
+    """Return True if the sidecar appears to be running.
+
+    Primary check: heartbeat file mtime within the last 10 s.
+    Fallback (if heartbeat never appeared): try psutil; if unavailable, trust
+    that the sidecar is alive until heartbeat evidence arrives.
+    """
+    hb = _IPC_DIR / "sidecar_heartbeat.txt"
+    if hb.exists():
+        try:
+            age = datetime.datetime.now().timestamp() - hb.stat().st_mtime
+            return age < _HEARTBEAT_TIMEOUT_S
+        except OSError:
+            pass
+    # No heartbeat file yet — check psutil if available.
+    if _SIDECAR_PID is None:
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(_SIDECAR_PID)
+    except ImportError:
+        # psutil not installed; no heartbeat yet; assume alive (benefit of doubt
+        # for the first 5 s after attach before we have evidence either way).
+        return True
+
+
+# ---------------------------------------------------------------------------
+# IPC watch task — always-on background coroutine
+# ---------------------------------------------------------------------------
+
+async def ipc_watch_task() -> None:
+    """Poll the IPC directory every 300 ms and dispatch command handlers.
+
+    Runs for the lifetime of the bot process.  Started by bot/client.py::setup_hook().
+    Does the cold sweep on first iteration, then no-ops until a start.cmd appears.
+    """
+    global _HEARTBEAT_MISS_COUNT
+
+    first_iter = True
+    while True:
+        try:
+            if first_iter:
+                _cold_sweep_ipc_dir()
+                first_iter = False
+            else:
+                # Keep state.json last_update_ts fresh so sidecar can detect a hung bot.
+                _write_state(
+                    "paused" if _pending_event is not None else
+                    ("attached" if _CHOSEN_PERSONA_ID else "detached")
+                )
+
+            # --- stop.cmd: highest priority — process before other commands ---
+            stop_path = _IPC_DIR / "stop.cmd"
+            if stop_path.exists():
+                payload = _read_json_or_none(stop_path)
+                _delete_if_exists(stop_path)
+                if payload is not None:
+                    _apply_stop_cmd(payload)
+                await asyncio.sleep(0.3)
+                continue
+
+            # --- start.cmd ---
+            start_path = _IPC_DIR / "start.cmd"
+            if start_path.exists() and _CHOSEN_PERSONA_ID is None:
+                payload = _read_json_or_none(start_path)
+                _delete_if_exists(start_path)
+                if payload is not None:
+                    _apply_start_cmd(payload)
+
+            # --- feedback.json (only relevant when a pause is in flight) ---
+            fb_path = _IPC_DIR / "feedback.json"
+            if fb_path.exists() and _pending_event is not None:
+                payload = _read_json_or_none(fb_path)
+                _delete_if_exists(fb_path)
+                if payload is not None:
+                    _apply_feedback(payload)
+            elif fb_path.exists():
+                # feedback.json arrived with no pending pause — stale; discard.
+                try:
+                    stat = fb_path.stat()
+                    age = datetime.datetime.now().timestamp() - stat.st_mtime
+                    if age > 60:
+                        _delete_if_exists(fb_path)
+                except OSError:
+                    pass
+
+            # --- Sidecar liveness check while paused ---
+            if _pending_event is not None and _CHOSEN_PERSONA_ID is not None:
+                if not _sidecar_alive():
+                    _HEARTBEAT_MISS_COUNT += 1
+                    if _HEARTBEAT_MISS_COUNT >= 3:
+                        _drain_dead_sidecar(
+                            f"sidecar PID {_SIDECAR_PID} no longer responsive "
+                            f"after {_HEARTBEAT_MISS_COUNT * 0.3:.1f}s"
+                        )
+                        _HEARTBEAT_MISS_COUNT = 0
+                else:
+                    _HEARTBEAT_MISS_COUNT = 0
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            import sys
+            print(f"[columnist_ride_along] ipc_watch_task error: {exc}", file=sys.stderr)
+
+        await asyncio.sleep(0.3)
+
+
+# ---------------------------------------------------------------------------
+# Public API: request_pause
+# ---------------------------------------------------------------------------
+
+async def request_pause(article_record: dict[str, Any]) -> None:
+    """Called from batch_sim_runner after the chosen persona's embed is sent.
+
+    Writes a pending JSONL record, writes pause.json (IPC signal to sidecar),
+    then suspends until the sidecar submits feedback.json or a stop/timeout
+    occurs.  Releases automatically on bot shutdown.
+    """
+    global _pending_event, _pending_article_id, _fires, _pauses_seen
+
+    if _CHOSEN_PERSONA_ID is None:
+        # Ride-along was detached between the is_enabled() check and here.
         return
 
     _fires += 1
+    _pauses_seen += 1
     article_id = _make_article_id()
     _pending_article_id = article_id
 
-    # Write the pending record BEFORE awaiting — if the process dies mid-pause,
-    # the article + prompt are preserved.
+    # Write the JSONL pending record before awaiting so it survives a crash.
     _write_log({
         "kind": "pending",
         "ts": datetime.datetime.now(timezone.utc).isoformat(),
@@ -373,53 +546,90 @@ async def request_pause(article_record: dict[str, Any]) -> None:
         **article_record,
     })
 
-    # Print the one-screen pause panel.
-    sep = "=" * 60
-    headline = (article_record.get("article") or {}).get("headline", "")
-    body = (article_record.get("article") or {}).get("body", "")
-    persona_display = article_record.get("persona_display_name", article_record.get("persona_id", ""))
-    prompt_preview = ""
-    prompt_data = article_record.get("prompt") or {}
-    user_msg = prompt_data.get("user", "")
-    if user_msg:
-        prompt_preview = user_msg[:300].replace("\n", " ")
+    # Write pause.json — sidecar picks this up and displays the panel.
+    article = article_record.get("article") or {}
+    body = article.get("body", "")
+    headline = article.get("headline", "")
+    pause_payload: dict[str, Any] = {
+        "article_id": article_id,
+        "persona_id": article_record.get("persona_id", _CHOSEN_PERSONA_ID),
+        "persona_display_name": article_record.get("persona_display_name", ""),
+        "headline": headline,
+        "body_preview": body[:4096],  # 4 KB ceiling; JSONL has full body
+        "embed_preview": article_record.get("embed_preview", f"{headline}\n\n{body[:400]}"),
+        "pause_index": _pauses_seen,
+        "posted_at": datetime.datetime.now(timezone.utc).isoformat(),
+    }
+    _atomic_write_json(_IPC_DIR / "pause.json", pause_payload)
+    _write_state("paused")
 
-    print(f"\n{sep}", flush=True)
-    print(f"  COLUMNIST RIDE-ALONG — pause #{_fires}", flush=True)
-    print(f"  Persona : {persona_display}", flush=True)
-    print(f"  Headline: {headline}", flush=True)
-    if body:
-        print(f"  Body    : {body[:400]}", flush=True)
-    if prompt_preview:
-        print(f"  Prompt  : {prompt_preview}...", flush=True)
-    print(f"{sep}", flush=True)
-    print(
-        "  Type feedback and press Enter — or :skip  :tag <cat>  :sev 0-3  :quit",
-        flush=True,
-    )
-    print("> ", end="", flush=True)
-
-    # Create the gate event and await it — this suspends the entire sim.
+    # Gate the sim.
     gate = asyncio.Event()
     _pending_event = gate
     await gate.wait()
 
 
-def should_stop() -> bool:
-    """True when the user typed :quit — sim runner can check this between batches."""
-    return _stop_flag
-
-
 # ---------------------------------------------------------------------------
-# Post-session summary — mirrors ride_along.summarize_session()
+# Bot shutdown
 # ---------------------------------------------------------------------------
 
-def summarize_session() -> None:
-    """Read this session's JSONL log and print a structured summary.
+async def shutdown() -> None:
+    """Write a closing state.json and JSONL record; release any in-flight pause.
 
-    Called from the launcher on exit.
+    Called from bot/client.py::close().  Replaces v1's stop().
     """
-    log_file = _get_log_file()
+    global _pending_event, _pending_article_id
+
+    if _pending_event is not None:
+        _write_log({
+            "kind": "feedback",
+            "ts": datetime.datetime.now(timezone.utc).isoformat(),
+            "article_id": _pending_article_id,
+            "user_feedback": None,
+            "tag": None,
+            "severity": None,
+            "action": "shutdown",
+        })
+        evt = _pending_event
+        _pending_event = None
+        _pending_article_id = None
+        if evt is not None:
+            evt.set()
+
+    if _fires > 0:
+        _write_log({
+            "kind": "session_end",
+            "ts": datetime.datetime.now(timezone.utc).isoformat(),
+            "persona_id": _CHOSEN_PERSONA_ID,
+            "total_fires": _fires,
+            "reason": "bot_shutting_down",
+        })
+
+    _write_state("detached", reason="bot_shutting_down")
+
+    if _ipc_task is not None and not _ipc_task.done():
+        _ipc_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(_ipc_task), timeout=1.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Post-session summary — unchanged from v1 (called by the sidecar on :quit)
+# ---------------------------------------------------------------------------
+
+def summarize_session(log_path: str | None = None) -> None:
+    """Read the session JSONL log and print a structured summary.
+
+    When called by the sidecar (via python -c), pass log_path explicitly.
+    When called without args, uses the current module-level log file path.
+    """
+    if log_path:
+        log_file = Path(log_path)
+    else:
+        log_file = _get_log_file()
+
     if not log_file.exists():
         print("[columnist_ride_along] No log file found — nothing to summarize.")
         return
@@ -436,6 +646,7 @@ def summarize_session() -> None:
                 except json.JSONDecodeError:
                     continue
     except Exception as exc:  # noqa: BLE001
+        import sys
         print(f"[columnist_ride_along] could not read log for summary: {exc}", file=sys.stderr)
         return
 
@@ -452,25 +663,21 @@ def summarize_session() -> None:
     print("COLUMNIST RIDE-ALONG SESSION SUMMARY")
     print(sep)
     print(f"  Log file    : {log_file}")
-    print(f"  Target      : {target_persona_id()}")
     print(f"  Articles    : {len(pending)}")
     print(f"  Feedback    : {len(fb_with_text)} with text, {len(skips)} skipped")
 
-    # Tag breakdown
     tagged = [r for r in feedback if r.get("tag")]
     if tagged:
         from collections import Counter
         tag_counts = Counter(r["tag"] for r in tagged)
         print(f"  Tags        : {dict(tag_counts)}")
 
-    # Severity breakdown
     severed = [r for r in feedback if r.get("severity") is not None]
     if severed:
         from collections import Counter
         sev_counts = Counter(r["severity"] for r in severed)
         print(f"  Severities  : {dict(sev_counts)}")
 
-    # Print all feedback lines
     if fb_with_text:
         print(f"\n  Feedback ({len(fb_with_text)}):")
         for r in fb_with_text:
