@@ -352,15 +352,62 @@ async def generate(  # noqa: PLR0912, PLR0915
 
         if parsed is None:
             # All structured parsing failed — wrap raw text and return something.
+            # Guard: if the raw text looks like JSON (starts with '{'), try one more
+            # time to pull readable fields out of it so we never post raw JSON to Discord.
             log.warning(
                 "columnist_service: JSON parse failed for %s/%s — using prose fallback | raw: %r",
                 _persona_id, _category, raw[:120],
             )
             persona_display = persona.display_name
-            first_line = raw.split("\n")[0].strip()[:80]
-            headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
-            rest = raw[len(first_line):].strip()[:300]
-            body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
+            _prose_raw = raw.strip()
+            if _prose_raw.startswith("{"):
+                # Attempt a best-effort field extraction from JSON-shaped text.
+                _json_candidate: dict | None = None
+                try:
+                    import re as _re
+                    _cleaned = _re.sub(r",\s*([}\]])", r"\1", _prose_raw)
+                    _json_candidate = json.loads(_cleaned)
+                except Exception:
+                    pass
+                if isinstance(_json_candidate, dict):
+                    # Got a valid dict — route through the normal assembly path.
+                    _h = str(_json_candidate.get("headline", "")).strip()
+                    _b = str(_json_candidate.get("body", "")).strip()
+                    if _h and _b:
+                        # Old-shape fallback.
+                        await article_repo.insert(
+                            pool, league_id=league_id, season=season,
+                            persona_id=_persona_id, category=_category,
+                            headline=_h, body=_b,
+                            subject_team_ids=_subject_team_ids,
+                            subject_player_ids=_subject_player_ids,
+                        )
+                        return {"headline": _h, "body": _b}
+                    # New-shape keys available — assemble.
+                    _json_candidate.setdefault("lede", "")
+                    _json_candidate.setdefault("key_stats", [])
+                    _json_candidate.setdefault("bullets", [])
+                    _json_candidate.setdefault("verdict", "")
+                    _h = str(_json_candidate.get("headline", "")).strip()
+                    if _h:
+                        _body = _assemble_article(_json_candidate, persona_display)
+                        await article_repo.insert(
+                            pool, league_id=league_id, season=season,
+                            persona_id=_persona_id, category=_category,
+                            headline=_h, body=_body,
+                            subject_team_ids=_subject_team_ids,
+                            subject_player_ids=_subject_player_ids,
+                        )
+                        return {"headline": _h, "body": _body}
+                # JSON-shaped but still unparseable — discard JSON text entirely;
+                # emit a generic headline so no raw braces reach Discord.
+                headline = f"{_category.replace('_', ' ').title()} Report"
+                body = f"**{headline}**\n\n— *{persona_display}*"
+            else:
+                first_line = _prose_raw.split("\n")[0].strip()[:80]
+                headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
+                rest = _prose_raw[len(first_line):].strip()[:300]
+                body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
             await article_repo.insert(
                 pool, league_id=league_id, season=season,
                 persona_id=_persona_id, category=_category,
@@ -392,11 +439,9 @@ async def generate(  # noqa: PLR0912, PLR0915
                 _persona_id, list(parsed.keys()),
             )
             persona_display = persona.display_name
-            raw_preview = raw[:380].strip()
-            first_line = raw_preview.split("\n")[0].strip()[:80]
-            headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
-            rest = raw_preview[len(first_line):].strip()[:300]
-            body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
+            # Don't emit raw JSON into the body — use a generic headline instead.
+            headline = f"{_category.replace('_', ' ').title()} Report"
+            body = f"**{headline}**\n\n— *{persona_display}*"
             await article_repo.insert(
                 pool, league_id=league_id, season=season,
                 persona_id=_persona_id, category=_category,

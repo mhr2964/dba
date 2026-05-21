@@ -441,6 +441,7 @@ async def _persist_game_result(
     season: int,
     news_channel: Optional[discord.TextChannel],
     injury_channel: Optional[discord.TextChannel] = None,
+    records_channel: Optional[discord.TextChannel] = None,
 ) -> dict:
     game_id = game["id"]
     _quarter_keys = ("q1_home", "q1_away", "q2_home", "q2_away",
@@ -510,13 +511,14 @@ async def _persist_game_result(
 
     # Season-scope records are still written to DB for /team records queries, but we
     # suppress their announcements entirely — they triggered on ordinary numbers every
-    # game and were the primary spam source. Only all-time records post to the channel.
+    # game and were the primary spam source. Only all-time records post to #records.
     _record_announcements, at_announcements = await records_service.check_and_update_records(
         pool, game["league_id"], season, game_id, result
     )
     for at_announcement in at_announcements:
-        if news_channel:
-            await news_channel.send(embed=sim_embeds.season_record_embed(at_announcement))
+        _rec_ch = records_channel or news_channel
+        if _rec_ch:
+            await _rec_ch.send(embed=sim_embeds.season_record_embed(at_announcement))
 
     return standings_update
 
@@ -528,6 +530,7 @@ async def _sim_single_game(
     season: int,
     news_channel: Optional[discord.TextChannel],
     injury_channel: Optional[discord.TextChannel] = None,
+    records_channel: Optional[discord.TextChannel] = None,
 ) -> Optional[dict]:
     home_team = await team_repo.get_by_id(pool, game["home_team_id"])
     away_team = await team_repo.get_by_id(pool, game["away_team_id"])
@@ -608,7 +611,7 @@ async def _sim_single_game(
     for line in result.get("home_box", []) + result.get("away_box", []):
         line["player_name"] = _name_by_id.get(line.get("player_id"), "")
 
-    await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel, injury_channel)
+    await _persist_game_result(pool, game, result, home_team, away_team, season, news_channel, injury_channel, records_channel)
     return {
         "game": game,
         "home_team": home_team,
@@ -699,6 +702,46 @@ async def _get_transactions_channel(guild: discord.Guild, pool, league_id: int) 
     if not channel_id:
         return None
     return guild.get_channel(channel_id)
+
+
+async def _ensure_records_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
+    """Return the #records channel, creating it lazily if it doesn't exist yet.
+
+    Existing leagues created before the records channel was added to CHANNEL_ROLES
+    won't have a row in league_channels.  On first use we create the Discord channel
+    under the same category as #league-news and store its ID — subsequent calls are
+    a cheap DB lookup.  Falls back to #league-news if creation fails so records are
+    never silently dropped.
+    """
+    channel_id = await league_repo.get_channel(pool, league_id, "records")
+    if channel_id:
+        ch = guild.get_channel(channel_id)
+        if ch:
+            return ch
+
+    # Lazy-create: find the DBA category by looking at where #league-news lives.
+    news_id = await league_repo.get_channel(pool, league_id, "league-news")
+    category: Optional[discord.CategoryChannel] = None
+    if news_id:
+        news_ch = guild.get_channel(news_id)
+        if news_ch and news_ch.category:
+            category = news_ch.category
+
+    try:
+        new_ch = await guild.create_text_channel("records", category=category)
+        await league_repo.add_channel(pool, league_id, "records", new_ch.id)
+        log.info(
+            "batch_sim_runner: lazily created #records channel (id=%d) for league %d",
+            new_ch.id, league_id,
+        )
+        return new_ch
+    except Exception as exc:
+        log.warning(
+            "batch_sim_runner: could not create #records channel for league %d: %s — falling back to #league-news",
+            league_id, exc,
+        )
+        # Fall back to league-news so the post isn't silently lost.
+        return await _get_news_channel(guild, pool, league_id)
 
 
 async def _maybe_run_cpu_trades(
@@ -2295,6 +2338,7 @@ async def sim_until_rival(
     standings_channel = await _get_standings_channel(guild, pool, league_id)
     news_channel = await _get_news_channel(guild, pool, league_id)
     injury_channel = await _get_injury_channel(guild, pool, league_id)
+    records_channel = await _ensure_records_channel(guild, pool, league_id)
 
     games_simmed = 0
     user_matchups_simmed = 0
@@ -2304,7 +2348,7 @@ async def sim_until_rival(
         if game.get("status") == "simmed":
             continue
 
-        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel)
+        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel)
         if sim_result is None:
             continue
 
@@ -2455,6 +2499,7 @@ async def sim_range(
     standings_channel = await _get_standings_channel(guild, pool, league_id)
     news_channel = await _get_news_channel(guild, pool, league_id)
     injury_channel = await _get_injury_channel(guild, pool, league_id)
+    records_channel = await _ensure_records_channel(guild, pool, league_id)
 
     games_simmed = 0
     user_matchups_simmed = 0
@@ -2464,7 +2509,7 @@ async def sim_range(
         if game.get("status") == "simmed":
             continue
 
-        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel)
+        sim_result = await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel)
         if sim_result is None:
             continue
 
@@ -2578,4 +2623,5 @@ async def sim_single_matchup(
         return None
     news_channel = await _get_news_channel(guild, pool, league_id)
     injury_channel = await _get_injury_channel(guild, pool, league_id)
-    return await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel)
+    records_channel = await _ensure_records_channel(guild, pool, league_id)
+    return await _sim_single_game(pool, game, league_id, season, news_channel, injury_channel, records_channel)

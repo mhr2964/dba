@@ -17,7 +17,7 @@ from services.role_service import COACH_PHILOSOPHIES
 
 log = get_logger(__name__)
 
-CHANNEL_ROLES = ["league-news", "analysis", "transactions", "injuries", "box-scores", "standings", "trade-block"]
+CHANNEL_ROLES = ["league-news", "analysis", "transactions", "injuries", "box-scores", "standings", "trade-block", "records"]
 
 
 async def _randomize_philosophies(pool_or_conn, league_id: int, rng: Optional[random.Random] = None) -> None:
