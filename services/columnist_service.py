@@ -766,8 +766,7 @@ def _assemble_tank_watch(parsed: dict, persona_display: str, ctx: dict | None = 
     body = _dedupe_headline(headline, body)
 
     parts: list[str] = []
-    if headline:
-        parts.append(f"**{headline}**")
+    # Do NOT prepend headline here — the Discord embed title already shows it.
     parts.append(body)
     parts.append(f"— *{persona_display}*")
     return "\n\n".join(parts)
@@ -1239,9 +1238,7 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
     grades = [g for g in grades if g]
 
     out: list[str] = []
-
-    if headline:
-        out.append(f"**{headline}**")
+    # Do NOT prepend headline here — the Discord embed title already shows it.
 
     def _render_item(item: dict) -> str:
         """Format a single asset line: Player Name (PG, 28, OVR 84) or pick label."""
@@ -1432,8 +1429,7 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
     body_fallback = bool(east_blurb and not west_blurb and not closer)
 
     out: list[str] = []
-    if headline:
-        out.append(f"**{headline}**")
+    # Do NOT prepend headline here — the Discord embed title already shows it.
     if month_label:
         out.append(f"*{month_label}*")
 
