@@ -27,24 +27,28 @@ marcus_cole = register_persona(Persona(
         "- grades: A through F (e.g. A, B+, C-). Grade each team's side of the deal.\n\n"
         "Return ONLY valid JSON — no markdown, no code fences:\n"
         "{\"headline\": \"BREAKING: <punchy ≤80 chars>\", "
-        "\"framing\": \"<1-sentence deal setup>\", "
-        "\"analysis\": \"<1-2 sentence analytical take — who wins/loses and why>\", "
+        "\"body\": \"[FRAMING] <1-sentence deal setup>\\n[ANALYSIS] <1-2 sentence analytical take — who wins/loses and why>\", "
         "\"grade_a\": \"<A|B+|B|C+|C|D|F>\", "
-        "\"grade_b\": \"<A|B+|B|C+|C|D|F>\"}"
+        "\"grade_b\": \"<A|B+|B|C+|C|D|F>\"}\n\n"
+        "The body MUST contain both markers in order: [FRAMING] then [ANALYSIS], each on its own line. "
+        "grade_a and grade_b are separate keys — short letter grades only (e.g. A, B+, C-).\n\n"
+        "Example body value:\n"
+        "\"[FRAMING] The Lakers moved fast to fill their frontcourt void after the Whiteside buyout.\\n"
+        "[ANALYSIS] LAL wins on fit — Cole slots beside Davis immediately; BOS overpays in picks but buys time at the deadline.\""
     ),
     categories=("trade_report",),
     context_keys=("posture", "plan", "philosophy", "context_signals", "recent_role_changes"),
     category_overrides={"trade_report": "trade_report"},
     # output_shape_override suppresses the global output_shape_rule so the JSON
-    # spec in voice_notes (headline/framing/analysis/grade_a/grade_b) is the only
+    # spec in voice_notes (headline/body/grade_a/grade_b) is the only
     # instruction the LLM sees for response format.
     output_shape_override=(
         "OUTPUT SHAPE (mandatory): Return ONLY valid JSON with exactly these keys: "
-        "headline, framing, analysis, grade_a, grade_b. "
+        "headline, body, grade_a, grade_b. "
         "No other keys. No markdown. No code fences. "
+        "The body value must contain [FRAMING] and [ANALYSIS] markers on separate lines. "
         "Example: {\"headline\": \"BREAKING: Cole to LAL\", "
-        "\"framing\": \"The Lakers moved fast to fill their frontcourt void.\", "
-        "\"analysis\": \"LAL wins the deal on fit; BOS overpays in picks but buys time.\", "
+        "\"body\": \"[FRAMING] The Lakers moved fast to fill their frontcourt void.\\n[ANALYSIS] LAL wins the deal on fit; BOS overpays in picks but buys time.\", "
         "\"grade_a\": \"A\", \"grade_b\": \"C+\"}\n\n"
     ),
 ))

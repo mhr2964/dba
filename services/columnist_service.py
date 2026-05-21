@@ -902,6 +902,30 @@ def _assemble_index(parsed: dict, persona_display: str) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_trade_body(body: str) -> tuple[str, str]:
+    """Split a trade report body string on [FRAMING] / [ANALYSIS] sentinels.
+
+    Returns (framing, analysis).  If sentinels are missing, framing gets the
+    raw body verbatim and analysis is empty string — caller renders verbatim
+    so output is never blank.
+    """
+    import re
+    pattern = re.compile(r"\[(?:FRAMING|ANALYSIS)\]", re.IGNORECASE)
+    markers = [(m.group(0).upper(), m.start()) for m in pattern.finditer(body)]
+    if not markers:
+        # No sentinels — return raw body as framing so it still renders.
+        return body, ""
+
+    chunks: dict[str, str] = {}
+    for i, (label, start) in enumerate(markers):
+        text_start = start + len(label)
+        text_end = markers[i + 1][1] if i + 1 < len(markers) else len(body)
+        key = label.strip("[]")  # FRAMING / ANALYSIS
+        chunks[key] = body[text_start:text_end].strip()
+
+    return chunks.get("FRAMING", ""), chunks.get("ANALYSIS", "")
+
+
 def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
     """Trade report — structured swap blocks that make get/give visible at a glance.
 
@@ -910,8 +934,11 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
     or malformed so the function never crashes.
     """
     headline = str(parsed.get("headline", "")).strip()
-    framing = str(parsed.get("framing", "")).strip()
-    analysis = str(parsed.get("analysis", "")).strip()
+
+    # Framing and analysis live inside `body` with [FRAMING] / [ANALYSIS] sentinels.
+    # Fall back to the raw body verbatim if a marker is absent so output is never blank.
+    raw_body = str(parsed.get("body", "")).strip()
+    framing, analysis = _parse_trade_body(raw_body)
 
     ctx = ctx or {}
     teams: list[dict] = ctx.get("teams") or []
@@ -995,6 +1022,37 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
     return "\n\n".join(out)
 
 
+def _parse_potm_body(body: str) -> tuple[str, str, str]:
+    """Split a POTM body string on [EAST] / [WEST] / [CLOSER] sentinels.
+
+    Returns (east_blurb, west_blurb, closer).  If a sentinel is missing the
+    affected field is empty string and the caller will fall back to rendering
+    the raw body verbatim so output is never blank.
+    """
+    import re
+    pattern = re.compile(r"\[(?:EAST|WEST|CLOSER)\]", re.IGNORECASE)
+    markers = [(m.group(0).upper(), m.start()) for m in pattern.finditer(body)]
+    if not markers:
+        return body, "", ""
+
+    chunks: dict[str, str] = {}
+    for i, (label, start) in enumerate(markers):
+        text_start = start + len(label)
+        text_end = markers[i + 1][1] if i + 1 < len(markers) else len(body)
+        key = label.strip("[]")  # EAST / WEST / CLOSER
+        chunks[key] = body[text_start:text_end].strip()
+
+    east_blurb = chunks.get("EAST", "")
+    west_blurb = chunks.get("WEST", "")
+    closer = chunks.get("CLOSER", "")
+
+    # If any required section missing, surface the raw body so nothing is blank.
+    if not east_blurb and not west_blurb:
+        return body, "", ""
+
+    return east_blurb, west_blurb, closer
+
+
 def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
     """Player of the Month — features both conference winners side-by-side.
 
@@ -1003,9 +1061,11 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
     (east_blurb, west_blurb, closer).
     """
     headline = str(parsed.get("headline", "")).strip()
-    east_blurb = str(parsed.get("east_blurb", "")).strip()
-    west_blurb = str(parsed.get("west_blurb", "")).strip()
-    closer = str(parsed.get("closer", "")).strip()
+
+    # Body uses [EAST] / [WEST] / [CLOSER] sentinels.  Fall back to the raw body
+    # string rendered verbatim if any marker is missing (never produce blank output).
+    raw_body = str(parsed.get("body", "")).strip()
+    east_blurb, west_blurb, closer = _parse_potm_body(raw_body)
 
     ctx = ctx or {}
     month_label = str(ctx.get("month_label", "")).strip()
@@ -1023,18 +1083,27 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
         if apg is not None: parts.append(f"{apg:.1f}a")
         return " · ".join(parts) + (f"  ({games} games)" if games is not None else "")
 
+    # Detect fallback: _parse_potm_body returns raw body in east_blurb when sentinels
+    # are missing (west_blurb and closer will both be "").  In that case render the
+    # ctx asset blocks with the raw body as a prose paragraph rather than slotting
+    # it into just the East section.
+    body_fallback = bool(east_blurb and not west_blurb and not closer)
+
     out: list[str] = []
     if headline:
         out.append(f"**{headline}**")
     if month_label:
         out.append(f"*{month_label}*")
 
+    if body_fallback and east_blurb:
+        out.append(east_blurb)
+
     divider = "━" * 24
     out.append(divider)
 
     if east:
         out.append(f"🌅 **EAST — {east.get('player', '?')}**  ·  {east.get('team', '?')}")
-        if east_blurb:
+        if not body_fallback and east_blurb:
             out.append(east_blurb)
         out.append(f"> `{_stat_line(east)}`")
 
