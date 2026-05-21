@@ -69,15 +69,17 @@ def _tolerant_json_parse(raw: str, persona_id: str, category: str) -> dict | Non
     """
     text = raw.strip()
 
-    # 1. Strip markdown code fences (handles truncated responses where the
-    # closing ``` is missing).
-    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    # 1. Strip markdown code fences ONLY when they wrap the whole response.
+    # Anchored at start/end so backticks INSIDE the JSON (e.g. multi-line
+    # code blocks within a body string) are preserved as content.
+    fence_match = re.match(r"^```(?:json)?\s*([\s\S]*?)```\s*$", text)
     if fence_match:
         text = fence_match.group(1).strip()
     else:
-        # Truncated response — strip opening fence and trailing fence if any.
-        text = re.sub(r"^`+\s*(?:json)?\s*", "", text)
-        text = re.sub(r"`+\s*$", "", text)
+        # Possibly truncated — strip a leading fence if present, trailing if
+        # at the very end. Don't touch fences in the middle.
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
 
     # 2. Extract outermost {...} block; fall back to starting-{ if no
     # matching close exists (truncated response).
@@ -104,6 +106,44 @@ def _tolerant_json_parse(raw: str, persona_id: str, category: str) -> dict | Non
     # 3. Drop trailing commas before } or ] (e.g. {"a": 1,} or [1, 2,]).
     text = re.sub(r",\s*([}\]])", r"\1", text)
 
+    def _escape_newlines_in_strings(s: str) -> str:
+        """Walk the string and escape literal newlines that appear inside JSON
+        string values. Required because Claude sometimes returns multi-line code
+        blocks (```...```) inside a JSON string with raw newlines instead of \\n
+        — which is invalid JSON. Tracks string boundaries via unescaped quotes.
+        """
+        out: list[str] = []
+        in_string = False
+        i = 0
+        while i < len(s):
+            c = s[i]
+            if c == "\\" and i + 1 < len(s):
+                # Pass through escape sequences as-is.
+                out.append(c)
+                out.append(s[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_string = not in_string
+                out.append(c)
+                i += 1
+                continue
+            if in_string and c == "\n":
+                out.append("\\n")
+                i += 1
+                continue
+            if in_string and c == "\r":
+                out.append("\\r")
+                i += 1
+                continue
+            if in_string and c == "\t":
+                out.append("\\t")
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
     try:
         result = json.loads(text)
         if isinstance(result, dict):
@@ -113,11 +153,20 @@ def _tolerant_json_parse(raw: str, persona_id: str, category: str) -> dict | Non
             persona_id, category, type(result).__name__,
         )
         return None
-    except json.JSONDecodeError as exc:
-        log.warning(
-            "columnist_service: _tolerant_json_parse failed for %s/%s: %s | cleaned text: %r",
-            persona_id, category, exc, text[:120],
-        )
+    except json.JSONDecodeError:
+        # Retry with literal newlines/tabs/CRs escaped inside string values.
+        # Catches the common Claude failure mode where multi-line code blocks
+        # inside a body string are emitted with raw newlines.
+        try:
+            normalized = _escape_newlines_in_strings(text)
+            result = json.loads(normalized)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError as exc:
+            log.warning(
+                "columnist_service: _tolerant_json_parse failed for %s/%s: %s | cleaned text: %r",
+                persona_id, category, exc, text[:120],
+            )
         return None
 
 
