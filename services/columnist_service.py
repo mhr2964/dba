@@ -418,7 +418,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                     _h = str(_json_candidate.get("headline", "")).strip()
                     if _h:
                         _fmt = persona.category_overrides.get(_category, persona.format_style)
-                        _body = _assemble_article(_json_candidate, persona_display, _fmt)
+                        _body = _assemble_article(_json_candidate, persona_display, _fmt, ctx=_context)
                         await article_repo.insert(
                             pool, league_id=league_id, season=season,
                             persona_id=_persona_id, category=_category,
@@ -490,7 +490,7 @@ async def generate(  # noqa: PLR0912, PLR0915
 
         persona_display = persona.display_name
         _fmt = persona.category_overrides.get(_category, persona.format_style)
-        body = _assemble_article(parsed, persona_display, _fmt)
+        body = _assemble_article(parsed, persona_display, _fmt, ctx=_context)
 
         await article_repo.insert(
             pool,
@@ -875,8 +875,72 @@ def _assemble_index(parsed: dict, persona_display: str) -> str:
     return "\n\n".join(parts)
 
 
+def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
+    """Player of the Month — features both conference winners side-by-side.
+
+    Uses context (which carries the actual stats and player/team data) for the
+    structural pieces, and the LLM-supplied parsed dict for narrative
+    (east_blurb, west_blurb, closer).
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    east_blurb = str(parsed.get("east_blurb", "")).strip()
+    west_blurb = str(parsed.get("west_blurb", "")).strip()
+    closer = str(parsed.get("closer", "")).strip()
+
+    ctx = ctx or {}
+    month_label = str(ctx.get("month_label", "")).strip()
+    east = ctx.get("east_winner") or {}
+    west = ctx.get("west_winner") or {}
+
+    def _stat_line(w: dict) -> str:
+        ppg = w.get("ppg")
+        rpg = w.get("rpg")
+        apg = w.get("apg")
+        games = w.get("games")
+        parts = []
+        if ppg is not None: parts.append(f"{ppg:.1f}p")
+        if rpg is not None: parts.append(f"{rpg:.1f}r")
+        if apg is not None: parts.append(f"{apg:.1f}a")
+        return " · ".join(parts) + (f"  ({games} games)" if games is not None else "")
+
+    out: list[str] = []
+    if headline:
+        out.append(f"**{headline}**")
+    if month_label:
+        out.append(f"*{month_label}*")
+
+    divider = "━" * 24
+    out.append(divider)
+
+    if east:
+        out.append(f"🌅 **EAST — {east.get('player', '?')}**  ·  {east.get('team', '?')}")
+        if east_blurb:
+            out.append(east_blurb)
+        out.append(f"> `{_stat_line(east)}`")
+
+    if west:
+        out.append("")  # spacer between conferences
+        out.append(f"🌇 **WEST — {west.get('player', '?')}**  ·  {west.get('team', '?')}")
+        if west_blurb:
+            out.append(west_blurb)
+        out.append(f"> `{_stat_line(west)}`")
+
+    out.append(divider)
+
+    if closer:
+        out.append(closer)
+
+    if persona_display:
+        out.append(f"— *{persona_display}*")
+
+    return "\n".join(out)
+
+
 # Maps format_style strings to renderer functions.
-# Each renderer takes (parsed: dict, persona_display: str) → str.
+# Most renderers take (parsed: dict, persona_display: str) → str.
+# The potm renderer additionally accepts an optional `ctx` dict for
+# structural data (stats, names) that comes from the calling context
+# rather than the LLM.
 _RENDERERS = {
     "analytics": _assemble_analytics,
     "hot_take": _assemble_hot_take,
@@ -885,16 +949,24 @@ _RENDERERS = {
     "moment": _assemble_moment,
     "verdict": _assemble_verdict,
     "index": _assemble_index,
+    "potm": _assemble_potm,
     "default": _assemble_default,
 }
 
 
-def _assemble_article(parsed: dict, persona_display: str, format_style: str = "default") -> str:
+def _assemble_article(
+    parsed: dict,
+    persona_display: str,
+    format_style: str = "default",
+    ctx: dict | None = None,
+) -> str:
     """Dispatch to the correct renderer based on persona format_style.
 
     Falls back to _assemble_default when the style key is unrecognised.
-    The Persona object owns format_style; call sites that already pass
-    persona.display_name should also pass persona.format_style.
+    `ctx` is only consumed by renderers that need extra structural data
+    (currently just `potm`); other renderers ignore it.
     """
     renderer = _RENDERERS.get(format_style, _assemble_default)
+    if format_style == "potm":
+        return renderer(parsed, persona_display, ctx)
     return renderer(parsed, persona_display)
