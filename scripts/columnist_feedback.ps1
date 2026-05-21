@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Columnist ride-along v2 sidecar CLI (PowerShell).
 
@@ -122,7 +122,7 @@ if ($PersonaArg -eq "") {
     $ChosenId = $PersonaArg.Trim()
 }
 
-if (-not $personas.ContainsKey($ChosenId)) {
+if (-not $personas.Contains($ChosenId)) {
     Write-Error "Unknown persona '$ChosenId'. Valid ids:`n  $($personaIds -join ', ')"
     exit 1
 }
