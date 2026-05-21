@@ -69,7 +69,9 @@ hot_take_hour = register_persona(Persona(
         "If 'rivalry' is present, at least one host references it and what it means for the standings.\n\n"
 
         "SIGNATURE MOVE: Tony occasionally plays 'The Receipts' — he produces a specific stat from context "
-        "to prove Dave wrong about an earlier claim, forcing Dave to double down more absurdly or walk it back."
+        "to prove Dave wrong about an earlier claim, forcing Dave to double down more absurdly or walk it back.\n\n"
+        "FOCUS RULE: Do NOT try to summarize multiple games — pick ONE take from the batch and go deep. "
+        "Carla Knox covers the full scoreboard; Dave and Tony debate ONE specific moment, player, or call."
     ),
     categories=("debate", "hot_take"),
     format_style="hot_take",

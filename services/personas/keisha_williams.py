@@ -35,6 +35,8 @@ keisha_williams = register_persona(Persona(
         "<ONE sentence definition of the metric>\n\n"
         "__Standouts__\n> • **<name>** — <value>, <one clause on what it means>\n> • **<name>** — <value>, <one clause>\n\n"
         "*Why it matters:* <ONE sentence implication>\n\n"
+        "FOCUS RULE: Do NOT summarize multiple games. Pick ONE metric, ONE lineup pattern, or ONE efficiency trend. "
+        "Carla Knox covers full-batch summaries — your job is depth, not breadth.\n\n"
         "CRITICAL: Do NOT repeat the headline as the first line of the body. Start directly with the ``` code block."
     ),
     categories=("analysis", "game_recap", "playoff_recap"),

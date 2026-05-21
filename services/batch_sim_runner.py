@@ -59,7 +59,7 @@ _coach_beat_game_counter: dict[int, int] = {}
 _last_columnist_game_index: dict[int, int] = {}
 
 # Columnist rotation — cycles through these personas on every batch (subject to reactive gate).
-_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole"]
+_COLUMNIST_ROTATION = ["maya_chen", "jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole", "carla_knox"]
 # Keyed by league_id so concurrent leagues each have their own rotation position.
 _columnist_rotation_index: dict[int, int] = {}
 
@@ -404,17 +404,19 @@ async def _persist_injuries(
 
         if severity in _ANNOUNCE_SEVERITIES and injury_channel:
             player_row = await pool.fetchrow(
-                "SELECT first_name, last_name, team_id FROM players WHERE id = $1",
+                "SELECT first_name, last_name, team_id, overall FROM players WHERE id = $1",
                 inj["player_id"],
             )
             if player_row:
                 player_name = f"{player_row['first_name']} {player_row['last_name']}"
+                player_overall = player_row["overall"] or 0
                 team_code_row = await pool.fetchrow(
                     "SELECT nba_team_code FROM teams WHERE id = $1", player_row["team_id"]
                 )
                 team_code = team_code_row["nba_team_code"] if team_code_row else "???"
             else:
                 player_name = f"Player #{inj['player_id']}"
+                player_overall = 0
                 team_code = "???"
 
             human_severity = _SEVERITY_LABELS.get(severity, severity)
@@ -438,9 +440,10 @@ async def _persist_injuries(
                     f"<@{_mgr_row['manager_user_id']}> — **{player_name}** just went down."
                 )
 
-            # Fire triage_report columnist article for significant injuries when
-            # guild is available (not headless/test paths).
-            if guild is not None:
+            # Fire triage_report columnist article only for star-level injuries
+            # (overall >= 84) so role-player injuries don't flood #analysis.
+            _TRIAGE_OVR_THRESHOLD = 84
+            if guild is not None and player_overall >= _TRIAGE_OVR_THRESHOLD:
                 try:
                     await _maybe_post_triage_report(
                         pool,
@@ -458,6 +461,11 @@ async def _persist_injuries(
                     )
                 except Exception as _triage_exc:
                     log.warning(f"_persist_injuries: triage_report failed: {_triage_exc}")
+            elif guild is not None:
+                log.debug(
+                    "_persist_injuries: skipping triage_report for %s (OVR %d < %d threshold)",
+                    player_name, player_overall, _TRIAGE_OVR_THRESHOLD,
+                )
 
     await game_repo.insert_injuries(pool, rows)
 
@@ -1309,6 +1317,7 @@ _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
     "pat_chen":       (0, 180, 150),
     "darius_cole":    (34, 139, 34),
     "coach_beat":     (160, 82, 45),
+    "carla_knox":     (80, 160, 200),
 }
 
 
@@ -1823,6 +1832,12 @@ async def _maybe_post_the_race(
         race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=5)
         if not race_leaders:
             log.info("_maybe_post_the_race: no award race data — skipping")
+            return
+        # Skip when all award race lists are empty — no real candidates means
+        # the LLM will produce TBD / editor's note placeholders instead of a column.
+        has_real_candidates = any(candidates for candidates in race_leaders.values())
+        if not has_real_candidates:
+            log.info("_maybe_post_the_race: all award races empty — skipping to avoid TBD post")
             return
 
         # Enrich with player names and per-game averages.

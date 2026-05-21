@@ -184,7 +184,9 @@ def awards_race_embed(odds: dict, game_index: int = 0) -> Optional[discord.Embed
         for c in candidates[:5]:
             name = c.get("name", "?")
             pct = int(c.get("pct", 0))
-            bar = "█" * (pct // 10)
+            filled = pct // 10
+            empty = 10 - filled
+            bar = "█" * filled + "░" * empty
             lines.append(f"**{name}** — {pct}%  `{bar}`")
         embed.add_field(name=label, value="\n".join(lines) or "—", inline=True)
 

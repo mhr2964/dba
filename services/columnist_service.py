@@ -136,6 +136,12 @@ _REFUSAL_PREFIXES: tuple[str, ...] = (
     "unfortunately, i",
     "i don't have",
     "i do not have",
+    # The Race TBD / editor's note pattern
+    "tbd —",
+    "no candidate data",
+    "editor's note",
+    "i don't have enough",
+    "unfortunately there",
 )
 
 
@@ -356,6 +362,21 @@ async def generate(  # noqa: PLR0912, PLR0915
         "Cover team stories, matchup dynamics, and multiple players. "
         "The best articles zoom out to team and league context, not just stat lines. "
         "Use standings, streaks, and recent results from the context to build a wider story.\n\n"
+        "ANALYTICAL VARIETY (mandatory): Do NOT default to 'Player X had a big game but his team "
+        "needed more' or 'Y's brilliance wasn't enough.' Find a fresh angle EVERY article. "
+        "Acceptable angles: team defense at the rim/perimeter/forcing turnovers; a specific "
+        "matchup that turned the game (player vs player, scheme vs scheme); a teammate's quiet "
+        "contribution that made the star's night possible; a rivalry storyline that gives the game "
+        "extra weight; a coaching decision (rotation, late-game) that swung the result; a "
+        "pace/efficiency angle (TS%, eFG%, pace differential); a trend across the recent batch "
+        "(e.g. 'this is the third time TEAM has X'). Reference at least one OTHER player in the "
+        "game by name with a specific stat. The 'team needed more' framing is BANNED unless "
+        "explicitly named as a cliche the columnist is rejecting.\n\n"
+        "HEADLINE RULE (mandatory): The headline must convey the WHAT at a glance. A reader who "
+        "scrolls past should know what happened without opening it. Include at least ONE of: a "
+        "player's last name, a team code, a specific number, or a specific event. Generic "
+        "vibes-headlines are BANNED. Better: 'Brunson's 38 Lifts NYK Over BOS in Double-OT "
+        "Thriller' or 'LAL's Defense Holds MIA Under 90 for First Time This Season'.\n\n"
     )
 
     # Prevent hallucination of 3-team trades: only describe a trade as 3-team
@@ -631,6 +652,8 @@ def _assemble_passthrough(parsed: dict, persona_display: str) -> str | None:
 
     # Remove headline duplication at the top of body.
     body = _dedupe_headline(headline, body)
+    # Re-strip after dedupe in case only whitespace remained.
+    body = body.strip()
 
     if not body:
         log.warning(
@@ -640,8 +663,8 @@ def _assemble_passthrough(parsed: dict, persona_display: str) -> str | None:
         return None
 
     parts: list[str] = []
-    if headline:
-        parts.append(f"**{headline}**")
+    # Do NOT prepend headline here — the Discord embed title already shows it.
+    # Including it in body would cause a doubled title in every passthrough post.
     parts.append(body)
     parts.append(f"— *{persona_display}*")
     return "\n\n".join(parts)
@@ -732,10 +755,11 @@ def _assemble_default(parsed: dict, persona_display: str) -> str:
 
 
 def _assemble_analytics(parsed: dict, persona_display: str) -> str:
-    """Analytics format — stat table in a code block, minimal prose, no section headers.
+    """Analytics format — bold-label bullet stats, minimal prose, no section headers.
 
-    Used by data-driven writers (Marcus Brooks, Keisha Williams, Darius Cole).
-    Leads with a fixed-width stat table so numbers stay scannable.
+    Used by data-driven writers (Marcus Brooks, Darius Cole).
+    Stats render as "**Label:** value" bullets — reliable on Discord mobile and
+    desktop without the alignment issues that plague code-block tables.
     Ends with 'Bottom line:' instead of 'Verdict:' — the label itself signals the voice.
     """
     lede = str(parsed.get("lede", "")).strip()
@@ -745,35 +769,15 @@ def _assemble_analytics(parsed: dict, persona_display: str) -> str:
 
     parts: list[str] = []
 
-    # Stat table inside a code block — column widths computed from actual
-    # content so nothing gets clipped, with a hard cap on total line width
-    # so Discord mobile doesn't wrap awkwardly. Long values that would
-    # exceed the cap break onto their own indented line below the label.
+    # Stats as bold-label bullet list — works on all Discord clients.
     if key_stats:
         cleaned = [
             (str(s.get("label", "")).strip(), str(s.get("value", "")).strip())
             for s in key_stats[:4]
         ]
-        cleaned = [(l, v) for l, v in cleaned if l and v]
-        if cleaned:
-            MAX_LINE = 64  # safe on Discord mobile in a code block
-            label_w = max(len("Stat"), *(len(l) for l, _ in cleaned))
-            label_w = min(label_w, 32)  # don't let one giant label dominate
-            value_w = MAX_LINE - label_w - 2  # 2 for the spacer
-            value_w = max(value_w, 10)
-            table_lines = ["```", f"{'Stat':<{label_w}}  {'Value'}"]
-            table_lines.append(f"{'─' * label_w}  {'─' * value_w}")
-            for label, value in cleaned:
-                # Truncate label only if it exceeds our dynamic width.
-                lbl = label if len(label) <= label_w else label[:label_w - 1] + "…"
-                if len(value) <= value_w:
-                    table_lines.append(f"{lbl:<{label_w}}  {value}")
-                else:
-                    # Long value — put label on one line, value indented below.
-                    table_lines.append(f"{lbl}")
-                    table_lines.append(f"{' ' * (label_w + 2)}{value}")
-            table_lines.append("```")
-            parts.append("\n".join(table_lines))
+        stat_lines = [f"**{label}:** {value}" for label, value in cleaned if label and value]
+        if stat_lines:
+            parts.append("\n".join(stat_lines))
 
     if lede:
         parts.append(lede)
@@ -1075,17 +1079,21 @@ def _parse_trade_body(body: str) -> tuple[str, str]:
     so output is never blank.
     """
     import re
-    pattern = re.compile(r"\[(?:FRAMING|ANALYSIS)\]", re.IGNORECASE)
-    markers = [(m.group(0).upper(), m.start()) for m in pattern.finditer(body)]
-    if not markers:
+    pattern = re.compile(r"\*{0,2}\[(?:FRAMING|ANALYSIS)\]\*{0,2}", re.IGNORECASE)
+    _kw2 = re.compile(r"\b(FRAMING|ANALYSIS)\b", re.IGNORECASE)
+    raw_markers = []
+    for m in pattern.finditer(body):
+        kw_m = _kw2.search(m.group(0))
+        if kw_m:
+            raw_markers.append((kw_m.group(1).upper(), m.start(), m.end()))
+    if not raw_markers:
         # No sentinels — return raw body as framing so it still renders.
         return body, ""
 
     chunks: dict[str, str] = {}
-    for i, (label, start) in enumerate(markers):
-        text_start = start + len(label)
-        text_end = markers[i + 1][1] if i + 1 < len(markers) else len(body)
-        key = label.strip("[]")  # FRAMING / ANALYSIS
+    for i, (key, _start, end) in enumerate(raw_markers):
+        text_start = end
+        text_end = raw_markers[i + 1][1] if i + 1 < len(raw_markers) else len(body)
         chunks[key] = body[text_start:text_end].strip()
 
     return chunks.get("FRAMING", ""), chunks.get("ANALYSIS", "")
@@ -1205,18 +1213,25 @@ def _parse_potm_body(body: str) -> tuple[str, str, str]:
     Returns (east_blurb, west_blurb, closer).  If a sentinel is missing the
     affected field is empty string and the caller will fall back to rendering
     the raw body verbatim so output is never blank.
+
+    Lenient match handles LLM variants like **[EAST]**, *[EAST]*, or bare [EAST].
     """
     import re
-    pattern = re.compile(r"\[(?:EAST|WEST|CLOSER)\]", re.IGNORECASE)
-    markers = [(m.group(0).upper(), m.start()) for m in pattern.finditer(body)]
+    # Match optional surrounding bold/italic markers so **[EAST]** is caught.
+    pattern = re.compile(r"\*{0,2}\[(?:EAST|WEST|CLOSER)\]\*{0,2}", re.IGNORECASE)
+    _kw = re.compile(r"\b(EAST|WEST|CLOSER)\b", re.IGNORECASE)
+    markers = []
+    for m in pattern.finditer(body):
+        kw_match = _kw.search(m.group(0))
+        if kw_match:
+            markers.append((kw_match.group(1).upper(), m.start(), m.end()))
     if not markers:
         return body, "", ""
 
     chunks: dict[str, str] = {}
-    for i, (label, start) in enumerate(markers):
-        text_start = start + len(label)
+    for i, (key, _start, end) in enumerate(markers):
+        text_start = end
         text_end = markers[i + 1][1] if i + 1 < len(markers) else len(body)
-        key = label.strip("[]")  # EAST / WEST / CLOSER
         chunks[key] = body[text_start:text_end].strip()
 
     east_blurb = chunks.get("EAST", "")
