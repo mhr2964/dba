@@ -1,6 +1,9 @@
 # Changelog — DBA
 
 ## 2026-05-21
+- **All 17 columnists persona-redesigned per architect spec** — Voice rewrites, tier-ranking arrows (Power List), marker schemes (Pat Chen, Marcus Cole), passthrough renderers (Coach Beat), emoji rules, schema-key translation rules, and headline-dedupe enforcement across `_assemble_trade_report`, `_assemble_potm`, `_assemble_tank_watch`. Verified 4/4 PASS on final dual-account testing (structure, schema cleanliness, content gates, phase guards all green).
+  Files: services/personas/*.py, services/columnist_service.py, services/batch_sim_runner.py
+
 - **Coach Beat columnist now posts** — Was silently failing every batch on a JSON serialization crash in the context payload; added `default=str` to `json.dumps()` to handle datetime and Decimal objects.
   Files: services/columnist_service.py
 
