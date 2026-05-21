@@ -1018,7 +1018,7 @@ async def _run_cpu_trades_inner(
         # must not trigger a columnist article — the deal hasn't happened yet.
         mc_article = None
         if status != "approved":
-            log.debug(
+            log.info(
                 f"Marcus Cole: skipping trade #{trade_id} — not executed "
                 f"(status={status!r})"
             )
