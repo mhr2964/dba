@@ -14,7 +14,7 @@ import discord
 from bot.embeds import awards_embeds, sim_embeds
 from core.logging import get_logger
 from data.db import get_pool
-from data.repositories import game_repo, gameplan_repo, league_repo, player_repo, strategy_repo, team_repo, trade_repo
+from data.repositories import article_repo, game_repo, gameplan_repo, league_repo, player_repo, strategy_repo, team_repo, trade_repo
 from phase.states import Phase
 from services import awards_service, columnist_service, cpu_coach_service, cpu_trade_service, franchise_plan_service, league_service, notifier_service, potm_service, records_service, sim_engine, strategy_service, team_intel
 from services.personas import PERSONAS as _PERSONAS
@@ -1435,16 +1435,18 @@ async def _maybe_post_coach_beat(
         subject_intel = intel.get(subject_team_id, {})
 
         # Content gate: skip the post (but don't reset the counter) when the selected
-        # team has nothing interesting to say — no role changes AND a boring default
-        # philosophy. The counter stays at ≥50 so the next batch with real content
-        # fires the column immediately rather than waiting another 50 games.
+        # team has nothing interesting to say.
+        # Require non-empty recent_role_changes — philosophy alone is too permissive
+        # and was causing firings on vet_overrater teams with no actual story.
+        # The counter stays at ≥50 so the next batch with real content fires
+        # the column immediately rather than waiting another 50 games.
         recent_role_changes = subject_intel.get("recent_role_changes", [])
         subject_philosophy = subject_intel.get("philosophy", "tendency_respecter")
-        if not recent_role_changes and subject_philosophy not in _PRIORITY_PHILOSOPHIES:
+        if not recent_role_changes:
             log.debug(
                 f"_maybe_post_coach_beat: league={league_id} team={subject_team_id} "
-                f"has no role changes and philosophy={subject_philosophy!r} — skipping, "
-                "counter retained at ≥50 for next batch"
+                f"philosophy={subject_philosophy!r} but no recent_role_changes — "
+                "skipping, counter retained at ≥50 for next batch"
             )
             return
 
