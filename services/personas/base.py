@@ -26,3 +26,8 @@ class Persona:
     # When set, replaces the global output_shape_rule injected by columnist_service.
     # Use this for personas that require a non-standard JSON response shape.
     output_shape_override: str = ""
+    # Per-category shape overrides: maps category name → output_shape_override string.
+    # When the article category matches a key, that shape is used instead of
+    # output_shape_override.  Prevents two conflicting format instructions reaching
+    # the LLM when a persona uses different renderers for different categories.
+    category_shape_overrides: dict[str, str] = field(default_factory=dict)

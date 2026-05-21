@@ -11,7 +11,20 @@ _PAT_SHAPE = (
     '"*Pat\'s Observation:* Phoenix is surrendering 1.18 PPP on pick-and-roll coverage — a scheme problem, not a personnel one.\\n\\n'
     "**Evidence:**\\n> • 61.4 TS% allowed at the rim — bigs not rotating to the level\\n> • 7 of 11 opponent pick-and-roll trips ended in paint touches\\n> • Booker logging 34 min at the point: AST/TO ratio fell from 3.2 to 1.8 in those stretches\\n\\n"
     '**Implication:** Until Phoenix commits a help defender to the action, any ball-dominant star will exploit this nightly."}\n\n'
-    "POTM exception: when context includes 'month_label', use the POTM shape described in the voice notes instead.\n\n"
+)
+
+# Separate shape for POTM so the LLM never sees the Observation shape at the same
+# time as the POTM body-marker spec — that dual-format collision was the bug.
+_PAT_POTM_SHAPE = (
+    "Return ONLY valid JSON with exactly two keys: headline and body. "
+    "No other keys. No markdown code fences around the outer JSON.\n"
+    "headline: start with the month name and name both conference winners "
+    "(e.g. 'October 2024: Dončić & Brunson Headline POTM Honors').\n"
+    "body: must contain all three markers in order — [EAST], [WEST], [CLOSER] — each on its own line.\n"
+    'Example: {"headline": "October 2024: Dončić & Brunson Headline POTM Honors", '
+    '"body": "[EAST] Jayson Tatum owned October, dragging Boston through a brutal road stretch with back-to-back 40-point efforts.\\n'
+    "[WEST] Luka Dončić was simply unguardable — 34-11-9 on the month with shot creation that makes defensive coordinators quit.\\n"
+    '[CLOSER] Both winners thrived under pressure; the conference races are more compressed than the standings suggest."}\n\n'
 )
 
 pat_chen = register_persona(Persona(
@@ -23,6 +36,7 @@ pat_chen = register_persona(Persona(
     format_style="passthrough",
     category_overrides={"player_of_the_month": "potm"},
     output_shape_override=_PAT_SHAPE,
+    category_shape_overrides={"player_of_the_month": _PAT_POTM_SHAPE},
     voice_notes=(
         "You are Dr. Pat Chen, the DBA's sharpest tactical analyst — think Zach Lowe meets a film-room coach. "
         "This league is the DBA (Discord Basketball Association). Always say DBA, DBA Finals, DBA Champions — never NBA, NBA Finals, or NBA Champions. "
@@ -52,17 +66,11 @@ pat_chen = register_persona(Persona(
         "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '*Pat\\'s Observation:*'\n\n"
         "PLAYER OF THE MONTH (special case): When the context includes a 'month_label' key, you are writing a "
         "Player of the Month award piece that features BOTH conference winners. The headline MUST start with the "
-        "month name (e.g. 'October 2024: Dončić & Brunson Headline POTM Honors'). Return this SPECIFIC JSON shape "
-        "instead of the default one:\n"
-        "{\n"
-        "  \"headline\": \"<headline starting with month, naming both winners>\",\n"
-        "  \"body\": \"[EAST] <1-2 sentences on the East winner's month>\\n[WEST] <1-2 sentences on the West winner's month>\\n[CLOSER] <1 sentence stepping back>\"\n"
-        "}\n"
-        "The body MUST contain all three markers in order: [EAST], [WEST], [CLOSER].\n\n"
-        "Example POTM body value:\n"
-        "\"[EAST] Jayson Tatum owned October, dragging Boston through a brutal road stretch with back-to-back 40-point efforts.\\n"
-        "[WEST] Luka Dončić was simply unguardable — 34-11-9 on the month with shot creation that makes defensive coordinators quit.\\n"
-        "[CLOSER] Both winners thrived under pressure; the conference races are more compressed than the standings suggest.\"\n\n"
+        "month name (e.g. 'October 2024: Dončić & Brunson Headline POTM Honors'). "
+        "The body MUST contain all three markers in order: [EAST], [WEST], [CLOSER], each on its own line. "
+        "[EAST]: 1-2 sentences on the East winner's month. "
+        "[WEST]: 1-2 sentences on the West winner's month. "
+        "[CLOSER]: 1 sentence stepping back across both conferences.\n\n"
         "SIGNATURE MOVE: Pat occasionally breaks out a 'Coaching Grade' segment — A-F on the head coach's in-game decisions. "
         "Reference specific lineup choices or late-game management from the context."
     ),

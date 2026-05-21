@@ -298,6 +298,15 @@ async def generate(  # noqa: PLR0912, PLR0915
             "Never write NBA, NBA Finals, or NBA Champions."
         )
 
+    # Resolve the effective output shape for this specific category.
+    # category_shape_overrides takes precedence over output_shape_override so
+    # personas with multiple renderers (e.g. Pat Chen: Observation vs POTM) each
+    # send exactly ONE format instruction — never two conflicting ones.
+    _effective_shape = (
+        persona.category_shape_overrides.get(_category)
+        or persona.output_shape_override
+    )
+
     user_content_parts = [
         task_line,
         "",
@@ -310,24 +319,29 @@ async def generate(  # noqa: PLR0912, PLR0915
         user_content_parts += ["", intel_block]
     if memory_block:
         user_content_parts += ["", memory_block]
-    user_content_parts += [
-        "",
-        "Return ONLY valid JSON matching this EXACT shape — no other keys, no prose:",
-        json.dumps({
-            "headline": "punchy ≤80 chars",
-            "lede": "ONE sentence, the take, ≤25 words",
-            "key_stats": [
-                {"label": "what the number means", "value": "the number with units"},
-            ],
-            "bullets": [
-                "ONE line each, ≤18 words, lead with a number or proper noun when possible",
-            ],
-            "verdict": "ONE sentence closing take, ≤20 words",
-        }),
-        "",
-        "Constraints: key_stats must have 2-4 entries. bullets must have 2-3 entries.",
-        "No markdown, no code fences.",
-    ]
+    # Only inject the default format example when the persona has no custom shape.
+    # Custom-shape personas (output_shape_override or category_shape_overrides) get
+    # their format instruction from output_shape_rule in the system prompt only —
+    # injecting it here too would give the LLM two conflicting format specs.
+    if not _effective_shape:
+        user_content_parts += [
+            "",
+            "Return ONLY valid JSON matching this EXACT shape — no other keys, no prose:",
+            json.dumps({
+                "headline": "punchy ≤80 chars",
+                "lede": "ONE sentence, the take, ≤25 words",
+                "key_stats": [
+                    {"label": "what the number means", "value": "the number with units"},
+                ],
+                "bullets": [
+                    "ONE line each, ≤18 words, lead with a number or proper noun when possible",
+                ],
+                "verdict": "ONE sentence closing take, ≤20 words",
+            }),
+            "",
+            "Constraints: key_stats must have 2-4 entries. bullets must have 2-3 entries.",
+            "No markdown, no code fences.",
+        ]
     user_content = "\n".join(user_content_parts)
 
     score_accuracy_rule = (
@@ -366,8 +380,8 @@ async def generate(  # noqa: PLR0912, PLR0915
     )
 
     output_shape_rule = (
-        persona.output_shape_override
-        if persona.output_shape_override
+        _effective_shape
+        if _effective_shape
         else (
             "OUTPUT SHAPE (mandatory — the only acceptable response format):\n"
             "You must return a JSON object with exactly these keys: "
@@ -508,7 +522,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         # with headline alone — the renderer handles empty optional fields.
         headline = str(parsed.get("headline", "")).strip()
         lede = str(parsed.get("lede", "")).strip()
-        _uses_custom_shape = bool(persona.output_shape_override)
+        _uses_custom_shape = bool(_effective_shape)
         _has_named_renderer = persona.format_style in (
             "moment", "verdict", "index", "hot_take",
             "analytics", "tactical", "recap", "potm", "trade_report",
