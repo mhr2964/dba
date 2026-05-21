@@ -429,7 +429,10 @@ def _drain_dead_sidecar(reason: str) -> None:
 # Sidecar liveness check (heartbeat file; psutil optional)
 # ---------------------------------------------------------------------------
 
-_HEARTBEAT_TIMEOUT_S: float = 10.0   # sidecar writes heartbeat every ~0.3 s; 10 s is generous
+_HEARTBEAT_TIMEOUT_S: float = 300.0   # 5 min — PowerShell's Read-Host blocks Touch-Heartbeat
+                                      # for as long as the user takes typing. The whole point of
+                                      # the pause is to wait for considered feedback. Only fire
+                                      # drain when sidecar is genuinely abandoned (~minutes).
 _HEARTBEAT_MISS_COUNT: int = 0        # consecutive polls with stale heartbeat while paused
 
 def _sidecar_alive() -> bool:
