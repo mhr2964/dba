@@ -64,15 +64,29 @@ async def _bootstrap_new(season: int) -> int:
         sys.exit(1)
 
     # Wipe any existing RA league so we always start clean.
+    # FK violations can occur when cascade rules aren't configured; catch them
+    # and tell the user to purge manually rather than crashing silently.
     _progress(f"Wiping existing guild_id={_RA_GUILD_ID} leagues from DB...")
     raw_conn = await asyncpg.connect(DATABASE_URL)
     try:
         deleted = await raw_conn.execute(
             "DELETE FROM leagues WHERE discord_guild_id = $1", _RA_GUILD_ID
         )
+        _progress(f"Wiped: {deleted}")
+    except Exception as _del_exc:
+        _fk_hint = (
+            "FK violation — child rows still reference this league.  "
+            "Use /admin purge-server confirm:CONFIRM in Discord first, "
+            "then re-run this script."
+        )
+        print(
+            f"ERROR: Could not delete existing RA league: {_del_exc}\n"
+            f"Hint: {_fk_hint}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     finally:
         await raw_conn.close()
-    _progress(f"Wiped: {deleted}")
 
     pool = await _db.get_pool()
 
