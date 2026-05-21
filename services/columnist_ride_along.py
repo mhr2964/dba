@@ -147,9 +147,14 @@ def _atomic_write_json(path: Path, obj: dict) -> None:
 
 
 def _read_json_or_none(path: Path) -> dict | None:
-    """Read and parse a JSON file; return None on any error (treat as in-flight)."""
+    """Read and parse a JSON file; return None on any error (treat as in-flight).
+
+    Uses utf-8-sig so PowerShell 5.1's Set-Content -Encoding UTF8 (which prepends
+    a BOM in defiance of RFC 8259) parses cleanly. utf-8-sig also handles plain
+    UTF-8 without BOM, so the sh sidecar's output works identically.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 

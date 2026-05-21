@@ -55,8 +55,13 @@ for pid, p in PERSONAS.items():
 
 function Write-AtomicJson {
     param([string]$Path, [hashtable]$Obj)
+    # Set-Content -Encoding UTF8 prepends a BOM on PowerShell 5.1, which Python's
+    # json.loads rejects. Use .NET WriteAllText with UTF8Encoding($false) to write
+    # plain UTF-8 (no BOM) per RFC 8259.
     $tmp = "$Path.tmp"
-    $Obj | ConvertTo-Json -Compress | Set-Content -Path $tmp -Encoding UTF8
+    $json = $Obj | ConvertTo-Json -Compress
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($tmp, $json, $utf8NoBom)
     Move-Item -Force -Path $tmp -Destination $Path
 }
 
