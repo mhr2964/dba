@@ -835,9 +835,9 @@ def _assemble_hot_take(parsed: dict, persona_display: str) -> str:
             body = _re.sub(r"\b(DAVE|TONY):", r"**\1:**", body)
             parts.append(body)
 
-    if not parts or (len(parts) == 1 and headline):
-        # Nothing useful came back — emit at least the headline.
-        pass
+    # If neither turns nor body produced content, return None so the post is skipped.
+    if not parts:
+        return None
 
     if persona_display:
         parts.append(f"— *{persona_display}*")
