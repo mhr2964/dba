@@ -705,6 +705,19 @@ async def advance_playoff_round(
             high_seed_id=east_winner,
             low_seed_id=west_winner,
         )
+        if guild:
+            try:
+                from services import batch_sim_runner as _bsr
+                _east_t = await team_repo.get_by_id(pool, east_winner)
+                _west_t = await team_repo.get_by_id(pool, west_winner)
+                if _east_t and _west_t:
+                    await _bsr._maybe_post_prelude(pool, league_id, season, guild, {
+                        "high_seed_team": getattr(_east_t, "nba_team_code", str(east_winner)),
+                        "low_seed_team": getattr(_west_t, "nba_team_code", str(west_winner)),
+                        "round": "DBA Finals",
+                    })
+            except Exception as _exc:
+                log.warning(f"Prelude post failed (nba_finals): {_exc}")
         return "nba_finals"
 
     # R2 complete → create conference finals
@@ -718,6 +731,20 @@ async def advance_playoff_round(
                         high_seed_id=winners[0],
                         low_seed_id=winners[1],
                     )
+                    if guild:
+                        try:
+                            from services import batch_sim_runner as _bsr
+                            _ht = await team_repo.get_by_id(pool, winners[0])
+                            _lt = await team_repo.get_by_id(pool, winners[1])
+                            if _ht and _lt:
+                                _conf = "Eastern" if "east" in cf_round else "Western"
+                                await _bsr._maybe_post_prelude(pool, league_id, season, guild, {
+                                    "high_seed_team": getattr(_ht, "nba_team_code", str(winners[0])),
+                                    "low_seed_team": getattr(_lt, "nba_team_code", str(winners[1])),
+                                    "round": f"{_conf} Conference Finals",
+                                })
+                        except Exception as _exc:
+                            log.warning(f"Prelude post failed ({cf_round}): {_exc}")
                     return True
         return False
 
@@ -756,6 +783,24 @@ async def advance_playoff_round(
                         high_seed_id=s_2v7.winner_team_id,
                         low_seed_id=s_3v6.winner_team_id,
                     )
+                    if guild:
+                        try:
+                            from services import batch_sim_runner as _bsr
+                            _conf = "Eastern" if "east" in r2_round else "Western"
+                            for _hs_id, _ls_id in [
+                                (s_1v8.winner_team_id, s_4v5.winner_team_id),
+                                (s_2v7.winner_team_id, s_3v6.winner_team_id),
+                            ]:
+                                _ht = await team_repo.get_by_id(pool, _hs_id)
+                                _lt = await team_repo.get_by_id(pool, _ls_id)
+                                if _ht and _lt:
+                                    await _bsr._maybe_post_prelude(pool, league_id, season, guild, {
+                                        "high_seed_team": getattr(_ht, "nba_team_code", str(_hs_id)),
+                                        "low_seed_team": getattr(_lt, "nba_team_code", str(_ls_id)),
+                                        "round": f"{_conf} Conference Semifinals",
+                                    })
+                        except Exception as _exc:
+                            log.warning(f"Prelude post failed ({r2_round}): {_exc}")
                     return True
         return False
 
@@ -904,6 +949,25 @@ async def sim_play_in(
 
     east_7, east_8 = await _sim_playin_conf(east_seeds, "play_in_east", "r1_east")
     west_7, west_8 = await _sim_playin_conf(west_seeds, "play_in_west", "r1_west")
+
+    # Post Prelude previews for every R1 series now that all matchups are set.
+    try:
+        from services import batch_sim_runner as _bsr
+        all_r1 = await series_repo.get_bracket(pool, league_id, season)
+        r1_series = [s for s in all_r1 if s.round in ("r1_east", "r1_west")]
+        for _s in r1_series:
+            _ht = await team_repo.get_by_id(pool, _s.high_seed_team_id)
+            _lt = await team_repo.get_by_id(pool, _s.low_seed_team_id)
+            if _ht and _lt:
+                _round_label = "Eastern Conference R1" if "east" in _s.round else "Western Conference R1"
+                _preview_ctx = {
+                    "high_seed_team": getattr(_ht, "nba_team_code", str(_s.high_seed_team_id)),
+                    "low_seed_team": getattr(_lt, "nba_team_code", str(_s.low_seed_team_id)),
+                    "round": _round_label,
+                }
+                await _bsr._maybe_post_prelude(pool, league_id, season, guild, _preview_ctx)
+    except Exception as _prelude_exc:
+        log.warning(f"sim_play_in: Prelude preview failed: {_prelude_exc}")
 
     return {
         "east_7_seed": east_7,

@@ -82,6 +82,14 @@ _potm_last_checked_month: dict[int, str] = {}
 # force=True.  70 games ≈ 7 game-days of 10 games each.
 _COLUMNIST_FORCE_MIN_GAP: int = 70
 
+# New specialty persona game counters.  Each fires on its own cadence, independent
+# of the main columnist rotation.  70 games ≈ weekly; 280 games ≈ monthly.
+_power_list_game_counter: dict[int, int] = {}      # fires every ~70 games (weekly)
+_rookie_watch_game_counter: dict[int, int] = {}    # fires every ~70 games (weekly)
+_big_picture_game_counter: dict[int, int] = {}     # fires every ~70 games (weekly)
+_ledger_game_counter: dict[int, int] = {}          # fires every ~280 games (monthly)
+_race_game_counter: dict[int, int] = {}            # fires every ~280 games (monthly)
+
 # ---------------------------------------------------------------------------
 # Role cache — Phase 2: touch-share flows from player_roles, not usage_weight.
 # Keyed by (league_id, team_id, season).  60-second TTL matches compute_form_map.
@@ -1408,6 +1416,353 @@ async def _maybe_post_coach_beat(
         log.warning(f"_maybe_post_coach_beat failed: {exc}", exc_info=True)
 
 
+async def _build_batch_game_context(batch_results: list[dict]) -> dict:
+    """Build a minimal context dict from batch game results for specialty personas.
+
+    Only includes recent_games summary — standings and team intel are not fetched
+    here to keep the call lightweight.  The AI is instructed to use only what it
+    receives, so partial context is fine for these cadence-driven columns.
+    """
+    recent_games = []
+    for br in batch_results[-10:]:  # last 10 games is enough context
+        ht = br.get("home_team")
+        at = br.get("away_team")
+        r = br.get("result", {})
+        if not (ht and at):
+            continue
+        home_code = getattr(ht, "nba_team_code", "???")
+        away_code = getattr(at, "nba_team_code", "???")
+        recent_games.append({
+            "home": home_code,
+            "away": away_code,
+            "home_score": r.get("home_score", 0),
+            "away_score": r.get("away_score", 0),
+            "winner": home_code if r.get("winner_team_id") == ht.id else away_code,
+            "top_scorer": r.get("top_scorer", {}),
+        })
+    return {"recent_games": recent_games}
+
+
+async def _maybe_post_power_list(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Power List weekly top-10 ranking every ~70 games (approx. one game-week)."""
+    _power_list_game_counter[league_id] = _power_list_game_counter.get(league_id, 0) + len(batch_results)
+    if _power_list_game_counter[league_id] < 70:
+        return
+    _power_list_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("power_list")
+    if not persona:
+        log.warning("_maybe_post_power_list: power_list persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+        standings = await game_repo.get_standings(pool, league_id, season)
+        context["standings"] = standings
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="power_list",
+                category="power_rankings",
+                context=context,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"🏆 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(212, 175, 55),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_power_list failed: {exc}", exc_info=True)
+
+
+async def _maybe_post_rookie_watch(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post Rookie Watch development tracker every ~70 games (approx. one game-week)."""
+    _rookie_watch_game_counter[league_id] = _rookie_watch_game_counter.get(league_id, 0) + len(batch_results)
+    if _rookie_watch_game_counter[league_id] < 70:
+        return
+    _rookie_watch_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("rookie_watch")
+    if not persona:
+        log.warning("_maybe_post_rookie_watch: rookie_watch persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="rookie_watch",
+                category="rookie_watch",
+                context=context,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"🌟 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(100, 200, 120),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_rookie_watch failed: {exc}", exc_info=True)
+
+
+async def _maybe_post_big_picture(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Big Picture long-form column every ~70 games (weekly cadence, Sunday-equivalent)."""
+    _big_picture_game_counter[league_id] = _big_picture_game_counter.get(league_id, 0) + len(batch_results)
+    if _big_picture_game_counter[league_id] < 70:
+        return
+    _big_picture_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("big_picture")
+    if not persona:
+        log.warning("_maybe_post_big_picture: big_picture persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+        standings = await game_repo.get_standings(pool, league_id, season)
+        context["standings"] = standings
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="big_picture",
+                category="sunday_column",
+                context=context,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"🔭 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(70, 90, 160),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_big_picture failed: {exc}", exc_info=True)
+
+
+async def _maybe_post_ledger(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Ledger front-office grades every ~280 games (approx. monthly)."""
+    _ledger_game_counter[league_id] = _ledger_game_counter.get(league_id, 0) + len(batch_results)
+    if _ledger_game_counter[league_id] < 280:
+        return
+    _ledger_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("the_ledger")
+    if not persona:
+        log.warning("_maybe_post_ledger: the_ledger persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="the_ledger",
+                category="front_office_grade",
+                context=context,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"📒 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(120, 120, 120),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_ledger failed: {exc}", exc_info=True)
+
+
+async def _maybe_post_the_race(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Race award-race column every ~280 games (approx. monthly)."""
+    _race_game_counter[league_id] = _race_game_counter.get(league_id, 0) + len(batch_results)
+    if _race_game_counter[league_id] < 280:
+        return
+    _race_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("the_race")
+    if not persona:
+        log.warning("_maybe_post_the_race: the_race persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="the_race",
+                category="award_race",
+                context=context,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"🏅 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(200, 160, 40),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_the_race failed: {exc}", exc_info=True)
+
+
+async def _maybe_post_triage_report(
+    pool,
+    league_id: int,
+    season: int,
+    guild: discord.Guild,
+    injury_info: dict,
+) -> None:
+    """Post The Triage Report when a significant injury is recorded.
+
+    injury_info must contain: player_name, team_code, severity, games_missed.
+    Called from _persist_injuries for ANNOUNCE_SEVERITIES injuries.
+    """
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("triage_report")
+    if not persona:
+        return
+
+    try:
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, injury_info.get("season", 1),
+                persona_id="triage_report",
+                category="injury_report",
+                context=injury_info,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"🩺 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.red(),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_triage_report failed: {exc}", exc_info=True)
+
+
+async def _maybe_post_prelude(
+    pool,
+    league_id: int,
+    season: int,
+    guild: discord.Guild,
+    series_context: dict,
+) -> None:
+    """Post The Prelude series preview when a new playoff matchup is set.
+
+    series_context must contain: high_seed_team, low_seed_team, round.
+    Called from playoff_service after series_repo.create_series for R1+.
+    """
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("the_prelude")
+    if not persona:
+        return
+
+    try:
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="the_prelude",
+                category="series_preview",
+                context=series_context,
+            ),
+            timeout=10.0,
+        )
+        if article:
+            embed = discord.Embed(
+                title=f"🎬 {article['headline']}",
+                description=article["body"][:2000],
+                color=discord.Color.from_rgb(80, 40, 120),
+            )
+            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
+            await analysis_channel.send(embed=embed)
+    except Exception as exc:
+        log.warning(f"_maybe_post_prelude failed: {exc}", exc_info=True)
+
+
 async def _maybe_post_columnist(
     pool,
     league_id: int,
@@ -2463,6 +2818,11 @@ async def sim_until_rival(
             await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
             await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
             await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
+            await _maybe_post_power_list(pool, league_id, season, batch_results, guild)
+            await _maybe_post_rookie_watch(pool, league_id, season, batch_results, guild)
+            await _maybe_post_big_picture(pool, league_id, season, batch_results, guild)
+            await _maybe_post_ledger(pool, league_id, season, batch_results, guild)
+            await _maybe_post_the_race(pool, league_id, season, batch_results, guild)
             batch_results = []
 
     if batch_results:
@@ -2496,6 +2856,11 @@ async def sim_until_rival(
         await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
         await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
         await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
+        await _maybe_post_power_list(pool, league_id, season, batch_results, guild)
+        await _maybe_post_rookie_watch(pool, league_id, season, batch_results, guild)
+        await _maybe_post_big_picture(pool, league_id, season, batch_results, guild)
+        await _maybe_post_ledger(pool, league_id, season, batch_results, guild)
+        await _maybe_post_the_race(pool, league_id, season, batch_results, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
 
@@ -2625,6 +2990,11 @@ async def sim_range(
             await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
             await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
             await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
+            await _maybe_post_power_list(pool, league_id, season, batch_results, guild)
+            await _maybe_post_rookie_watch(pool, league_id, season, batch_results, guild)
+            await _maybe_post_big_picture(pool, league_id, season, batch_results, guild)
+            await _maybe_post_ledger(pool, league_id, season, batch_results, guild)
+            await _maybe_post_the_race(pool, league_id, season, batch_results, guild)
             batch_results = []
 
     if batch_results:
@@ -2659,6 +3029,11 @@ async def sim_range(
         await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
         await _maybe_snapshot_teams(pool, league_id, season, last_game_idx)
         await _maybe_post_coach_beat(pool, league_id, season, batch_results, guild)
+        await _maybe_post_power_list(pool, league_id, season, batch_results, guild)
+        await _maybe_post_rookie_watch(pool, league_id, season, batch_results, guild)
+        await _maybe_post_big_picture(pool, league_id, season, batch_results, guild)
+        await _maybe_post_ledger(pool, league_id, season, batch_results, guild)
+        await _maybe_post_the_race(pool, league_id, season, batch_results, guild)
 
     season_complete = await _maybe_advance_season_complete(pool, league_id, season, news_channel)
     return {"warning": False, "games_simmed": games_simmed, "user_matchups_simmed": user_matchups_simmed, "user_matchups": [], "season_complete": season_complete}
