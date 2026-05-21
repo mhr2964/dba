@@ -830,14 +830,18 @@ async def _run_cpu_trades_inner(
         _player_ids = [a.player_id for a in assets if a.asset_type == "player" and a.player_id]
         if _player_ids:
             _name_rows = await pool.fetch(
-                "SELECT id, first_name, last_name, overall FROM players WHERE id = ANY($1)",
+                "SELECT id, first_name, last_name, overall, position, age FROM players WHERE id = ANY($1)",
                 _player_ids,
             )
             _player_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in _name_rows}
             _player_ovrs: dict[int, int] = {r["id"]: r["overall"] for r in _name_rows}
+            _player_positions: dict[int, str] = {r["id"]: r["position"] for r in _name_rows}
+            _player_ages: dict[int, int | None] = {r["id"]: r["age"] for r in _name_rows}
         else:
             _player_names = {}
             _player_ovrs = {}
+            _player_positions = {}
+            _player_ages = {}
 
         # Load pick metadata so embeds show "2026 LAL 1st Round Pick" instead of "Pick #ID".
         _pick_ids = [a.pick_id for a in assets if a.asset_type == "pick" and a.pick_id]
@@ -870,6 +874,41 @@ async def _run_cpu_trades_inner(
                 elif a.asset_type == "pick" and a.pick_id:
                     lines.append(_format_pick(a.pick_id))
             return lines or ["(nothing)"]
+
+        def _asset_items(to_team_id: int) -> list[dict]:
+            """Build structured asset list for trade_report ctx (items moving TO a team)."""
+            items = []
+            for a in assets:
+                if a.to_team_id != to_team_id:
+                    continue
+                if a.asset_type == "player" and a.player_id:
+                    pid = a.player_id
+                    item: dict = {
+                        "type": "player",
+                        "name": _player_names.get(pid) or f"Player #{pid}",
+                    }
+                    if pid in _player_positions and _player_positions[pid]:
+                        item["position"] = _player_positions[pid]
+                    age = _player_ages.get(pid)
+                    if age is not None:
+                        item["age"] = age
+                    ovr = _player_ovrs.get(pid)
+                    if ovr is not None:
+                        item["ovr"] = ovr
+                    items.append(item)
+                elif a.asset_type == "pick" and a.pick_id:
+                    r = _pick_info.get(a.pick_id)
+                    pick_item: dict = {"type": "pick"}
+                    if r:
+                        round_label = "1st-round" if r["round"] == 1 else "2nd-round"
+                        pick_item["name"] = f"{r['season']} {round_label} pick"
+                        pick_item["via"] = r["original_team"]
+                    else:
+                        pick_item["name"] = f"Pick #{a.pick_id}"
+                    items.append(pick_item)
+                elif a.asset_type == "cash":
+                    items.append({"type": "cash", "name": "Cash considerations"})
+            return items
 
         proposer_code = team_codes.get(proposer_id, f"Team {proposer_id}")
         counterparty_code = team_codes.get(counterparty_id, f"Team {counterparty_id}")
@@ -1027,6 +1066,18 @@ async def _run_cpu_trades_inner(
                     int(pid): sigs
                     for pid, sigs in context_signals_per_player.items()
                 },
+                # Structured swap data consumed by the trade_report renderer.
+                # Each entry: {name, gets: [{type, name, position?, age?, ovr?, via?}]}
+                "teams": [
+                    {
+                        "name": counterparty_code,
+                        "gets": _asset_items(counterparty_id),
+                    },
+                    {
+                        "name": proposer_code,
+                        "gets": _asset_items(proposer_id),
+                    },
+                ],
             }
             mc_article = await columnist_service.generate(
                 pool, league_id, season,

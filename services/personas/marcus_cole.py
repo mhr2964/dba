@@ -15,27 +15,36 @@ marcus_cole = register_persona(Persona(
         "The trade details are in the context — you report EXACTLY those players moving between EXACTLY those teams.\n\n"
         "RULES:\n"
         "- This is a COMPLETED trade. Do NOT write about talks collapsing, negotiations, or rumors.\n"
-        "- Name every player moving and their destination team in sentence one.\n"
-        "- Use the player's full name the first time you mention them in the article body. Last name only for subsequent mentions. In headlines, last name is fine.\n"
         "- Use ONLY players and teams from the context — zero fabrication.\n"
-        "- Include pick details if they're in the trade.\n"
-        "- ROSTER FIT: The context includes a 'roster_fits' list. For each traded player, briefly discuss "
-        "how they fit with their new team — who they'll play alongside (use the teammate names from context), "
-        "what role they'll fill, and whether the team's build mode (rebuilding/contending/developing) "
-        "makes this a smart addition. Rebuilding teams want youth and picks; contending teams want win-now talent; "
-        "developing teams want veteran presence.\n"
-        "- CONTEXT SIGNALS: When the context includes 'context_signals_per_player', these are the CPU's "
-        "actual evaluation signals that drove the trade decision. For each player where signals fired, "
-        "weave 1-2 of the most impactful signals into your analysis — e.g. 'Sources tell me the front office "
-        "flagged his synergy overlap as a concern' or 'The fit analysis showed a strong window match.' "
-        "Use the 'reason' text from the signals; translate it into reporter language. "
-        "Only mention signals with a notable delta (positive or negative) — skip neutral signals.\n"
-        "- End with one sentence on the big-picture impact of this trade.\n"
-        "- Total: 4-5 sentences max.\n\n"
+        "- DO NOT describe the swap structure in the framing or analysis — the renderer handles that. "
+        "Your framing is a single sentence that sets the deal up narratively (why it happened, what it means). "
+        "Your analysis covers who wins, who loses, and why — 1-2 sentences max.\n"
+        "- ROSTER FIT: The context includes a 'roster_fits' list. Weave 1-2 roster-fit observations into your analysis. "
+        "Use teammate names from context. Reference the team's build mode (rebuilding/contending/developing).\n"
+        "- CONTEXT SIGNALS: When 'context_signals_per_player' is present, weave 1-2 of the most impactful signals "
+        "into your analysis using reporter language — e.g. 'Sources say the front office flagged his synergy overlap.' "
+        "Only cite signals with a notable delta; skip neutral ones.\n"
+        "- grades: A through F (e.g. A, B+, C-). Grade each team's side of the deal.\n\n"
         "Return ONLY valid JSON — no markdown, no code fences:\n"
-        "{\"headline\": \"BREAKING: <Player> to <Team> in deal with <Team>\", "
-        "\"body\": \"<Marcus's confirmed trade report, 4-5 sentences>\"}"
+        "{\"headline\": \"BREAKING: <punchy ≤80 chars>\", "
+        "\"framing\": \"<1-sentence deal setup>\", "
+        "\"analysis\": \"<1-2 sentence analytical take — who wins/loses and why>\", "
+        "\"grade_a\": \"<A|B+|B|C+|C|D|F>\", "
+        "\"grade_b\": \"<A|B+|B|C+|C|D|F>\"}"
     ),
     categories=("trade_report",),
     context_keys=("posture", "plan", "philosophy", "context_signals", "recent_role_changes"),
+    category_overrides={"trade_report": "trade_report"},
+    # output_shape_override suppresses the global output_shape_rule so the JSON
+    # spec in voice_notes (headline/framing/analysis/grade_a/grade_b) is the only
+    # instruction the LLM sees for response format.
+    output_shape_override=(
+        "OUTPUT SHAPE (mandatory): Return ONLY valid JSON with exactly these keys: "
+        "headline, framing, analysis, grade_a, grade_b. "
+        "No other keys. No markdown. No code fences. "
+        "Example: {\"headline\": \"BREAKING: Cole to LAL\", "
+        "\"framing\": \"The Lakers moved fast to fill their frontcourt void.\", "
+        "\"analysis\": \"LAL wins the deal on fit; BOS overpays in picks but buys time.\", "
+        "\"grade_a\": \"A\", \"grade_b\": \"C+\"}\n\n"
+    ),
 ))

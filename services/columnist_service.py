@@ -875,6 +875,99 @@ def _assemble_index(parsed: dict, persona_display: str) -> str:
     return "\n\n".join(parts)
 
 
+def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
+    """Trade report — structured swap blocks that make get/give visible at a glance.
+
+    Structural data (teams, assets) comes from ctx; the LLM supplies headline,
+    framing, analysis, and optional grades.  Falls back to prose if ctx is absent
+    or malformed so the function never crashes.
+    """
+    headline = str(parsed.get("headline", "")).strip()
+    framing = str(parsed.get("framing", "")).strip()
+    analysis = str(parsed.get("analysis", "")).strip()
+
+    ctx = ctx or {}
+    teams: list[dict] = ctx.get("teams") or []
+
+    # Grade labels — optional; only shown when the LLM supplied them.
+    grade_keys = ["grade_a", "grade_b", "grade_c"]
+    grades = [str(parsed.get(k, "")).strip() for k in grade_keys]
+    grades = [g for g in grades if g]
+
+    out: list[str] = []
+
+    if headline:
+        out.append(f"**{headline}**")
+
+    if framing:
+        out.append(f"*{framing}*")
+
+    def _render_item(item: dict) -> str:
+        """Format a single asset line: Player Name (PG, 28, OVR 84) or pick label."""
+        itype = item.get("type", "")
+        name = str(item.get("name", "")).strip()
+        if itype == "player":
+            meta_parts: list[str] = []
+            if item.get("position"):
+                meta_parts.append(str(item["position"]))
+            if item.get("age") is not None:
+                meta_parts.append(str(item["age"]))
+            if item.get("ovr") is not None:
+                meta_parts.append(f"OVR {item['ovr']}")
+            meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
+            return f"• {name}{meta}"
+        elif itype == "pick":
+            via = item.get("via")
+            suffix = f" (via {via})" if via else ""
+            return f"• {name}{suffix}"
+        else:
+            # cash or unknown
+            return f"• {name}" if name else "• Cash considerations"
+
+    if teams:
+        for i, team in enumerate(teams[:3]):
+            team_name = str(team.get("name", f"Team {i + 1}")).strip()
+            gets: list[dict] = team.get("gets") or []
+            # Cap at 8 items; show truncation notice if exceeded.
+            MAX_ITEMS = 8
+            shown = gets[:MAX_ITEMS]
+            overflow = len(gets) - MAX_ITEMS
+            block_lines = [f"> 🔄 **{team_name}** receives"]
+            if shown:
+                for item in shown:
+                    block_lines.append(f"> {_render_item(item)}")
+                if overflow > 0:
+                    block_lines.append(f"> *(…and {overflow} more)*")
+            else:
+                block_lines.append("> *(nothing)*")
+            out.append("\n".join(block_lines))
+    else:
+        # ctx missing or malformed — fall back to prose from the existing fields
+        proposer_sends = ctx.get("proposer_sends") or []
+        counterparty_sends = ctx.get("counterparty_sends") or []
+        proposer = ctx.get("proposer_team", "Team A")
+        counterparty = ctx.get("counterparty_team", "Team B")
+        if proposer_sends or counterparty_sends:
+            out.append(f"> 🔄 **{counterparty}** receives\n> " + "\n> ".join(f"• {l}" for l in counterparty_sends))
+            out.append(f"> 🔄 **{proposer}** receives\n> " + "\n> ".join(f"• {l}" for l in proposer_sends))
+
+    if analysis:
+        out.append(analysis)
+
+    if grades:
+        # Pair each grade with its team name when possible.
+        grade_parts = []
+        for idx, grade in enumerate(grades):
+            team_name = teams[idx]["name"] if idx < len(teams) else f"Team {idx + 1}"
+            grade_parts.append(f"**{team_name}:** {grade}")
+        out.append("**Grade:** " + " · ".join(grade_parts))
+
+    if persona_display:
+        out.append(f"— *{persona_display}*")
+
+    return "\n\n".join(out)
+
+
 def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
     """Player of the Month — features both conference winners side-by-side.
 
@@ -950,6 +1043,7 @@ _RENDERERS = {
     "verdict": _assemble_verdict,
     "index": _assemble_index,
     "potm": _assemble_potm,
+    "trade_report": _assemble_trade_report,
     "default": _assemble_default,
 }
 
@@ -967,6 +1061,6 @@ def _assemble_article(
     (currently just `potm`); other renderers ignore it.
     """
     renderer = _RENDERERS.get(format_style, _assemble_default)
-    if format_style == "potm":
+    if format_style in ("potm", "trade_report"):
         return renderer(parsed, persona_display, ctx)
     return renderer(parsed, persona_display)
