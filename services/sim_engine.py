@@ -49,7 +49,7 @@ _POSITION_BLOCK_WEIGHT = {
     "SG": 0.90,
     "SF": 0.90,
     "PF": 1.00,
-    "C":  1.20,
+    "C":  1.30,  # bumped from 1.20 — centers should out-block PFs more clearly
 }
 
 _POSITION_STEAL_WEIGHT = {
@@ -324,7 +324,7 @@ def _assign_team_stats(
         """Return (blk_mult, stl_mult, reb_mult) for a player's defensive role."""
         dr = p.get("_role_def_role", "general")
         if dr == "anchor":
-            return (1.20, 0.85, 1.15)
+            return (1.50, 0.85, 1.15)  # blk_mult bumped 1.20→1.50: rim protectors need a bigger share
         if dr == "perimeter":
             return (0.85, 1.15, 0.90)
         if dr == "passive":
@@ -372,10 +372,16 @@ def _assign_team_stats(
     ]
     stls = _distribute_proportional(rng, stl_total, stl_weights)
 
-    blk_total = rng.randint(4, 8)
+    # Team block total: 5-9 (avg 7) — bumped from 4-8 (avg 6). NBA league
+    # avg per team is ~4.8 but our sim's compressed distribution means league
+    # leaders couldn't reach NBA-realistic 3.5+ bpg at the old total.
+    blk_total = rng.randint(5, 9)
     blk_weights = [
         players[i].get("defense_tendency", players[i].get("defense", 50))
-        * (players[i].get("blk_tendency", 50) / 50.0)
+        # blk_tendency divisor tightened 50→45 so elite blockers (tendency 85+)
+        # get a meaningfully bigger share than average defenders. At /45,
+        # a 90-tendency rim protector is 2.0x weight vs 1.0x baseline.
+        * (players[i].get("blk_tendency", 50) / 45.0)
         * (players[i].get("defensive_effort", 50) / 50.0)
         * _POSITION_BLOCK_WEIGHT.get(players[i].get("position", "SF"), 1.0)
         * _def_role_mults(players[i])[0]   # blk_mult from defensive role
