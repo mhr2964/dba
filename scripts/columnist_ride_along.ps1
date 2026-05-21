@@ -26,6 +26,25 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $python = "$projectRoot\.venv\Scripts\python.exe"
 
+# ── Load .env so the launcher's own env-var checks see project secrets ───────
+# Mirrors python-dotenv default semantics (existing env vars win).
+$envFile = Join-Path $projectRoot ".env"
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
+            $key = $Matches[1]
+            $val = $Matches[2]
+            if (($val.StartsWith('"') -and $val.EndsWith('"')) -or
+                ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+                $val = $val.Substring(1, $val.Length - 2)
+            }
+            if (-not [System.Environment]::GetEnvironmentVariable($key)) {
+                Set-Item -Path "env:$key" -Value $val
+            }
+        }
+    }
+}
+
 # ── Guard: check for conflicting env vars ────────────────────────────────────
 if ($env:DBA_RIDE_ALONG -eq "1") {
     Write-Error "ERROR: DBA_RIDE_ALONG=1 is already set. Cannot run columnist ride-along simultaneously with trade ride-along (stdin collision). Unset DBA_RIDE_ALONG first."

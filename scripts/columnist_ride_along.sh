@@ -70,8 +70,30 @@ if [ "${DBA_HEADLESS_MODE:-}" = "1" ]; then
     exit 1
 fi
 
+# ── Load .env so the launcher's own env-var checks see project secrets ───────
+# Mirrors python-dotenv default semantics (existing env vars win).
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip blank lines and comments
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// /}" ]] && continue
+        # Match KEY=value
+        if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            # Strip surrounding quotes
+            val="${val%\"}"; val="${val#\"}"
+            val="${val%\'}"; val="${val#\'}"
+            # Only set if not already in environment
+            if [ -z "${!key:-}" ]; then
+                export "$key=$val"
+            fi
+        fi
+    done < "$PROJECT_ROOT/.env"
+fi
+
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "ERROR: ANTHROPIC_API_KEY is not set. Columnist articles cannot be generated without it." >&2
+    echo "ERROR: ANTHROPIC_API_KEY is not set in environment or .env." >&2
     exit 1
 fi
 
