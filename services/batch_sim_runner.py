@@ -1448,7 +1448,7 @@ async def _maybe_post_coach_beat(
                 context=cb_context,
                 subject_team_ids=[subject_team_id],
             ),
-            timeout=8.0,
+            timeout=15.0,
         )
         if cb_article:
             embed = discord.Embed(
@@ -1549,7 +1549,7 @@ async def _maybe_post_power_list(
                 category="power_rankings",
                 context=context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article:
             embed = discord.Embed(
@@ -1622,7 +1622,7 @@ async def _maybe_post_rookie_watch(
                 category="rookie_watch",
                 context=context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article:
             embed = discord.Embed(
@@ -1694,7 +1694,7 @@ async def _maybe_post_big_picture(
                 category="sunday_column",
                 context=context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article:
             embed = discord.Embed(
@@ -1801,7 +1801,7 @@ async def _maybe_post_ledger(
                 category="front_office_grade",
                 context=context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article:
             embed = discord.Embed(
@@ -1903,7 +1903,7 @@ async def _maybe_post_the_race(
                 category="award_race",
                 context=context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article:
             embed = discord.Embed(
@@ -1976,7 +1976,7 @@ async def _maybe_post_triage_report(
                 category="injury_report",
                 context=triage_context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article and article.get("body"):
             embed = discord.Embed(
@@ -2019,7 +2019,7 @@ async def _maybe_post_prelude(
                 category="series_preview",
                 context=series_context,
             ),
-            timeout=10.0,
+            timeout=20.0,
         )
         if article:
             embed = discord.Embed(
@@ -2610,7 +2610,7 @@ async def _maybe_post_columnist(
                     context=columnist_context,
                     subject_team_ids=subject_team_ids,
                 ),
-                timeout=8.0,
+                timeout=20.0,
             )
         except Exception as _col_exc:
             log.warning(f"_maybe_post_columnist: article timed out or failed ({persona_id}): {_col_exc}")
@@ -2694,7 +2694,7 @@ async def _maybe_post_columnist(
                         context=_dc_context,
                         subject_team_ids=_bottom5_team_ids,
                     ),
-                    timeout=8.0,
+                    timeout=20.0,
                 )
             except Exception as _dc_exc:
                 log.warning(
@@ -2730,7 +2730,7 @@ async def _maybe_post_columnist(
                     context=batch_context,
                     subject_team_ids=subject_team_ids,
                 ),
-                timeout=8.0,
+                timeout=20.0,
             )
         except Exception as _mb_exc:
             log.warning(f"_maybe_post_columnist: marcus_brooks timed out or failed: {_mb_exc}")
