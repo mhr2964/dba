@@ -47,21 +47,44 @@ async def recent_by_persona(
     league_id: int,
     persona_id: str,
     limit: int = 5,
+    season: Optional[int] = None,
 ) -> list[dict]:
-    """Return the most recent N articles by this persona in this league."""
-    rows = await pool.fetch(
-        """
-        SELECT *
-        FROM league_articles
-        WHERE league_id = $1
-          AND persona_id = $2
-        ORDER BY created_at DESC
-        LIMIT $3
-        """,
-        league_id,
-        persona_id,
-        limit,
-    )
+    """Return the most recent N articles by this persona in this league.
+
+    Pass season to restrict results to a single season — useful when building
+    rank_deltas so a new season's first Power List doesn't compare against the
+    prior season's final ranking.
+    """
+    if season is not None:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM league_articles
+            WHERE league_id = $1
+              AND persona_id = $2
+              AND season = $3
+            ORDER BY created_at DESC
+            LIMIT $4
+            """,
+            league_id,
+            persona_id,
+            season,
+            limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM league_articles
+            WHERE league_id = $1
+              AND persona_id = $2
+            ORDER BY created_at DESC
+            LIMIT $3
+            """,
+            league_id,
+            persona_id,
+            limit,
+        )
     return [dict(r) for r in rows]
 
 
