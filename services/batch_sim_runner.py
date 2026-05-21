@@ -88,7 +88,7 @@ _power_list_game_counter: dict[int, int] = {}      # fires every ~70 games (week
 _rookie_watch_game_counter: dict[int, int] = {}    # fires every ~70 games (weekly)
 _big_picture_game_counter: dict[int, int] = {}     # fires every ~70 games (weekly)
 _ledger_game_counter: dict[int, int] = {}          # fires every ~280 games (monthly)
-_ledger_first_post_done: dict[int, bool] = {}      # True after first post in post-deadline phase
+_ledger_first_post_done: dict[tuple[int, int], bool] = {}  # True after first post per (league_id, season)
 _race_game_counter: dict[int, int] = {}            # fires every ~280 games (monthly)
 
 # ---------------------------------------------------------------------------
@@ -1570,7 +1570,7 @@ async def _maybe_post_power_list(
         # Build rank_deltas from the most recent previous power_rankings article.
         # Positive delta = team moved up; negative = down; 0 = unchanged; missing = NEW.
         rank_deltas: dict[str, int] = {}
-        prev_articles = await article_repo.recent_by_persona(pool, league_id, "power_list", limit=1)
+        prev_articles = await article_repo.recent_by_persona(pool, league_id, "power_list", limit=1, season=season)
         if prev_articles:
             import re as _re
             prev_body = prev_articles[0].get("body", "") or ""
@@ -1773,24 +1773,27 @@ async def _maybe_post_ledger(
     regardless of counter. Subsequent posts fire every ~280 games (approx. monthly).
     Before the trade deadline: no Ledger columns.
     """
-    # Phase gate: bail entirely during pre-deadline phases so we never accumulate
-    # phantom counter increments. Counter only increments when phase qualifies.
-    _PRE_DEADLINE_PHASES = {
-        Phase.SETUP.value,
-        Phase.PRESEASON_READY.value,
-        Phase.REGULAR_SEASON_ACTIVE.value,
+    # Phase gate: whitelist of phases where Ledger is allowed to fire.
+    # Spec: "phase-aware gating; bails entirely pre-deadline; first post forced on
+    # TRADE_DEADLINE_OPEN phase transition." Playoffs, draft, and offseason phases
+    # are intentionally excluded — Ledger is a trade-era column only.
+    _LEDGER_ALLOWED_PHASES = {
+        Phase.TRADE_DEADLINE_OPEN.value,
+        Phase.REGULAR_SEASON_POSTDEADLINE.value,
+        Phase.REGULAR_SEASON_COMPLETE.value,
     }
     phase_row = await pool.fetchrow("SELECT current_phase FROM leagues WHERE id = $1", league_id)
     current_phase = phase_row["current_phase"] if phase_row else ""
-    if current_phase in _PRE_DEADLINE_PHASES:
-        log.debug(f"_maybe_post_ledger: league={league_id} phase={current_phase!r} — pre-deadline, skipping")
+    if current_phase not in _LEDGER_ALLOWED_PHASES:
+        log.debug(f"_maybe_post_ledger: league={league_id} phase={current_phase!r} — not a Ledger phase, skipping")
         return
 
     _ledger_game_counter[league_id] = _ledger_game_counter.get(league_id, 0) + len(batch_results)
-    _ledger_first_post_done.setdefault(league_id, False)
+    _season_key = (league_id, season)
+    _ledger_first_post_done.setdefault(_season_key, False)
 
-    # Force-fire on the first post-deadline batch (regardless of counter).
-    force_fire = not _ledger_first_post_done[league_id]
+    # Force-fire on the first post-deadline batch of this season (regardless of counter).
+    force_fire = not _ledger_first_post_done[_season_key]
     if not force_fire and _ledger_game_counter[league_id] < 280:
         return
     if not force_fire:
@@ -1887,7 +1890,7 @@ async def _maybe_post_ledger(
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
             await analysis_channel.send(embed=embed)
             # Mark first post done and reset counter after successful send.
-            _ledger_first_post_done[league_id] = True
+            _ledger_first_post_done[_season_key] = True
             _ledger_game_counter[league_id] = 0
     except Exception as exc:
         log.warning(f"_maybe_post_ledger failed: {exc}", exc_info=True)
