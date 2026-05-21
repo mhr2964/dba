@@ -41,6 +41,7 @@ from typing import Optional
 
 from core.logging import get_logger
 from data.repositories import franchise_plan_repo, player_repo, team_repo
+from services import trade_evaluator as _trade_eval
 
 log = get_logger(__name__)
 
@@ -328,8 +329,19 @@ def _derive_goal_and_horizon(
     games_played: int,
     ovr_list: list[int],
     prime_age_star: bool = False,  # OVR >= 88 AND 26 <= age <= 28
+    mode: str = "developing",      # from compute_team_mode; used as tie-breaker
+    conf_rank: int | None = None,
 ) -> tuple[str, int]:
-    """Return (goal, horizon_seasons).  Priority order: win_now → tank → rebuild → transition."""
+    """Return (goal, horizon_seasons).  Priority order: win_now → tank → rebuild → transition.
+
+    transition is reserved for the genuinely ambiguous middle: ~35-44 wins,
+    mixed-age roster, no clear star, no obvious direction.  The widened
+    win_now and rebuild gates below are intentionally designed to keep
+    transition rare rather than the catch-all default.
+    """
+
+    pw = projected_wins  # shorthand for readability
+    in_top4 = conf_rank is not None and conf_rank <= 4
 
     # ---- edge case: very early season with no record ----
     if games_played < 10:
@@ -339,23 +351,34 @@ def _derive_goal_and_horizon(
             if ovr_list and max(ovr_list) <= 75:
                 return "rebuild", 3
             return "tank", 2
+        # Mode-guided early disambiguation instead of defaulting to transition
+        if mode in ("soft_rebuild", "rebuilding"):
+            return "rebuild", 3
+        if mode == "contending":
+            return "win_now", 2
         return "transition", 2
 
     # ---- 1. WIN_NOW ----
     # Prime-window check: 26-28yo star on a 47+-win trajectory is the most common
     # championship-window case (e.g. Embiid at 29, 47W pace → contender, not transition).
     # Must come before the avg_age≥29 branch so it catches the prime window explicitly.
-    if prime_age_star and projected_wins >= 47:
-        horizon = 1 if projected_wins >= 55 else 2
+    if prime_age_star and pw >= 47:
+        horizon = 1 if pw >= 55 else 2
         return "win_now", horizon
 
     if (
-        (has_young_star and projected_wins >= 45)
-        or (has_elite_star and projected_wins >= 50)
-        or (avg_age >= 29 and projected_wins >= 45)
+        (has_young_star and pw >= 42)           # widened from 45 — legitimate young-star contenders
+        or (has_elite_star and pw >= 42)        # widened from 50 — elite star + winning = win_now
+        or (has_any_star and pw >= 45)          # new: any star (OVR≥88) + 45-win pace
+        or (avg_age >= 29 and pw >= 45)
+        or (in_top4 and pw >= 40)              # top-4 conf + 40W = playing above expectation
     ):
-        horizon = 1 if projected_wins >= 55 else 2
+        horizon = 1 if pw >= 55 else 2
         return "win_now", horizon
+
+    # Mode-guided win_now: play_in_fringe team with any star is pushing, not treading water
+    if mode == "play_in_fringe" and has_any_star:
+        return "win_now", 2
 
     # ---- 2. TANK ----
     # Two coherent-tank paths:
@@ -363,26 +386,38 @@ def _derive_goal_and_horizon(
     # B) Young + losing with no star: team MUST tank to ACQUIRE foundational picks.
     #    (pre-2023 OKC model — you commit to tank before the picks arrive, not after.)
     qualifies_tank_record = (
-        (projected_wins < 30 and avg_age < 25.5)
-        or (projected_wins < 28 and avg_age < 27)
+        (pw < 30 and avg_age < 25.5)
+        or (pw < 28 and avg_age < 27)
+        or (pw < 30 and not has_any_star and avg_age >= 26)  # widened path B gate
     )
     if qualifies_tank_record:
         if r1_picks_next3 >= 2:
             return "tank", 2
         # Path B: young roster with no star + losing record → tank to acquire picks.
-        has_no_star = not has_any_star  # no OVR-88+ player
-        if avg_age <= 24 and has_no_star and projected_wins < 30:
+        has_no_star = not has_any_star
+        if avg_age <= 24 and has_no_star and pw < 30:
+            return "tank", 2
+        # Mode-guided: developing + young + low projected wins → tank
+        if mode == "developing" and avg_age < 25 and pw < 35:
             return "tank", 2
         # Fewer than 2 R1 picks, doesn't qualify path B — fall through to rebuild.
 
     # ---- 3. REBUILD ----
     if (
-        (projected_wins < 30 and avg_age >= 27)
-        or (30 <= projected_wins <= 35 and avg_age >= 29)
+        (pw < 30 and avg_age >= 27)
+        or (30 <= pw <= 35 and avg_age >= 29)
+        or (pw < 35 and avg_age >= 28)          # old + losing = rebuild, not transition
+        or (pw < 30 and not has_any_star and avg_age >= 26)  # no foundation + losing
     ):
         return "rebuild", 3
 
-    # ---- 4. TRANSITION (default) ----
+    # Mode-guided rebuild: soft_rebuild mode already signals the team is trending down
+    if mode == "soft_rebuild":
+        return "rebuild", 3
+
+    # ---- 4. TRANSITION — genuinely ambiguous middle ----
+    # Intentionally narrow: 35-44 wins, mixed age, no clear star or direction.
+    # Horizon capped at 2 because this window rarely extends further.
     return "transition", 2
 
 
@@ -919,20 +954,49 @@ async def derive_plan(
 
     ovr_list = [r["overall"] for r in roster]
 
-    # 2. Record from standings_cache
+    # 2. Record from standings_cache + team conference
     sc_row = await pool.fetchrow(
-        "SELECT wins, losses FROM standings_cache WHERE league_id=$1 AND team_id=$2 AND season=$3",
+        """
+        SELECT sc.wins, sc.losses, t.conference
+        FROM standings_cache sc
+        JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id=$1 AND sc.team_id=$2 AND sc.season=$3
+        """,
         league_id, team_id, season,
     )
     wins = sc_row["wins"] if sc_row else 0
     losses = sc_row["losses"] if sc_row else 0
+    conference = sc_row["conference"] if sc_row else None
     games_played = wins + losses
     projected_wins = _project_wins(wins, losses, games_played)
+
+    # Conference rank: peers with strictly more wins → 1-based rank
+    conf_rank: int | None = None
+    if conference:
+        rank_val = await pool.fetchval(
+            """
+            SELECT COUNT(*) + 1
+            FROM standings_cache sc2
+            JOIN teams t2 ON t2.id = sc2.team_id
+            WHERE sc2.league_id = $1 AND sc2.season = $2
+              AND t2.conference = $3
+              AND sc2.wins > $4
+            """,
+            league_id, season, conference, wins,
+        )
+        conf_rank = int(rank_val) if rank_val is not None else None
 
     # 3. Avg age of top-8 by OVR
     top8 = sorted(roster, key=lambda p: p["overall"], reverse=True)[:8]
     valid_ages = [p["age"] for p in top8 if p["age"] is not None]
     avg_age = sum(valid_ages) / len(valid_ages) if valid_ages else 27.0
+
+    # Team mode — shared 5-bucket classification; computed here so avg_age is available
+    team_mode = _trade_eval.compute_team_mode(
+        projected_wins if games_played >= 10 else None,
+        avg_age,
+        conf_rank,
+    )
 
     # 4. Star flags
     has_young_star = any(
@@ -986,6 +1050,8 @@ async def derive_plan(
         games_played=games_played,
         ovr_list=ovr_list,
         prime_age_star=has_prime_age_star,
+        mode=team_mode,
+        conf_rank=conf_rank,
     )
 
     # 7. Player categorisation — augmented with current-season production.
