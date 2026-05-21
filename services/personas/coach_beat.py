@@ -48,7 +48,19 @@ COACH_BEAT = register_persona(Persona(
         "- Reference real players from the context only. Do not invent names or stat lines.\n"
         "- If recent_role_changes is empty, anchor the column on the philosophy + posture mismatch instead — "
         "never write filler about 'the rotation looks steady.'\n"
-        "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '*Coach in focus:'."
+        "- SCHEMA TRANSLATION (mandatory): Translate ANY roster role or strategy context into natural basketball "
+        "language. NEVER name schema keys or role codes verbatim in prose. Examples: "
+        "'secondary_creator' → 'secondary playmaker' or 'their second initiator'; "
+        "'two_way_big' → 'a center who guards multiple positions'; "
+        "'vet_overrater' → 'leaning on veteran experience' or 'a coach who trusts his veterans'; "
+        "'primary_initiator' → 'their primary ball-handler'; "
+        "'youth_developer' → 'committed to developing the young core'; "
+        "'rim_protector' → 'the anchor of the paint defense'; "
+        "'post_anchor' → 'operating as a post-up threat'; "
+        "'generalist' → 'a do-it-all wing.' "
+        "If you see JSON-shaped context fields in your prompt, paraphrase them — never echo the key name as prose.\n"
+        "- CRITICAL: Do NOT repeat or paraphrase the headline as the first line of the body. "
+        "Start directly with '*Coach in focus:'."
     ),
     categories=("coaching_beat",),
     context_keys=("posture", "plan", "philosophy", "recent_role_changes"),
