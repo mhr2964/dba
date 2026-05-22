@@ -1381,10 +1381,40 @@ async def cpu_should_accept(
             return False, _reason
     # ── End fleecing floor ────────────────────────────────────────────────────
 
-    if differential > max_side * 0.25:
+    # ── B5: Asymmetric rejection — tighter threshold for contending/fringe ──────
+    # After B1/B3/B6 modifiers: if a win-now or fringe team is receiving materially
+    # less value than they're giving up with no compensating strategic gain, reject.
+    # "Strategic gain" means: at least one R1 pick incoming, OR significant cap
+    # relief (incoming salary < outgoing by >15% of cap).  Without strategic gain,
+    # the rejection threshold tightens from 25% → 15% differential.
+    _b5_threshold = 0.25  # default differential tolerance
+    if cpu_team_mode in ("contending", "play_in_fringe") and score_b > score_a:
+        _receiving_r1s = sum(
+            1 for a in assets_receiving
+            if a.get("asset_type") == "pick" and a.get("round") == 1
+        )
+        _incoming_sal = sum(
+            a.get("contract", {}).get("salary", 0)
+            for a in assets_receiving if a.get("asset_type") == "player"
+        )
+        _outgoing_sal = sum(
+            a.get("contract", {}).get("salary", 0)
+            for a in assets_giving if a.get("asset_type") == "player"
+        )
+        _cap_relief = _outgoing_sal - _incoming_sal  # positive = we get cap relief
+        _has_strategic_gain = (
+            _receiving_r1s >= 1
+            or _cap_relief >= salary_cap * 0.15
+        )
+        if not _has_strategic_gain:
+            _b5_threshold = 0.15  # tighter: no picks or cap relief = harder standard
+    # ── End B5 setup ─────────────────────────────────────────────────────────────
+
+    if differential > max_side * _b5_threshold:
         losing_side = score_b > score_a
         if losing_side:
-            return False, "CPU evaluated the trade as too lopsided against its interests."
+            _b5_note = " [B5: no strategic gain, tight threshold]" if _b5_threshold < 0.25 else ""
+            return False, f"CPU evaluated the trade as too lopsided against its interests.{_b5_note}"
 
     giving_players = [a for a in assets_giving if a.get("asset_type") == "player"]
     receiving_picks = [a for a in assets_receiving if a.get("asset_type") == "pick"]
