@@ -9,7 +9,10 @@ verifying the core scoring logic without DB calls.
 """
 from __future__ import annotations
 
+import datetime
 import os
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from services.cpu_trade_proposals import _score_outgoing_pair
@@ -417,119 +420,420 @@ def test_dispatcher_v2_flag_ignored():
 # Pass-2 form-adjustment regression tests (PR 2 blockers)
 # ---------------------------------------------------------------------------
 
-def test_pass2_uses_form_adjusted_target_value():
+async def test_pass2_uses_form_adjusted_target_value():
     """_build_return_package must receive a form-multiplied target_value in pass-2.
 
-    The regression: pass-2 was passing the raw _cand_tv (no form, no position,
-    no season_stats) to _build_return_package.  For a hot-streak player
-    (form ≈ 1.15) this caused the package to be undersized by ~15%, pushing
+    The regression: pass-2 was passing the raw _cand_tv to _build_return_package
+    instead of _p2_adj_tv (the form-adjusted value).  For a hot-streak player
+    (form_mod = 1.15) this caused the package to be undersized by ~15%, pushing
     the sanity-floor ratio below 0.90 and aborting proposals for reachable players.
 
-    This test verifies the math of the fix: apply_form(raw, modifier) ≠ raw
-    when modifier ≠ 1.0, and that the form-adjusted value is what a correctly
-    implemented pass-2 iteration would pass to _build_return_package.
+    Fail-on-revert contract: reverting line 1529 from _p2_adj_tv back to _cand_tv
+    means _build_return_package receives the pass-1 raw _tv instead of the
+    form-adjusted value.  The pass-1 _tv is computed with season_stats=None and
+    no form modifier applied, so it will differ from _p2_adj_tv by factor ~1.15.
+    The captured_tv assertion (== expected_adj_tv) will fail.
     """
+    import services.cpu_trade_proposals as _mod
+    from data.repositories import league_repo, player_repo, team_repo
     from services import trade_evaluator
 
     SALARY_CAP = 140_000_000
-    player_overall = 82
-    player_age = 26
+    LEAGUE_ID = 1
+    SEASON = 2025
 
-    # Simulate a hot-streak form modifier (above-average recent production).
-    hot_form_modifier = 1.15
+    # Candidate player: hot-streak, OVR 82 at age 26.
+    HOT_FORM_MOD = 1.15
+    CAND_PID = 100
+    CAND_SALARY = 20_000_000
+    CAND_YEARS = 2
 
-    contract = {"salary": 20_000_000, "years_remaining": 2}
+    # Build minimal real dataclass instances so attribute access is authentic.
+    league = league_repo.League(
+        id=LEAGUE_ID,
+        discord_guild_id=999,
+        name="Test",
+        start_season_year=SEASON,
+        current_season=SEASON,
+        current_phase="trade_deadline",
+        phase_data={},
+        commissioner_user_id=1,
+        fa_day_count=0,
+        salary_cap=SALARY_CAP,
+        created_at=datetime.datetime(2025, 1, 1),
+        archived_at=None,
+    )
 
-    raw_value = trade_evaluator.player_trade_value(
-        {"overall": player_overall, "age": player_age, "position": "SG"},
-        contract,
+    team_a = team_repo.Team(
+        id=1, league_id=LEAGUE_ID, nba_team_code="AAA", name="Alpha",
+        city="City A", conference="East", division="Atlantic",
+        manager_user_id=None, cpu_mode="developing",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+    team_b = team_repo.Team(
+        id=2, league_id=LEAGUE_ID, nba_team_code="BBB", name="Beta",
+        city="City B", conference="West", division="Pacific",
+        manager_user_id=None, cpu_mode="developing",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+
+    cand_player = player_repo.Player(
+        id=CAND_PID, league_id=LEAGUE_ID, external_id=None,
+        first_name="Hot", last_name="Player", position="SG",
+        height_in=76, weight_lb=200, birth_date=datetime.date(1999, 1, 1),
+        years_pro=4, is_rookie=False, team_id=team_b.id,
+        roster_status="active", overall=82, speed=80, shooting_2pt=80,
+        shooting_3pt=80, shooting_mid=80, finishing=80, playmaking=80,
+        defense=80, rebounding=70, iq=75, potential=80,
+        peak_age_start=26, peak_age_end=30, loyalty=50, money_drive=50,
+        win_drive=50, market_pref="any", star_leverage=50,
+    )
+    cand_contract = player_repo.Contract(
+        id=1, league_id=LEAGUE_ID, player_id=CAND_PID, team_id=team_b.id,
+        salary=CAND_SALARY, years_remaining=CAND_YEARS, total_years=3,
+        contract_type="standard", signed_in_season=SEASON - 1,
+        is_active=True, terminated_reason=None,
+    )
+
+    # Compute the expected form-adjusted target value using the SAME code path
+    # that _run_incoming_first_for_team uses in pass-2.  This is what
+    # _build_return_package SHOULD receive; if the revert happens it will receive
+    # the pass-1 raw _tv (computed without position/season_stats) instead.
+    # Use _player_age directly so the age computation matches production exactly.
+    from services.cpu_trade_posture import _player_age
+    p2_raw = trade_evaluator.player_trade_value(
+        {"overall": cand_player.overall, "age": _player_age(cand_player), "position": cand_player.position},
+        {"salary": CAND_SALARY, "years_remaining": CAND_YEARS},
         SALARY_CAP,
         season_stats=None,
     )
-    adjusted_value = trade_evaluator.apply_form(raw_value, hot_form_modifier)
+    expected_adj_tv = trade_evaluator.apply_form(p2_raw, HOT_FORM_MOD)
 
-    # The form-adjusted value must differ from raw by the modifier ratio.
-    assert adjusted_value != raw_value, (
-        "apply_form with non-1.0 modifier must change the value; "
-        f"raw={raw_value:.2f} adjusted={adjusted_value:.2f}"
+    # Pool mock: returns just enough for the function to reach pass-2.
+    pool = MagicMock()
+
+    async def _fetch(sql, *args):
+        sql_lower = sql.lower()
+        if "position" in sql_lower and "lineups" in sql_lower:
+            return []  # pos_count_rows — no positional bias
+        if "trades" in sql_lower and "pending_counterparty" in sql_lower:
+            return []  # no active pair trades
+        return []
+
+    async def _fetchval(sql, *args):
+        sql_lower = sql.lower()
+        if "coach_philosophy" in sql_lower:
+            return None
+        if "draft_picks" in sql_lower:
+            return 0  # b_any_count
+        if "trade_assets" in sql_lower:
+            return 0  # active_for_player
+        if "last_traded_at" in sql_lower:
+            return None
+        return None
+
+    pool.fetch = _fetch
+    pool.fetchval = _fetchval
+
+    # player_repo mocks: get_by_id returns the candidate; get_active_contract
+    # returns its contract.  Pass-2 secondary dice will not fire (random patched).
+    captured_target_value: list[float] = []
+
+    async def _fake_build_return_package(
+        pool_, league_, team_a_, block_ids, target_value, *args, **kwargs
+    ):
+        captured_target_value.append(target_value)
+        return ([], [], 0.0)  # empty offer → function returns 0 at line 1671
+
+    postures = {
+        team_a.id: {
+            "mode": "developing", "urgency": "comfortable",
+            "avg_age": 27.0, "projected_wins": None,
+            "conf_rank": None, "games_remaining": 82, "near_threshold": None,
+        },
+        team_b.id: {
+            "mode": "developing", "urgency": "comfortable",
+            "avg_age": 27.0, "projected_wins": None,
+            "conf_rank": None, "games_remaining": 82, "near_threshold": None,
+        },
+    }
+
+    with (
+        patch.object(
+            _mod.player_repo, "get_by_id",
+            AsyncMock(return_value=cand_player),
+        ),
+        patch.object(
+            _mod.player_repo, "get_active_contract",
+            AsyncMock(return_value=cand_contract),
+        ),
+        patch.object(
+            _mod.trade_evaluator, "compute_form_map",
+            AsyncMock(return_value={CAND_PID: (HOT_FORM_MOD, {})}),
+        ),
+        patch("services.cpu_trade_proposals._build_return_package", _fake_build_return_package),
+        patch("services.cpu_trade_proposals.random.random", return_value=0.99),  # no secondary
+        patch("services.trade_context.compute_context_modifier", AsyncMock(return_value=(1.0, []))),
+    ):
+        await _mod._run_incoming_first_for_team(
+            pool=pool,
+            league=league,
+            season=SEASON,
+            team_a=team_a,
+            cpu_teams=[team_a, team_b],
+            block_by_team={team_b.id: [CAND_PID]},
+            used_pairs=set(),
+            taken_player_ids=set(),
+            deadline_game_index=50,
+            recently_signed_ids=set(),
+            guild=None,
+            postures=postures,
+            cp_plans={team_a.id: None, team_b.id: None},
+            cp_contexts={},
+            cp_r1_counts={},
+            roster_a_cache=[],
+        )
+
+    assert len(captured_target_value) == 1, (
+        f"_build_return_package should have been called exactly once in pass-2; "
+        f"got {len(captured_target_value)} calls"
     )
-    assert abs(adjusted_value - raw_value * hot_form_modifier) < 0.01, (
-        f"apply_form should multiply raw by modifier: expected ~{raw_value * hot_form_modifier:.2f}, "
-        f"got {adjusted_value:.2f}"
-    )
-
-    # The package sizing call must use adjusted_value.
-    # Sanity floor for 'developing' mode is 0.90.  If the package was sized to
-    # raw (under-sized by form factor), ratio = raw/adjusted ≈ 0.87 — below floor.
-    # If sized correctly (to adjusted), ratio = 1.0 — above floor.
-    sanity_floor = 0.90
-    ratio_if_raw_used = raw_value / max(adjusted_value, 1)
-    ratio_if_adjusted_used = adjusted_value / max(adjusted_value, 1)
-
-    assert ratio_if_raw_used < sanity_floor, (
-        f"Using raw value for package sizing would produce ratio {ratio_if_raw_used:.3f} "
-        f"< {sanity_floor} sanity floor — confirming the bug scenario"
-    )
-    assert ratio_if_adjusted_used >= sanity_floor, (
-        f"Using form-adjusted value for sizing should produce ratio >= {sanity_floor}, "
-        f"got {ratio_if_adjusted_used:.3f}"
+    actual_tv = captured_target_value[0]
+    assert abs(actual_tv - expected_adj_tv) < 0.01, (
+        f"Pass-2 must pass the form-adjusted target value to _build_return_package.\n"
+        f"  Expected (form-adjusted): {expected_adj_tv:.4f}\n"
+        f"  Actual (received):        {actual_tv:.4f}\n"
+        f"  Difference:               {abs(actual_tv - expected_adj_tv):.4f}\n"
+        "If this fails, line 1529 in _run_incoming_first_for_team is using "
+        "_cand_tv (raw pass-1 value) instead of _p2_adj_tv (form-adjusted)."
     )
 
 
-def test_pass2_includes_secondary_target_in_sizing():
-    """When a secondary target is present, target_value passed to _build_return_package
-    must reflect primary + secondary combined, not just primary.
+async def test_pass2_includes_secondary_target_in_sizing():
+    """When a secondary target fires, _build_return_package must receive
+    primary-form-adjusted + secondary-form-adjusted combined value, not just primary.
 
     The regression: pass-2 sized the package for the primary alone, but downstream
-    sanity checks compared against primary+secondary combined — causing star + role-player
-    bundle proposals to abort as undersized ~30% of the time.
+    sanity checks compared against primary+secondary combined — causing star +
+    role-player bundle proposals to abort as undersized ~30% of the time.
 
-    This test verifies the secondary fold math: combined = form(primary) + form(secondary).
+    Fail-on-revert contract: reverting line 1529 from _p2_adj_tv back to _cand_tv
+    means the secondary's form-adjusted contribution is omitted from target_value.
+    The captured_tv assertion (== expected_combined) will fail because _cand_tv
+    carries only the primary raw value with no secondary folded in.
     """
+    import services.cpu_trade_proposals as _mod
+    from data.repositories import league_repo, player_repo, team_repo
     from services import trade_evaluator
 
     SALARY_CAP = 140_000_000
+    LEAGUE_ID = 1
+    SEASON = 2025
 
-    primary_contract = {"salary": 30_000_000, "years_remaining": 3}
-    secondary_contract = {"salary": 8_000_000, "years_remaining": 2}
+    PRIMARY_PID = 200
+    PRIMARY_OVERALL = 82
+    PRIMARY_SALARY = 30_000_000
+    PRIMARY_YEARS = 3
+    PRIMARY_FORM = 1.10
 
-    primary_value_raw = trade_evaluator.player_trade_value(
-        {"overall": 82, "age": 26, "position": "SF"},
-        primary_contract,
-        SALARY_CAP,
+    SECONDARY_PID = 201
+    SECONDARY_OVERALL = 74
+    SECONDARY_SALARY = 8_000_000
+    SECONDARY_YEARS = 2
+    SECONDARY_FORM = 0.95
+
+    league = league_repo.League(
+        id=LEAGUE_ID, discord_guild_id=999, name="Test",
+        start_season_year=SEASON, current_season=SEASON,
+        current_phase="trade_deadline", phase_data={},
+        commissioner_user_id=1, fa_day_count=0, salary_cap=SALARY_CAP,
+        created_at=datetime.datetime(2025, 1, 1), archived_at=None,
     )
-    secondary_value_raw = trade_evaluator.player_trade_value(
-        {"overall": 74, "age": 28, "position": "PG"},
-        secondary_contract,
-        SALARY_CAP,
+    team_a = team_repo.Team(
+        id=1, league_id=LEAGUE_ID, nba_team_code="AAA", name="Alpha",
+        city="City A", conference="East", division="Atlantic",
+        manager_user_id=None, cpu_mode="developing",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+    team_b = team_repo.Team(
+        id=2, league_id=LEAGUE_ID, nba_team_code="BBB", name="Beta",
+        city="City B", conference="West", division="Pacific",
+        manager_user_id=None, cpu_mode="developing",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
     )
 
-    primary_form = 1.10
-    secondary_form = 0.95
-
-    value_primary_only = trade_evaluator.apply_form(primary_value_raw, primary_form)
-    value_combined = (
-        trade_evaluator.apply_form(primary_value_raw, primary_form)
-        + trade_evaluator.apply_form(secondary_value_raw, secondary_form)
+    primary_player = player_repo.Player(
+        id=PRIMARY_PID, league_id=LEAGUE_ID, external_id=None,
+        first_name="Star", last_name="Forward", position="SF",
+        height_in=79, weight_lb=220, birth_date=datetime.date(1999, 1, 1),
+        years_pro=4, is_rookie=False, team_id=team_b.id,
+        roster_status="active", overall=PRIMARY_OVERALL,
+        speed=82, shooting_2pt=82, shooting_3pt=75, shooting_mid=80,
+        finishing=82, playmaking=78, defense=78, rebounding=75,
+        iq=78, potential=82, peak_age_start=26, peak_age_end=31,
+        loyalty=50, money_drive=50, win_drive=60, market_pref="any",
+        star_leverage=60,
+    )
+    secondary_player = player_repo.Player(
+        id=SECONDARY_PID, league_id=LEAGUE_ID, external_id=None,
+        first_name="Role", last_name="Guard", position="PG",
+        height_in=74, weight_lb=185, birth_date=datetime.date(1997, 5, 10),
+        years_pro=6, is_rookie=False, team_id=team_b.id,
+        roster_status="active", overall=SECONDARY_OVERALL,
+        speed=76, shooting_2pt=74, shooting_3pt=74, shooting_mid=72,
+        finishing=70, playmaking=74, defense=72, rebounding=65,
+        iq=72, potential=70, peak_age_start=27, peak_age_end=31,
+        loyalty=50, money_drive=50, win_drive=50, market_pref="any",
+        star_leverage=30,
     )
 
-    assert value_combined > value_primary_only, (
-        f"Combined (primary+secondary) value {value_combined:.2f} must exceed "
-        f"primary-only {value_primary_only:.2f}"
+    primary_contract = player_repo.Contract(
+        id=10, league_id=LEAGUE_ID, player_id=PRIMARY_PID, team_id=team_b.id,
+        salary=PRIMARY_SALARY, years_remaining=PRIMARY_YEARS, total_years=4,
+        contract_type="standard", signed_in_season=SEASON - 2,
+        is_active=True, terminated_reason=None,
+    )
+    secondary_contract = player_repo.Contract(
+        id=11, league_id=LEAGUE_ID, player_id=SECONDARY_PID, team_id=team_b.id,
+        salary=SECONDARY_SALARY, years_remaining=SECONDARY_YEARS, total_years=3,
+        contract_type="standard", signed_in_season=SEASON - 1,
+        is_active=True, terminated_reason=None,
     )
 
-    # If the package is sized to primary_only but compared against combined,
-    # the ratio would be < 1.0 by the secondary's share — often below the 0.90 floor.
-    secondary_adj = trade_evaluator.apply_form(secondary_value_raw, secondary_form)
-    ratio_undersized = value_primary_only / max(value_combined, 1)
-    expected_secondary_fraction = secondary_adj / max(value_combined, 1)
-
-    assert ratio_undersized < 1.0, (
-        "Package sized to primary alone is undersized when secondary exists"
+    # Compute expected combined target value: form(primary) + form(secondary).
+    # Use _player_age so age matches production exactly (birth_date → today diff).
+    from services.cpu_trade_posture import _player_age
+    p2_primary_raw = trade_evaluator.player_trade_value(
+        {"overall": PRIMARY_OVERALL, "age": _player_age(primary_player), "position": "SF"},
+        {"salary": PRIMARY_SALARY, "years_remaining": PRIMARY_YEARS},
+        SALARY_CAP, season_stats=None,
     )
-    assert expected_secondary_fraction > 0.05, (
-        f"Secondary must contribute meaningfully to combined value "
-        f"(got {expected_secondary_fraction:.1%}); test fixture may be degenerate"
+    p2_secondary_raw = trade_evaluator.player_trade_value(
+        {"overall": SECONDARY_OVERALL, "age": _player_age(secondary_player), "position": "PG"},
+        {"salary": SECONDARY_SALARY, "years_remaining": SECONDARY_YEARS},
+        SALARY_CAP, season_stats=None,
+    )
+    expected_combined = (
+        trade_evaluator.apply_form(p2_primary_raw, PRIMARY_FORM)
+        + trade_evaluator.apply_form(p2_secondary_raw, SECONDARY_FORM)
+    )
+
+    pool = MagicMock()
+
+    async def _fetch(sql, *args):
+        sql_lower = sql.lower()
+        if "lineups" in sql_lower:
+            return []
+        if "pending_counterparty" in sql_lower:
+            return []
+        return []
+
+    async def _fetchval(sql, *args):
+        sql_lower = sql.lower()
+        if "coach_philosophy" in sql_lower:
+            return None
+        if "draft_picks" in sql_lower:
+            return 0
+        if "trade_assets" in sql_lower:
+            return 0
+        if "last_traded_at" in sql_lower:
+            return None
+        return None
+
+    pool.fetch = _fetch
+    pool.fetchval = _fetchval
+
+    # get_by_id: primary pid during pass-1 block scan, secondary pid during pass-2.
+    async def _get_by_id(pool_, pid):
+        if pid == PRIMARY_PID:
+            return primary_player
+        if pid == SECONDARY_PID:
+            return secondary_player
+        return None
+
+    # get_active_contract: primary during pass-1; secondary during pass-2 secondary fold.
+    async def _get_active_contract(pool_, pid):
+        if pid == PRIMARY_PID:
+            return primary_contract
+        if pid == SECONDARY_PID:
+            return secondary_contract
+        return None
+
+    # compute_form_map: return per-player form based on which pid is requested.
+    async def _compute_form_map(pool_, player_ids, ovr_map, pos_map, league_id, season):
+        result = {}
+        for pid in player_ids:
+            if pid == PRIMARY_PID:
+                result[pid] = (PRIMARY_FORM, {})
+            elif pid == SECONDARY_PID:
+                result[pid] = (SECONDARY_FORM, {})
+            else:
+                result[pid] = (1.0, {})
+        return result
+
+    captured_target_value: list[float] = []
+
+    async def _fake_build_return_package(
+        pool_, league_, team_a_, block_ids, target_value, *args, **kwargs
+    ):
+        captured_target_value.append(target_value)
+        return ([], [], 0.0)
+
+    postures = {
+        team_a.id: {
+            "mode": "developing", "urgency": "comfortable",
+            "avg_age": 27.0, "projected_wins": None,
+            "conf_rank": None, "games_remaining": 82, "near_threshold": None,
+        },
+        team_b.id: {
+            "mode": "developing", "urgency": "comfortable",
+            "avg_age": 27.0, "projected_wins": None,
+            "conf_rank": None, "games_remaining": 82, "near_threshold": None,
+        },
+    }
+
+    with (
+        patch.object(_mod.player_repo, "get_by_id", _get_by_id),
+        patch.object(_mod.player_repo, "get_active_contract", _get_active_contract),
+        patch.object(_mod.trade_evaluator, "compute_form_map", _compute_form_map),
+        patch("services.cpu_trade_proposals._build_return_package", _fake_build_return_package),
+        # Force random.random() < 0.3 so the secondary branch always fires for
+        # a player with overall >= 75 (PRIMARY_OVERALL = 82 qualifies).
+        patch("services.cpu_trade_proposals.random.random", return_value=0.1),
+        patch("services.trade_context.compute_context_modifier", AsyncMock(return_value=(1.0, []))),
+    ):
+        await _mod._run_incoming_first_for_team(
+            pool=pool,
+            league=league,
+            season=SEASON,
+            team_a=team_a,
+            cpu_teams=[team_a, team_b],
+            # Both pids in b's block: primary scored in pass-1, secondary fetched in pass-2.
+            block_by_team={team_b.id: [PRIMARY_PID, SECONDARY_PID]},
+            used_pairs=set(),
+            taken_player_ids=set(),
+            deadline_game_index=50,
+            recently_signed_ids=set(),
+            guild=None,
+            postures=postures,
+            cp_plans={team_a.id: None, team_b.id: None},
+            cp_contexts={},
+            cp_r1_counts={},
+            roster_a_cache=[],
+        )
+
+    assert len(captured_target_value) >= 1, (
+        "_build_return_package was never called; the candidate did not reach pass-2. "
+        "Check that both players' trade values exceed the 15-point threshold."
+    )
+    actual_tv = captured_target_value[0]
+    assert abs(actual_tv - expected_combined) < 0.01, (
+        f"Pass-2 must pass primary+secondary combined form-adjusted value.\n"
+        f"  Expected (primary_form + secondary_form): {expected_combined:.4f}\n"
+        f"  Actual (received):                        {actual_tv:.4f}\n"
+        f"  Difference:                               {abs(actual_tv - expected_combined):.4f}\n"
+        "If this fails, line 1529 is using _cand_tv (primary only, no form) "
+        "instead of _p2_adj_tv (primary-form + secondary-form combined)."
     )
 
 
