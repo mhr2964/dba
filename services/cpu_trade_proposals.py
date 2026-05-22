@@ -861,6 +861,11 @@ async def _attempt_one_offer(
         # specific positional gaps; all other modes take any position.
         target_positions = _get_trade_target_positions(a, pos_count_map, mode_a)
 
+        # B6: build archetype distribution for team A once per outer team.
+        # Used in the inner player-scoring loop to downweight redundant archetypes.
+        _a_roster_for_arch = await player_repo.get_roster(pool, league.id, a.id)
+        _a_archetype_counts: dict[str, int] = _team_archetype_counts(_a_roster_for_arch)
+
         # Mode-driven shop list: soft_rebuild/rebuilding teams shop their own
         # veterans across all b_candidates rather than just seeking inbound talent.
         # For sell modes the "b" team role is reversed — team A is selling, B is buying.
@@ -1182,7 +1187,38 @@ async def _attempt_one_offer(
                 except Exception as _ctx_rank_exc:
                     log.debug("context modifier for candidate ranking failed pid=%d: %s", pid, _ctx_rank_exc)
 
-                _score = _tv * need_multiplier * _plan_bias * _ctx_modifier
+                # B3: asset upside modifier — boosts young/pedigree/award-race players
+                # so they don't get ranked as filler or offered away cheaply.
+                _upside_mod = _asset_upside_modifier(
+                    p,
+                    draft_year=getattr(p, "draft_year", None),
+                    current_season=season,
+                    # Award ranks not available at proposal-rank time without an
+                    # extra DB call per candidate. Skip here; B3 in cpu_should_accept
+                    # handles the accept-side valuation via player_trade_value modifiers.
+                )
+
+                # B6: archetype redundancy penalty — downweight incoming player if
+                # team A already has 2+ players in the same archetype.
+                _incoming_arch = trade_evaluator._player_archetype({
+                    "position": p.position,
+                    "tendency_3pt": getattr(p, "tendency_3pt", 50) or 50,
+                    "tendency_drive": getattr(p, "tendency_drive", 50) or 50,
+                    "tendency_pass": getattr(p, "tendency_pass", 50) or 50,
+                    "ast_tendency": getattr(p, "ast_tendency", 50) or 50,
+                    "reb_tendency": getattr(p, "reb_tendency", 50) or 50,
+                    "blk_tendency": getattr(p, "blk_tendency", 50) or 50,
+                    "stl_tendency": getattr(p, "stl_tendency", 50) or 50,
+                })
+                _arch_penalty = 1.0
+                if _incoming_arch and _a_archetype_counts.get(_incoming_arch, 0) >= 2:
+                    # Already have 2+ of this archetype — materially downweight.
+                    _arch_penalty = 0.65
+                elif _incoming_arch and _a_archetype_counts.get(_incoming_arch, 0) == 1:
+                    # Light downweight for one existing match.
+                    _arch_penalty = 0.85
+
+                _score = _tv * need_multiplier * _plan_bias * _ctx_modifier * _upside_mod * _arch_penalty
                 _scored_candidates.append((_score, b, p, posture_b))
 
         if not _scored_candidates:
@@ -2716,22 +2752,42 @@ async def _build_return_package(
 
 
 def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
-    """Return True if team A's posture makes it interested in this player."""
+    """Return True if team A's posture makes it interested in this player.
+
+    B1 posture gates (hard checks):
+    - contending/play_in_fringe: reject raw young developmental players (age < 25,
+      OVR < 77) — they don't help the win-now window.
+    - rebuilding/soft_rebuild: reject aging vets over 30 unless they're expiring
+      contracts (years_remaining=1) worth flipping.  The age signal is an
+      approximation; callers with full contract data can refine in scoring.
+    """
     age = _player_age(player)
     mode = posture_a["mode"]
     urgency = posture_a.get("urgency", "comfortable")
 
     if mode == "contending":
+        # B1: hard reject developmental young players with no win-now value.
+        if age is not None and age < 25 and player.overall < 77:
+            return False
+        # Hard reject aging-out vets with low OVR (no help, bad contract drain).
+        if age is not None and age >= 33 and player.overall < 75:
+            return False
         # Desperate contenders lower the bar; comfortable ones stay selective.
         min_ovr = 75 if urgency == "desperate" else 79
         return player.overall >= min_ovr
 
     if mode == "play_in_fringe":
+        # B1: reject raw young developmental players — fringe teams need ready help.
+        if age is not None and age < 24 and player.overall < 75:
+            return False
         # Like contending but slightly less aggressive — accept any 77+ player.
         min_ovr = 73 if urgency in ("desperate", "pushing") else 77
         return player.overall >= min_ovr
 
     if mode == "rebuilding":
+        # B1: don't accept aging vets over 30 at rebuilding teams — they don't fit.
+        if age is not None and age > 30 and player.overall < 80:
+            return False
         # Want youth to develop OR aging vets on expiring deals (flip for picks).
         # Skip age check when birth_date missing — don't silently misclassify.
         if age is None:
@@ -2739,6 +2795,9 @@ def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
         return age <= 22 or age >= 31
 
     if mode == "soft_rebuild":
+        # B1: don't accept vets over 32 on multi-year deals — wrong direction.
+        if age is not None and age > 32 and player.overall < 78:
+            return False
         # Trading away vets — want picks and young players in return.
         if age is None:
             return player.overall >= 72
@@ -2750,6 +2809,91 @@ def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
         # Older developing team — starting to lean contending, want proven players
         return player.overall >= 76
     return player.overall >= 73
+
+
+def _asset_upside_modifier(
+    player: player_repo.Player,
+    draft_year: int | None,
+    current_season: int,
+    roy_rank: int | None = None,
+    mvp_rank: int | None = None,
+    dpoy_rank: int | None = None,
+) -> float:
+    """B3: Return an upside multiplier for young/pedigree/award-race players.
+
+    Layers on top of trade_evaluator.player_trade_value's existing age curve.
+    The intent is to make the PROPOSAL GENERATOR value these players more so
+    they don't get offered as filler or accepted as headline return on vet swaps.
+
+    Modifiers (compound, cap at 1.25):
+    - Age ≤ 22: +0.10 (strong premium — still ceiling-building)
+    - Age 23-24: +0.05 (fading premium — emerging but not proven)
+    - Age 25: +0.02 (minimal — development window closing)
+    - Top-10 draft pick within last 2 seasons: +0.08 (pedigree)
+    - ROY top-3: +0.10 / top-5: +0.06 (in-season production signal)
+    - MVP top-5: +0.06
+    - DPOY top-5: +0.05
+
+    Example — Kel'el Ware (age 22, OVR 77, ROY top-3): modifier ≈ 1.28 → capped
+    at 1.25, putting him closer to OVR-83 trade value than his raw 77.
+    """
+    age = _player_age(player)
+    modifier = 1.0
+
+    # Age premium
+    if age is not None:
+        if age <= 22:
+            modifier += 0.10
+        elif age <= 24:
+            modifier += 0.05
+        elif age == 25:
+            modifier += 0.02
+
+    # Draft pedigree: top-10 pick within last 2 seasons
+    if draft_year is not None and current_season - draft_year <= 2:
+        _draft_slot = getattr(player, "draft_pick", None) or getattr(player, "draft_position", None)
+        if _draft_slot is not None and _draft_slot <= 10:
+            modifier += 0.08
+
+    # Award race
+    if roy_rank is not None and roy_rank <= 5:
+        modifier += 0.10 if roy_rank <= 3 else 0.06
+    if mvp_rank is not None and mvp_rank <= 5:
+        modifier += 0.06
+    if dpoy_rank is not None and dpoy_rank <= 5:
+        modifier += 0.05
+
+    return min(1.25, modifier)
+
+
+def _team_archetype_counts(
+    roster_players: list,
+) -> dict[str, int]:
+    """B6: Count how many players on a team's roster fall into each archetype.
+
+    roster_players: list of player_repo.Player objects (or dicts with tendency fields).
+    Returns dict[archetype_str -> count].
+    """
+    from services import trade_evaluator as _te
+    counts: dict[str, int] = {}
+    for p in roster_players:
+        if hasattr(p, "__dict__"):
+            p_dict = {
+                "position": getattr(p, "position", ""),
+                "tendency_3pt": getattr(p, "tendency_3pt", 50) or 50,
+                "tendency_drive": getattr(p, "tendency_drive", 50) or 50,
+                "tendency_pass": getattr(p, "tendency_pass", 50) or 50,
+                "ast_tendency": getattr(p, "ast_tendency", 50) or 50,
+                "reb_tendency": getattr(p, "reb_tendency", 50) or 50,
+                "blk_tendency": getattr(p, "blk_tendency", 50) or 50,
+                "stl_tendency": getattr(p, "stl_tendency", 50) or 50,
+            }
+        else:
+            p_dict = p
+        arch = _te._player_archetype(p_dict)
+        if arch:
+            counts[arch] = counts.get(arch, 0) + 1
+    return counts
 
 
 

@@ -1390,6 +1390,33 @@ async def cpu_should_accept(
     receiving_picks = [a for a in assets_receiving if a.get("asset_type") == "pick"]
     receiving_players = [a for a in assets_receiving if a.get("asset_type") == "player"]
 
+    # ── B3: High-upside asset guard — don't give away young/pedigree players cheap ──
+    # Applies when the CPU is giving away a player whose upside is materially
+    # underpriced in the raw OVR/value calculation: young (≤22) + decent OVR (≥74),
+    # or very young (≤21) at any OVR.  When such a player is in assets_giving and
+    # score_b is meaningfully higher than score_a, reject rather than let the value
+    # math slide it through.
+    if giving_players:
+        for _ga in giving_players:
+            _gp = _ga.get("player", {})
+            _g_age = _gp.get("age", 99)
+            _g_ovr = _gp.get("overall", 0)
+            _is_high_upside = (
+                (_g_age <= 21)
+                or (_g_age <= 22 and _g_ovr >= 74)
+                or (_g_age <= 23 and _g_ovr >= 79)
+            )
+            if _is_high_upside:
+                # Upside floor: must receive at least 90% of what we give up
+                # (tighter than the standard 85% fleecing floor).
+                if score_b > 0 and (score_a / score_b) < 0.90:
+                    _gname = f"{_gp.get('first_name', '?')} {_gp.get('last_name', '?')}"
+                    return False, (
+                        f"hard reject: giving away high-upside asset {_gname} "
+                        f"(age {_g_age}, OVR {_g_ovr}) at only {score_a/score_b:.0%} return value"
+                    )
+    # ── End B3 guard ─────────────────────────────────────────────────────────────
+
     # ── Guard 1: Age + OVR asymmetry — won't sell low on a younger, better player ──
     # Blocks trades where the CPU gives up a meaningfully better AND younger player
     # without a proportionate return. The value math can miss this when salary tricks
