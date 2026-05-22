@@ -1138,23 +1138,23 @@ async def derive_plan(
     production_map = await _fetch_season_production(pool, league_id, season, roster)
     _recently_acq_ids: set[int] = set()
     try:
-        _last_game = await pool.fetchval(
-            "SELECT MAX(game_index) FROM games WHERE league_id=$1 AND status='simmed'",
+        _sim_date_row = await pool.fetchrow(
+            "SELECT MAX(scheduled_date) AS sim_date FROM games WHERE league_id = $1 AND status = 'simmed'",
             league_id,
         )
-        if _last_game is not None:
+        _sim_date = _sim_date_row["sim_date"] if _sim_date_row else None
+        if _sim_date is not None:
             _acq_rows = await pool.fetch(
                 """SELECT id FROM players
-                   WHERE team_id IN (
-                       SELECT id FROM teams WHERE league_id=$1
-                   )
-                   AND last_traded_game_index IS NOT NULL
-                   AND last_traded_game_index >= $2""",
-                league_id, int(_last_game) - 60,
+                   WHERE team_id IN (SELECT id FROM teams WHERE league_id=$1)
+                   AND last_traded_at IS NOT NULL
+                   AND last_traded_at >= $2""",
+                league_id,
+                _sim_date - datetime.timedelta(days=60),
             )
             _recently_acq_ids = {r["id"] for r in _acq_rows}
-    except Exception:
-        pass  # recently_acquired fallback gracefully — flip_asset won't fire
+    except Exception as exc:
+        log.debug("flip_asset: skipping recently-acquired query — %s", exc)
 
     core_ids, flex_ids, surplus_ids, youth_overrides, shop_intent = _categorise_players(
         goal, roster, avg_age,
