@@ -12,11 +12,7 @@ from __future__ import annotations
 import os
 import pytest
 
-from services.cpu_trade_proposals import (
-    _score_outgoing_pair,
-    _team_archetype_counts,
-    pick_proposal_modes,
-)
+from services.cpu_trade_proposals import _score_outgoing_pair
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +147,8 @@ def test_score_outgoing_pair_arch_penalty_applied():
     other_players = [_FakePlayer(i, overall=75, position="PG") for i in range(1, 10)]
     roster_a = other_players + [existing_arch_player_1, existing_arch_player_2]
 
-    # Verify the arch detection works as expected.
-    arch = trade_evaluator._player_archetype({
+    # Verify the arch detection works as expected (used for test documentation only).
+    assert trade_evaluator._player_archetype({
         "position": "SF",
         "tendency_3pt": 85,
         "tendency_drive": 20,
@@ -161,7 +157,7 @@ def test_score_outgoing_pair_arch_penalty_applied():
         "reb_tendency": 50,
         "blk_tendency": 50,
         "stl_tendency": 50,
-    })
+    }) is not None, "Expected a non-None archetype for a clear 3pt shooter profile"
 
     score_with_saturated = _score_outgoing_pair(
         team_a=team_a,
@@ -197,6 +193,89 @@ def test_score_outgoing_pair_arch_penalty_applied():
     assert score_with_saturated <= score_clean, (
         f"Saturated archetype (score={score_with_saturated:.3f}) should be <= "
         f"clean archetype (score={score_clean:.3f})"
+    )
+
+
+def test_score_uses_real_contracts():
+    """Verify _score_outgoing_pair applies real contract modifiers via incoming_contracts.
+
+    _contract_modifier penalises players whose salary exceeds 1.5× the reference
+    point (salary_cap * 0.25).  A player on an overpaid contract (salary = 2.0×
+    the reference, triggering the 0.6 penalty) should score notably lower than
+    the same archetype on a reasonable contract (salary = 0.5× reference, no penalty).
+
+    This guards the valuation symmetry between _derive_return_from_b (which uses
+    real contracts to score and sort B's players) and _score_outgoing_pair (which
+    previously used synthetic salary=0/years=1, bypassing the contract modifier
+    entirely).
+    """
+    SALARY_CAP = 140_000_000
+    PLAYER_OVR = 80
+    # Reference point used by _contract_modifier: salary_cap * 0.25
+    # Overpaid threshold: salary_ratio > 1.5  →  salary > 1.5 * 35M = 52.5M
+    _ref = int(SALARY_CAP * 0.25)  # 35_000_000
+
+    class _FakeContract:
+        def __init__(self, salary: int, years_remaining: int = 2):
+            self.salary = salary
+            self.years_remaining = years_remaining
+
+    team_a = _FakeTeam(1)
+    team_b = _FakeTeam(2)
+    outgoing_pid = 10
+    roster_a = [_FakePlayer(i, overall=78, position="SF") for i in range(1, 13)]
+    roster_a[0].id = outgoing_pid
+
+    player_bargain = _FakePlayer(50, overall=PLAYER_OVR, position="SG")
+    player_bad = _FakePlayer(51, overall=PLAYER_OVR, position="SG")
+
+    ctx = {
+        "team_id": 1,
+        "mode": "developing",
+        "current_payroll": 100_000_000,
+        "salary_cap": SALARY_CAP,
+        "position_counts": {},
+    }
+
+    # Bargain: salary_ratio = 0.5 → no penalty (modifier = 1.0 for 2 years)
+    bargain_contract = _FakeContract(salary=int(_ref * 0.5))
+    # Bad: salary_ratio = 2.0 → triggers the >1.5 penalty (modifier *= 0.6)
+    bad_contract = _FakeContract(salary=int(_ref * 2.0))
+
+    score_bargain = _score_outgoing_pair(
+        team_a=team_a,
+        outgoing_pid=outgoing_pid,
+        team_b=team_b,
+        speculative_return_player_ids=[50],
+        speculative_return_pick_ids=[],
+        speculative_return_players=[player_bargain],
+        plan_a={},
+        posture_a="developing",
+        roster_a=roster_a,
+        cp_contexts={1: ctx},
+        incoming_contracts={50: bargain_contract},
+    )
+
+    score_bad = _score_outgoing_pair(
+        team_a=team_a,
+        outgoing_pid=outgoing_pid,
+        team_b=team_b,
+        speculative_return_player_ids=[51],
+        speculative_return_pick_ids=[],
+        speculative_return_players=[player_bad],
+        plan_a={},
+        posture_a="developing",
+        roster_a=roster_a,
+        cp_contexts={1: ctx},
+        incoming_contracts={51: bad_contract},
+    )
+
+    # Overpaid player must score notably lower than bargain (same OVR, different contract).
+    assert score_bargain > 0, f"Bargain contract score should be positive: {score_bargain}"
+    assert score_bad > 0, f"Bad contract score should be positive: {score_bad}"
+    assert score_bargain > score_bad, (
+        f"Bargain contract (score={score_bargain:.3f}) should beat "
+        f"overpaid contract (score={score_bad:.3f}) for same OVR player"
     )
 
 

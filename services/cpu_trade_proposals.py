@@ -110,7 +110,6 @@ def pick_proposal_modes(
     # Normalise posture to the long form used internally.
     _p = posture or "developing"
     is_tank = _p in ("tank", "tanking")
-    is_rebuild = _p in ("rebuild", "rebuilding")
     is_soft_rebuild = _p == "soft_rebuild"
     is_win_now = goal == "win_now"
     is_rebuild_goal = goal in ("rebuild", "tank")
@@ -854,10 +853,15 @@ async def _attempt_one_offer(
     recently_signed_ids: set[int] | None = None,
     guild: Optional[discord.Guild] = None,
     postures: dict[int, dict] | None = None,
+    _single_team_a: Optional[team_repo.Team] = None,
 ) -> int:
     """
     Pick a team A, find the best target from team B, build a return package,
     and call trade_service.propose. Returns 1 if a proposal was made, 0 otherwise.
+
+    _single_team_a: when set, restricts the a-loop to exactly this one team and
+    skips the V2 dispatcher.  Used by the V2 incoming_first branch to route
+    incoming-only teams through the legacy body without code duplication.
     """
     if recently_signed_ids is None:
         recently_signed_ids = set()
@@ -914,7 +918,12 @@ async def _attempt_one_offer(
     # routes through pick_proposal_modes + _attempt_outgoing_first_offer for each
     # team A.  When unset/empty/"0"/"false", the existing incoming-first body runs
     # unchanged — byte-for-byte identical to before this commit.
-    _use_v2 = (os.getenv("DBA_PROPOSAL_DISPATCHER_V2", "") or "").lower() in ("1", "true", "yes")
+    # Skip V2 when called recursively for a single incoming-first team (prevents
+    # infinite recursion and re-entry into the dispatcher for that call).
+    _use_v2 = (
+        _single_team_a is None
+        and (os.getenv("DBA_PROPOSAL_DISPATCHER_V2", "") or "").lower() in ("1", "true", "yes")
+    )
 
     if _use_v2:
         # V2 path: mode dispatcher.  Each team A gets an ordered list of modes;
@@ -964,19 +973,30 @@ async def _attempt_one_offer(
                         log.warning("[V2 dispatcher] outgoing-first for team %d failed: %s", _v2_a.id, _v2_exc, exc_info=True)
                         _v2_proposed = 0
                 else:
-                    # incoming_first — delegate to a fresh _attempt_one_offer call
-                    # with V2 disabled so it runs the existing body for this team only.
-                    # We achieve this by calling _run_incoming_first_for_team inline
-                    # (the existing body is not yet extracted in PR 1; we skip inline
-                    # delegation and let the outer n_offers loop handle the next slot).
-                    # Safe: the dispatcher only needs to run ONE mode per team per
-                    # n_offers slot.  If outgoing_first returned 0, we try incoming_first
-                    # by falling through to the next mode in the list.
-                    # For PR 1, incoming_first in V2 mode simply returns 0 here so
-                    # the existing legacy loop handles it in subsequent n_offers rounds.
-                    # This means V2 only fires outgoing_first actively; incoming_first
-                    # continues via the flag-off path in the same batch.
-                    _v2_proposed = 0  # incoming_first extraction deferred to PR 2
+                    # incoming_first — run the legacy incoming-first body for this
+                    # specific team A.  _single_team_a restricts the a-loop to _v2_a
+                    # and suppresses V2 re-entry inside the recursive call.
+                    try:
+                        _v2_proposed = await _attempt_one_offer(
+                            pool=pool,
+                            league=league,
+                            season=season,
+                            cpu_teams=cpu_teams,
+                            block_by_team=block_by_team,
+                            used_pairs=used_pairs,
+                            taken_player_ids=taken_player_ids,
+                            deadline_game_index=deadline_game_index,
+                            recently_signed_ids=recently_signed_ids,
+                            guild=guild,
+                            postures=postures,
+                            _single_team_a=_v2_a,
+                        )
+                    except Exception as _v2_inc_exc:
+                        log.warning(
+                            "[V2 dispatcher] incoming-first for team %d failed: %s",
+                            _v2_a.id, _v2_inc_exc, exc_info=True,
+                        )
+                        _v2_proposed = 0
 
                 if _v2_proposed >= 1:
                     break
@@ -995,8 +1015,14 @@ async def _attempt_one_offer(
     _league_scan_result: list[tuple[team_repo.Team, float, str]] = []
     _league_scan_player_name: str = ""
 
-    # Shuffle so we don't always favour the same team.
-    candidates_a = random.sample(cpu_teams, len(cpu_teams))
+    # When called with _single_team_a, only that team is attempted as team A.
+    # This is used by the V2 dispatcher's incoming_first branch so incoming-only
+    # teams run the full legacy body for their specific team without duplicating code.
+    if _single_team_a is not None:
+        candidates_a = [_single_team_a]
+    else:
+        # Shuffle so we don't always favour the same team.
+        candidates_a = random.sample(cpu_teams, len(cpu_teams))
     team_a: Optional[team_repo.Team] = None
     target_team: Optional[team_repo.Team] = None
     target_player: Optional[player_repo.Player] = None
@@ -2403,14 +2429,16 @@ async def _derive_return_from_b(
     posture_b: str,
     cp_contexts: dict,
     cp_r1_counts: dict,
-) -> tuple[list[int], list[int], float] | None:
+) -> tuple[list[int], list[int], float, dict] | None:
     """Derive what team B would plausibly send in exchange for outgoing_player.
 
     Logical inverse of _build_return_package: given that B is the receiver, what
     would B send?  Same surplus-first ordering, same 25% tolerance.  Target value
     is the team-specific value of outgoing_player to B (how much B values the player).
 
-    Returns (player_ids, pick_ids, total_value) or None if B can't build a package.
+    Returns (player_ids, pick_ids, total_value, contracts_map) or None if B can't
+    build a package.  contracts_map maps each returned player_id to its active
+    Contract object (or None) so callers can pass real contracts to scoring.
 
     asset_targets_a: A's asset targets — biases B's selection toward what A wants.
     """
@@ -2447,6 +2475,9 @@ async def _derive_return_from_b(
     full_roster_b = b_roster  # for is_cornerstone check
 
     scored_players: list[tuple[int, float, int]] = []
+    # contracts_by_id: retain fetched contracts so _score_outgoing_pair can use
+    # real salary/years_remaining instead of the synthetic {salary:0, years:1} shim.
+    _contracts_by_id: dict[int, object] = {}
     for p in b_roster:
         if p.id in taken_player_ids or p.id in recently_signed_ids:
             continue
@@ -2460,6 +2491,7 @@ async def _derive_return_from_b(
             continue
 
         contract = await player_repo.get_active_contract(pool, p.id)
+        _contracts_by_id[p.id] = contract
         v = trade_evaluator.player_trade_value(
             {"overall": p.overall, "age": _player_age(p)},
             {
@@ -2562,7 +2594,12 @@ async def _derive_return_from_b(
     if not player_ids and not pick_ids:
         return None
 
-    return player_ids, pick_ids, achieved_value
+    # Build contracts_map for only the player IDs actually selected.
+    _ret_contracts: dict[int, object] = {
+        pid: _contracts_by_id.get(pid)
+        for pid in player_ids
+    }
+    return player_ids, pick_ids, achieved_value, _ret_contracts
 
 
 def _score_outgoing_pair(
@@ -2577,6 +2614,7 @@ def _score_outgoing_pair(
     roster_a: list,
     cp_contexts: dict,
     cp_r1_counts: dict | None = None,
+    incoming_contracts: dict | None = None,
 ) -> float:
     """Score (team_a, outgoing_pid, team_b, speculative_return) from A's perspective.
 
@@ -2587,6 +2625,12 @@ def _score_outgoing_pair(
         speculative_return_player_ids order exactly).
     roster_a: A's current roster (Player objects) — used to compute post-trade arch counts.
     cp_contexts: {team_id -> context dict} from the memoized Phase 3 block.
+    incoming_contracts: {player_id -> Contract | None} pre-fetched by the caller
+        (_derive_return_from_b returns these).  When present, real salary/years are
+        used in player_trade_value instead of the synthetic {salary:0, years:1} shim.
+        If a player's contract is absent from the dict (FA edge case), that player's
+        pair_score contribution is skipped (returns 0 for that player) to avoid
+        fabricating a value.
 
     Returns a float score (higher = more desirable from A's perspective).
     """
@@ -2595,17 +2639,33 @@ def _score_outgoing_pair(
     _plan_goal_a: str = _plan_a.get("goal", "")
     _ctx_a = cp_contexts.get(team_a.id, {})
     _cap_a = _ctx_a.get("current_payroll", 0)
+    _inc_contracts: dict = incoming_contracts or {}
 
     # ── Base value: team-specific value of each incoming item to A ────────────
     base_value = 0.0
     for p in speculative_return_players:
         _age_p = _player_age(p) or 27
-        # Use market value (no context) since team-specific value needs contract dict —
-        # contract resolution is async; callers should pass pre-fetched or use market value.
-        # The context modifier and plan_bias handle the team-fit dimension here.
+        if _inc_contracts:
+            # Use real contract when available; skip player if contract unresolvable.
+            _c = _inc_contracts.get(p.id)
+            if p.id in _inc_contracts and _c is None:
+                # Contract is known-absent (FA edge case) — skip this player.
+                continue
+            if p.id not in _inc_contracts:
+                # Not in the provided map — fall back to neutral defaults rather than
+                # fabricating a bad value (shouldn't happen if caller is correct).
+                _salary = 0
+                _years = 1
+            else:
+                _salary = getattr(_c, "salary", 0) or 0
+                _years = getattr(_c, "years_remaining", 1) or 1
+        else:
+            # No contracts provided (e.g. from unit tests) — use neutral defaults.
+            _salary = 0
+            _years = 1
         raw_v = trade_evaluator.player_trade_value(
             {"overall": p.overall, "age": _age_p, "position": p.position},
-            {"salary": 0, "years_remaining": 1},  # contract not available synchronously
+            {"salary": _salary, "years_remaining": _years},
             _ctx_a.get("salary_cap", 140_000_000),
         )
         base_value += raw_v
@@ -2847,7 +2907,7 @@ async def _attempt_outgoing_first_offer(
             if spec_ret is None:
                 continue
 
-            _ret_player_ids, _ret_pick_ids, _ret_value = spec_ret
+            _ret_player_ids, _ret_pick_ids, _ret_value, _ret_contracts = spec_ret
 
             # Resolve player objects for scoring.
             _ret_players = []
@@ -2869,12 +2929,15 @@ async def _attempt_outgoing_first_offer(
                     roster_a=_roster_a,
                     cp_contexts=cp_contexts,
                     cp_r1_counts=cp_r1_counts,
+                    incoming_contracts=_ret_contracts,
                 )
             except Exception as exc:
                 log.debug("_score_outgoing_pair failed: %s", exc)
                 continue
 
-            all_candidates.append((pair_score, team_b, spec_ret, outgoing_player, outgoing_pid))
+            # Store spec_ret as 3-tuple for downstream proposal building (contracts
+            # are not needed after scoring).
+            all_candidates.append((pair_score, team_b, (_ret_player_ids, _ret_pick_ids, _ret_value), outgoing_player, outgoing_pid))
 
     if not all_candidates:
         return 0
