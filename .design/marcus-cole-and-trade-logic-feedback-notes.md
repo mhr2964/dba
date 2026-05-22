@@ -24,20 +24,22 @@ feedback has accumulated.
 | Run start (UTC)         | Persona      | JSONL log                                                                                    | Pauses |
 | ----------------------- | ------------ | -------------------------------------------------------------------------------------------- | ------ |
 | 2026-05-22T00:11:12Z    | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_20260521_201112.jsonl`                       | 5      |
-| 2026-05-22T02:00:00Z*   | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_<latest>.jsonl`                              | 4      |
+| 2026-05-22T02:00:00Z*   | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_<run2>.jsonl`                                | 4      |
+| 2026-05-22T~03:00Z*     | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_<run3>.jsonl`                                | 3      |
 
 \* approx; resolve from filename timestamp.
 
 **Cross-run patterns worth noting separately:**
-- The same trade *archetypes* keep firing across runs (DEN landing Barrett, MIA <-> someone for a young big). Suggests the bot has consistent biases the trade-logic fix should target, not one-off bad rolls.
-- Kel'el Ware appeared in both runs as the undervalued young-big going for an older win-now piece. He's the canonical asset-upside test case.
+- **Kel'el Ware appeared in all 3 runs** as the systematically undervalued young-big going for an older / smaller return. He's the canonical asset-upside test case. The bot has a consistent bug, not bad luck.
+- DEN repeatedly lands a wing/scorer (Barrett, Braun, Anunoby) across all runs. Pattern: the bot likes adding wings to DEN regardless of archetype fit with Jokić/Murray.
+- NYK repeatedly makes trades user flags as "doesn't match where this team is." Suggests NYK's posture-mode assignment in `team_intel` may itself be wrong, upstream of any evaluator fix (see new theme A7/B7).
 
 ---
 
 # A. Marcus Cole analysis themes
 
 ## A1. Call out asymmetric trade logic — name the loser side
-**Status:** READY (5+ cases across 2 runs)
+**Status:** READY (7+ cases across 3 runs)
 
 **Evidence:**
 - Run 1: GSW/NYK (Anunoby + Bridges to GSW for Podziemski + Kuminga): user "doesn't understand why NYK makes this trade since they have a win-now core with Brunson and KAT."
@@ -45,7 +47,9 @@ feedback has accumulated.
 - Run 2: NYK/MIA (Ware to NYK, Anunoby to MIA): "makes no sense for either team really" — both sides flagged.
 - Run 2: DEN/TOR (Barrett to DEN for Braun): "trade makes no sense for toronto or den."
 - Run 2: HOU/ATL (Daniels to HOU, Brooks to ATL): "bad trade for atlanta" — explicit loser-side naming.
+- Run 3: NYK/DEN (Anunoby to DEN, Braun to NYK): "they gave up the better player AND a pick" — NYK side explicitly worse; DEN side validated separately as "lateral upgrade ... makes sense."
 - Run 2 positive contrast: LAL/POR (Williams III to LAL, Hachimura + pick to POR): "good trade for the lakers" — confirms asymmetric language is the issue, not all critique.
+- Run 3 positive contrast: MIL/ORL Bitadze+Carter to MIL for Rollins: "not a terrible trade to turn ryan rollins into something win now" — fair-value reads also exist.
 
 **Current behavior:** Marcus Cole describes each team's gain positively, even when one side clearly looks worse. He doesn't currently call out asymmetry or question motive.
 
@@ -70,12 +74,14 @@ feedback has accumulated.
 - Already in voice_notes: `roster_fits` and `context_signals_per_player`. Add: posture mode as a first-class field to reference by name.
 
 ## A3. Asset upside beyond OVR — draft pedigree, ROY race, age
-**Status:** READY (3+ cases across 2 runs)
+**Status:** READY (5+ cases across 3 runs; Ware is the canonical 3-run repeat case)
 
 **Evidence:**
 - Run 1: MIA/WAS Ware return: "they should have gotten more for Ware seeing as he's second in the ROY race and has high upside."
-- Run 2: NYK/MIA Ware again: "high upside talent thats 22 for an older player." Same player, second run — undervaluation is systemic.
+- Run 2: NYK/MIA Ware again: "high upside talent thats 22 for an older player." Same player, second run.
 - Run 2: HOU/ATL Daniels/Brooks: "23 year old great defender for a 30 year old" — age premium ignored on Daniels' side.
+- Run 3: DET/MIA Ware **a third time**: "he is 22 and should have a lot more upside, so I cant image them giving him up for so little. they did at least get a 2nd but I would assume a 1st." User even quantifies the expected return delta (1st vs 2nd round pick).
+- Run 3: NYK/DEN age nuance: "yes they got a guy 3 years younger, but its not like he's going to develop much further at 25" — **age premium has a ceiling around 25**. Useful for B3 valuation curve: premium for ≤22, fading 23-25, gone ~26+.
 
 **Current behavior:** Marcus Cole references OVR explicitly (e.g., "Barrett's 79 OVR scoring punch"). He doesn't reference age trajectory, draft pedigree, or in-season race positioning.
 
@@ -84,12 +90,13 @@ feedback has accumulated.
 - Plumbing: need `roy_rank`, `mvp_rank`, `draft_year`, `draft_pick` available in the trade context. Check `services/team_intel.py` and `services/awards_service.py` for existing hooks.
 
 ## A4. Speculate about followup moves when a trade looks incomplete
-**Status:** READY (3+ cases across 2 runs)
+**Status:** READY (4+ cases across 3 runs)
 
 **Evidence:**
 - Run 1: CHA trade for vets around LaMelo: "only makes sense if they have a followup deal in the works for a good big man to replace Williams."
 - Run 1: ATL/POR Okongwu trade: "expects a Trae Young trade for youth and picks after this."
 - Run 2: LAL/POR Hachimura: "they should probably be planning to trade rui soon after or at the next offseason ... they can get another pick out of him."
+- Run 3: MIL/ORL Bitadze + Carter: "i would assume that a follow trade maybe getting rid of aging brook lopez while hes still an 80+ ovr for maybe elite 3 and d or another backcourt star beside dame." — explicit followup speculation, naming the asset that should move next.
 
 **Current behavior:** Marcus Cole writes each trade as a self-contained story. No "what comes next" framing.
 
@@ -120,6 +127,42 @@ feedback has accumulated.
 
 **Proposed evaluator rules:** captured under A6's "Proposed trade-logic rules" section above. Promote into standalone B6 here for build sequencing reference.
 
+## A7 / B7. Posture-mode assignment can be WRONG — upstream of any trade-logic gate
+**Status:** READY (run 3 surfaced the canonical case)
+
+**Evidence:**
+- Run 3: NYK/DEN Anunoby↔Braun: "nyk should be contending, but the post says they are in transition so im not sure why the gm would think that." The user identifies that the bot's POSTURE assignment for NYK (transition) doesn't match the roster reality (Brunson + KAT = contender). Marcus Cole is faithfully reporting the bot's stated posture, which is itself wrong.
+- Cross-run pattern: NYK has made multiple trades across all 3 runs the user has flagged as "doesn't match where they are." The throughline is that NYK's posture is being mislabeled by the posture-assignment logic.
+
+**This is structurally different from B1-B6.** Those proposed adding *gates* on top of the existing posture signal. This theme says **the posture signal itself can be wrong** — meaning even a perfect B1 gate fails if posture is mislabeled.
+
+**Where the posture comes from:** `services/team_intel.py::build_team_intel` derives `posture.mode` from current record + projected wins + age. The derivation likely:
+- Doesn't sufficiently weight roster star quality (NYK has Brunson + KAT; the derivation may be looking at record/age and missing the stars).
+- May have thresholds that drift mid-season (e.g., a team starting 11-22 gets `soft_rebuild` even though their roster says contender).
+- May be ignoring an explicit `franchise_plan.goal` value that already exists in the DB.
+
+**Proposed approach:**
+- (Investigation step) Read `team_intel.build_team_intel` and `franchise_plan_service.py`. Identify what fields derive posture today. Are roster stars (top OVR threshold count) factored in?
+- (B7 rule) Posture should be a function of roster quality + record + plan goal, not record alone. A team with 2+ players at OVR ≥ 85 should not be classified as `transition` or `soft_rebuild` even if their record dips mid-season.
+- (B7 plumbing) If a team has a `franchise_plan.goal` of `contend` set explicitly, posture should respect that unless evidence strongly contradicts it (e.g., 4-game lottery rebuild season).
+
+**Marcus Cole side (A7):**
+- Add prompt rule: "If the team_intel posture mode looks INCONSISTENT with the roster (e.g., a team with 2 stars at OVR 85+ being flagged as `transition`), call out the disconnect rather than parroting the bot's label. 'Front-office classifies this as a transition year, but with Brunson and KAT both All-Stars on the books, that framing is curious.'"
+- This treats Marcus as a quasi-sanity-check on the bot's own state. Less ideal than fixing B7, but useful as defense-in-depth while B7 is being investigated.
+
+## A8. Marcus must EXPLICITLY frame the team's cycle position when relevant
+**Status:** OBSERVED (1 case; watch for corroboration)
+
+**Evidence:**
+- Run 3: MIL/ORL Bitadze + Carter: "im having trouble discerning the direction of the team from this, but ill just say what i see." The user couldn't read where MIL was in their cycle from Marcus's writing — the article described positional fits but didn't frame the trajectory.
+
+**Current behavior:** Marcus Cole sometimes references team mode (e.g., "Bucks pivot from developmental mode to contention") but inconsistently. When he leads with player-fit prose, the trajectory gets buried.
+
+**Proposed prompt rule:**
+- Add: "Within the first 1-2 sentences for each team, name the team's cycle position explicitly. 'A play-in fringe team consolidating' / 'A rebuilder banking picks' / 'A contender doubling down.' Don't make the reader infer the trajectory from positional fit; state it first, then the player fit follows."
+
+**Note:** A8 is the *complement* to A7 — A7 says Marcus should question wrong posture labels; A8 says Marcus should always make the (correct) posture label visible in the prose.
+
 ## A5. Respect existing core continuity (recent high draft picks)
 **Status:** OBSERVED (1 case)
 
@@ -137,7 +180,7 @@ feedback has accumulated.
 # B. Trade logic themes (CPU trade evaluator + proposal generator)
 
 ## B1. Posture-mode should gate trade types
-**Status:** READY (8+ cases across 2 runs; see A1, A2 evidence)
+**Status:** READY (10+ cases across 3 runs; see A1, A2 evidence) — **NOTE: depends on B7 being correct first**, since gating on a wrong posture is worse than no gate.
 
 **Evidence:** Many of the user's "doesn't make sense" trades violate the team's stated `posture.mode`:
 - NYK accepting youth-for-win-now while in (presumed) `contender` / `play_in_fringe` mode
@@ -161,7 +204,7 @@ feedback has accumulated.
 - Edge case: a team can still trade away top-5 picks themselves if they're failing to develop — but that's a separate "we're cutting bait" signal, not the default.
 
 ## B3. Asset upside should factor into trade valuation, not just OVR
-**Status:** READY (3+ cases — see A3 evidence; Ware shows up across both runs as the canonical undervalued asset)
+**Status:** READY (5+ cases across 3 runs — see A3 evidence; Ware undervalued in all 3 runs, user even specified expected return delta of "1st instead of 2nd"; age curve has known shape: premium ≤22, fading 23-25, gone ~26+)
 
 **Evidence:** Ware undervalued by trade evaluator because it sees only OVR, not "ROY top-5 + young + high ceiling."
 
@@ -174,7 +217,7 @@ feedback has accumulated.
 - This should affect both proposal generation (don't offer them as filler) and trade acceptance (don't accept them as the headline return on a vet swap).
 
 ## B4. Multi-step strategy: don't leave a team mid-pivot with no plan
-**Status:** READY (3+ cases — see A4 evidence; LAL/POR Hachimura is the cleanest example: Portland received him as a flip asset and the bot needs to know that)
+**Status:** READY (4+ cases across 3 runs — see A4 evidence; MIL acquiring Bitadze+Carter is the run-3 case where the user expects a Lopez-flip followup)
 
 **Evidence:** CHA "only makes sense with a followup big-man deal." ATL "expects a Trae Young trade after this." Trades that create obvious unaddressed gaps shouldn't fire in isolation.
 
@@ -185,7 +228,7 @@ feedback has accumulated.
 - This is the hardest of the trade-logic changes. Build phase may want to ship B1-B3 first and revisit B4 separately.
 
 ## B5. Don't accept trades where one side is materially worse for no reason
-**Status:** READY (5+ cases across 2 runs — see A1 evidence)
+**Status:** READY (7+ cases across 3 runs — see A1 evidence; run-3 NYK/DEN gave the cleanest "loser side gave up better player AND a pick" case)
 
 **Evidence:** GSW/NYK and DEN/TOR both look like cases where the trade went through despite one side getting a worse-than-fair return, with no compensating strategic reason (cap relief, future picks, etc.).
 
@@ -210,12 +253,15 @@ feedback has accumulated.
 
 When themes are sufficiently corroborated to dispatch builders:
 
-1. **Marcus Cole prompt update** — A1-A6 rules added to voice_notes. Single file. Quick win; reversible. **A1, A2, A3, A4, A6 are READY**; A5 still single-case.
-2. **Trade evaluator B1 (posture gating)** — highest-impact trade-logic change. READY. Hooks already exist via `team_intel.posture.mode`.
-3. **Trade evaluator B3 (asset upside modifiers)** — READY. Touches valuation function. May need new plumbing for ROY-race / draft-year fields.
-4. **Trade evaluator B6 (archetype/role-distribution check)** — READY. Touches proposal generator + valuation. Role data already in `team_intel.recent_role_changes`; needs new aggregation pass to count archetype distribution per team.
-5. **Trade evaluator B5 (asymmetric rejection threshold)** — READY. Tune after B1+B3+B6 are live; otherwise tuning is against a moving target.
-6. **Trade evaluator B2 (draft pick continuity)** — still single-case. Defer to gather more signal.
-7. **Trade evaluator B4 (multi-step)** — READY but complex. Ship as a separate workstream after B1+B3+B5+B6 are stable.
+**B7 must land first** — gating on a wrong posture is worse than no gate. The investigation step (read `team_intel.build_team_intel`) is cheap and unblocks everything else.
 
-Marcus Cole work and trade-logic work can run in parallel; they don't share files.
+1. **B7 (posture-mode derivation fix)** — investigate `team_intel.build_team_intel` + `franchise_plan_service.py`; fix derivation so a roster with 2+ stars at OVR ≥ 85 isn't labeled `transition`/`soft_rebuild`. Single file likely. **Blocking dependency for B1.**
+2. **Marcus Cole prompt update** — A1-A4, A6, A7, A8 rules added to voice_notes. Single file. Quick win; reversible. A1, A2, A3, A4, A6, A7 are READY; A5, A8 single-case but worth including. Can run in parallel with B7.
+3. **Trade evaluator B1 (posture gating)** — highest-impact trade-logic change. READY. Land after B7.
+4. **Trade evaluator B3 (asset upside modifiers)** — READY. Touches valuation function. Age curve has known shape (premium ≤22, fading 23-25, gone ~26+). May need new plumbing for ROY-race / draft-year fields.
+5. **Trade evaluator B6 (archetype/role-distribution check)** — READY. Touches proposal generator + valuation. Role data already in `team_intel.recent_role_changes`; needs new aggregation pass to count archetype distribution per team.
+6. **Trade evaluator B5 (asymmetric rejection threshold)** — READY. Tune after B1+B3+B6 are live; otherwise tuning is against a moving target.
+7. **Trade evaluator B2 (draft pick continuity)** — still single-case. Defer to gather more signal.
+8. **Trade evaluator B4 (multi-step)** — READY but complex. Ship as a separate workstream after B1+B3+B5+B6 are stable.
+
+Marcus Cole work (step 2) and trade-logic work (steps 1, 3-8) can run in parallel; they don't share files. B7 is the highest-leverage single change — it may visibly reduce dumb trades on its own before any other rule lands.
