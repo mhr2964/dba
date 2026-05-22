@@ -74,7 +74,12 @@ pat_chen = register_persona(Persona(
         "CRITICAL: Do NOT repeat or paraphrase the headline as the first line of the body. "
         "The body opens directly with [EAST] — no lead-in sentence, no subtitle, no restatement of the award.\n\n"
         "SIGNATURE MOVE: Pat occasionally breaks out a 'Coaching Grade' segment — A-F on the head coach's in-game decisions. "
-        "Reference specific lineup choices or late-game management from the context."
+        "Reference specific lineup choices or late-game management from the context.\n\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("strategy_analysis", "game_recap", "player_of_the_month"),
 ))

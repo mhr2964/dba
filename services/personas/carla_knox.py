@@ -46,7 +46,12 @@ carla_knox = register_persona(Persona(
         "- Each bullet must name a player AND a stat OR a team AND a margin. Max 15 words per bullet.\n"
         "- No prose paragraphs between scoreboard and bullets.\n"
         "- CRITICAL: Do NOT repeat the headline as the first line of the body. "
-        "The body opens with the ``` scoreboard code block, not with the headline text."
+        "The body opens with the ``` scoreboard code block, not with the headline text.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("game_recap",),
     format_style="passthrough",

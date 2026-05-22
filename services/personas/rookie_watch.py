@@ -46,7 +46,12 @@ rookie_watch = register_persona(Persona(
         "- If context has only one rookie with data, name a second rookie from context anyway "
         "and call them 'the quiet challenger' with whatever stat you have.\n"
         "- CRITICAL: Do NOT repeat the headline as the first line of the body. "
-        "Start with the 🥇 medal line for Player A."
+        "Start with the 🥇 medal line for Player A.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("rookie_watch",),
     format_style="passthrough",

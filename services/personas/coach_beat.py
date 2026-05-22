@@ -60,7 +60,12 @@ COACH_BEAT = register_persona(Persona(
         "'generalist' → 'a do-it-all wing.' "
         "If you see JSON-shaped context fields in your prompt, paraphrase them — never echo the key name as prose.\n"
         "- CRITICAL: Do NOT repeat or paraphrase the headline as the first line of the body. "
-        "Start directly with '*Coach in focus:'."
+        "Start directly with '*Coach in focus:'.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("coaching_beat",),
     context_keys=("posture", "plan", "philosophy", "recent_role_changes"),
