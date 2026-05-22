@@ -96,7 +96,8 @@ def pick_proposal_modes(
              "tank", "soft_rebuild", "play_in_fringe", "developing", "contending",
              "rebuilding").  Both the short ("contend") and long ("contending") forms
              are accepted for robustness.
-    plan: franchise plan dict with goal, surplus_player_ids, asset_targets.
+    plan: franchise plan dict with goal, surplus_player_ids, asset_targets, and
+          optionally derived_from_record.shop_intent (added in PR 3).
     cap_state: one of "under", "near_cap", "over_luxury" (from _derive_cap_state).
     roster_size: current roster size (sanity check — unused in routing for PR 1).
     """
@@ -107,12 +108,28 @@ def pick_proposal_modes(
     surplus_nonempty = bool(surplus)
     assets_nonempty = bool(asset_targets)
 
+    # Read shop_intent from derived_from_record (keyed by str(player_id)).
+    _dfr = (plan.get("derived_from_record") or {}) if plan else {}
+    _shop_intent: dict[str, str] = _dfr.get("shop_intent") or {}
+
     # Normalise posture to the long form used internally.
     _p = posture or "developing"
     is_tank = _p in ("tank", "tanking")
     is_soft_rebuild = _p == "soft_rebuild"
     is_win_now = goal == "win_now"
     is_rebuild_goal = goal in ("rebuild", "tank")
+
+    # ── shop_intent priority rules (highest precedence) ───────────────────────
+    # cap_dump surplus: team must shed salary first, regardless of posture.
+    _has_cap_dump = any(v == "cap_dump" for v in _shop_intent.values())
+    if _has_cap_dump:
+        return ["outgoing_first"]
+
+    # flip_asset surplus: team acquired this player intending to re-sell.
+    _has_flip_asset = any(v == "flip_asset" for v in _shop_intent.values())
+    if _has_flip_asset:
+        return ["outgoing_first"]
+    # ── End shop_intent priority rules ───────────────────────────────────────
 
     # Rule 1: over luxury + win_now → outgoing first, then incoming (cap-strapped contender).
     # USER DECISION: real GMs know their budget before shopping.
@@ -2846,8 +2863,15 @@ async def _attempt_outgoing_first_offer(
         # No plan-driven surplus/flex on the block — skip.
         return 0
 
+    # Read shop_intent to prioritise cap_dump / flip_asset players.
+    _dfr_a = (_plan_a or {}).get("derived_from_record") or {}
+    _shop_intent_a: dict[str, str] = _dfr_a.get("shop_intent") or {}
+    _priority_intents = frozenset({"cap_dump", "flip_asset"})
+
     # Rank surplus players by trade value; take top-3 to bound work.
-    _valued: list[tuple[float, int]] = []
+    # Priority players (cap_dump / flip_asset) are sorted before generic surplus
+    # at each value tier so the team shops its highest-intent assets first.
+    _valued: list[tuple[int, float, int]] = []  # (priority_bucket, value, pid)
     for pid in _outgoing_candidates:
         _p = await player_repo.get_by_id(pool, pid)
         if not _p:
@@ -2860,9 +2884,12 @@ async def _attempt_outgoing_first_offer(
         )
         if _v < 10:
             continue  # not worth shopping
-        _valued.append((_v, pid))
-    _valued.sort(reverse=True)
-    top_surplus = [pid for _, pid in _valued[:3]]
+        _intent = _shop_intent_a.get(str(pid), "other")
+        _priority = 0 if _intent in _priority_intents else 1
+        _valued.append((_priority, _v, pid))
+    # Sort: priority bucket first (0 before 1), then descending value within bucket.
+    _valued.sort(key=lambda x: (x[0], -x[1]))
+    top_surplus = [pid for _, _, pid in _valued[:3]]
 
     if not top_surplus:
         return 0

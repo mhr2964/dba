@@ -226,3 +226,79 @@ def test_default_fallback_incoming_first():
     assert result == ["incoming_first"], (
         f"Default fallback should be incoming_first: {result}"
     )
+
+
+# ---------------------------------------------------------------------------
+# shop_intent priority rules (PR 3)
+# ---------------------------------------------------------------------------
+
+def _plan_with_intent(
+    goal: str = "transition",
+    surplus: list | None = None,
+    asset_targets: list | None = None,
+    shop_intent: dict | None = None,
+) -> dict:
+    """Build a plan dict that includes shop_intent in derived_from_record."""
+    return {
+        "goal": goal,
+        "surplus_player_ids": surplus or [],
+        "asset_targets": asset_targets or [],
+        "derived_from_record": {
+            "shop_intent": {str(pid): intent for pid, intent in (shop_intent or {}).items()},
+        },
+    }
+
+
+def test_cap_dump_intent_outgoing_first_regardless_of_posture():
+    """shop_intent cap_dump → ['outgoing_first'] regardless of posture/goal."""
+    result = pick_proposal_modes(
+        team=_FakeTeam(),
+        posture="developing",
+        plan=_plan_with_intent(
+            goal="transition",
+            surplus=[5],
+            shop_intent={5: "cap_dump"},
+        ),
+        cap_state="under",
+        roster_size=13,
+    )
+    assert result == ["outgoing_first"], (
+        f"cap_dump surplus should force outgoing_first: {result}"
+    )
+
+
+def test_flip_asset_intent_outgoing_first():
+    """shop_intent flip_asset → ['outgoing_first'] (team acquired to re-sell)."""
+    result = pick_proposal_modes(
+        team=_FakeTeam(),
+        posture="developing",
+        plan=_plan_with_intent(
+            goal="transition",
+            surplus=[7],
+            shop_intent={7: "flip_asset"},
+        ),
+        cap_state="under",
+        roster_size=13,
+    )
+    assert result == ["outgoing_first"], (
+        f"flip_asset surplus should force outgoing_first: {result}"
+    )
+
+
+def test_no_priority_intent_falls_through_to_normal_rules():
+    """shop_intent age_misfit or other → no priority override; normal rules apply."""
+    result = pick_proposal_modes(
+        team=_FakeTeam(),
+        posture="developing",
+        plan=_plan_with_intent(
+            goal="transition",
+            surplus=[],
+            shop_intent={},  # no intent entries
+        ),
+        cap_state="under",
+        roster_size=13,
+    )
+    # No surplus + no priority intent → default incoming_first.
+    assert result == ["incoming_first"], (
+        f"No priority intent should fall through to normal rules: {result}"
+    )
