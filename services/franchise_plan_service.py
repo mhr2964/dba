@@ -642,11 +642,24 @@ def _categorise_players(
     *,
     production_map: "dict[int, dict] | None" = None,
     archetype_map: "dict[int, str | None] | None" = None,
-) -> tuple[list[int], list[int], list[int], dict[int, str]]:
-    """Return (core_ids, flex_ids, surplus_ids, youth_overrides).  No overlaps; order: core → surplus → flex.
+    recently_acquired_ids: "set[int] | None" = None,
+) -> tuple[list[int], list[int], list[int], dict[int, str], dict[int, str]]:
+    """Return (core_ids, flex_ids, surplus_ids, youth_overrides, shop_intent).
 
     youth_overrides maps player_id → reason string when the youth-cornerstone
     rule forced a contender's young high-OVR player into CORE.
+
+    shop_intent maps surplus player_id → reason string explaining WHY the player
+    is surplus.  Controlled vocabulary:
+      "age_misfit"        — age outside the team's build window
+      "positional_logjam" — multiple surplus players at the same position
+      "flip_asset"        — recently acquired and already categorised as surplus
+      "other"             — fallback when no other reason applies
+
+    recently_acquired_ids (keyword-only, default empty):
+      Set of player IDs acquired within the last N sim games.  When a player is
+      both recently_acquired and classified as surplus they receive "flip_asset"
+      intent — the team acquired them intending to flip for a better asset.
 
     For transition, win_now, rebuild, and soft_rebuild-style goals, core candidates
     are filtered by an age window before taking the top-N by OVR.  Players who would
@@ -678,6 +691,9 @@ def _categorise_players(
     core: list[int] = []
     surplus: list[int] = []
     flex: list[int] = []
+    # Tracks which surplus player IDs were placed due to age window violations,
+    # so shop_intent can label them "age_misfit" accurately.
+    _age_misfit_surplus_ids: set[int] = set()
 
     sorted_by_ovr = sorted(roster, key=lambda p: p["overall"], reverse=True)
 
@@ -704,12 +720,15 @@ def _categorise_players(
             p["player_id"] for p in roster
             if p["player_id"] in age_misfit_ids
         ]
+        _age_misfit_surplus_ids.update(age_misfit_ids)
         # Also surplus: age >= 31 AND OVR < 78, not already placed
-        surplus += [
+        _extra_age_surplus_win_now = [
             p["player_id"] for p in roster
             if p["age"] is not None and p["age"] >= 31 and p["overall"] < 78
             and p["player_id"] not in core_set and p["player_id"] not in age_misfit_ids
         ]
+        surplus += _extra_age_surplus_win_now
+        _age_misfit_surplus_ids.update(_extra_age_surplus_win_now)
 
     elif goal == "tank":
         # Core: U22 with OVR >= 78
@@ -719,11 +738,13 @@ def _categorise_players(
         }
         core = [p["player_id"] for p in sorted_by_ovr if p["player_id"] in core_set]
         # Surplus: age >= 27 AND OVR >= 78 (vets who win too many games)
-        surplus = [
+        _tank_surplus = [
             p["player_id"] for p in roster
             if p["age"] is not None and p["age"] >= 27 and p["overall"] >= 78
             and p["player_id"] not in core_set
         ]
+        surplus = _tank_surplus
+        _age_misfit_surplus_ids.update(_tank_surplus)
 
     elif goal == "rebuild":
         # Age window: age ≤ avg_age + 2 for core eligibility
@@ -747,7 +768,14 @@ def _categorise_players(
             if p["age"] is not None and p["age"] > age_ceiling
             and p["player_id"] not in core_set
         }
+        _age_misfit_surplus_ids.update(age_misfit_ids)
         # Surplus: age >= 28 OR OVR < 72 (non-future pieces), excluding core
+        _rebuild_age_surplus = [
+            p["player_id"] for p in roster
+            if p["player_id"] not in core_set
+            and p["player_id"] not in age_misfit_ids
+            and (p["age"] is not None and p["age"] >= 28)
+        ]
         surplus = [
             p["player_id"] for p in roster
             if p["player_id"] not in core_set
@@ -757,6 +785,7 @@ def _categorise_players(
                 or p["overall"] < 72
             )
         ]
+        _age_misfit_surplus_ids.update(_rebuild_age_surplus)
 
     else:  # transition
         # Age window: avg_age ± 4
@@ -779,12 +808,15 @@ def _categorise_players(
             p["player_id"] for p in roster
             if p["player_id"] in age_misfit_ids
         ]
+        _age_misfit_surplus_ids.update(age_misfit_ids)
         # Also surplus: age >= 32 AND OVR >= 75, not already placed
-        surplus += [
+        _extra_age_surplus_transition = [
             p["player_id"] for p in roster
             if p["age"] is not None and p["age"] >= 32 and p["overall"] >= 75
             and p["player_id"] not in core_set and p["player_id"] not in age_misfit_ids
         ]
+        surplus += _extra_age_surplus_transition
+        _age_misfit_surplus_ids.update(_extra_age_surplus_transition)
 
     allocated = set(core) | set(surplus)
     # Flex: OVR 75-87 not already placed, not low-OVR bench
@@ -851,7 +883,44 @@ def _categorise_players(
                     core.append(pid)
                 youth_overrides[pid] = "young cornerstone (OVR≥82, age≤26 on contender)"
 
-    return core, flex, surplus, youth_overrides
+    # ------------------------------------------------------------------
+    # Compute shop_intent for each surplus player.
+    #
+    # Priority order when multiple reasons could apply:
+    #   1. flip_asset   — recently acquired; team intends to re-sell quickly
+    #   2. age_misfit   — age window violation (most common organic surplus)
+    #   3. positional_logjam — multiple surplus players at the same position
+    #   4. other        — fallback
+    # ------------------------------------------------------------------
+    _recently_acq: set[int] = recently_acquired_ids or set()
+
+    # Count surplus players per position to detect positional logjam.
+    _surplus_set = set(surplus)
+    _position_for: dict[int, str] = {
+        p["player_id"]: p.get("position", "") or ""
+        for p in roster
+    }
+    _surplus_pos_counts: dict[str, int] = {}
+    for pid in surplus:
+        pos = _position_for.get(pid, "")
+        if pos:
+            _surplus_pos_counts[pos] = _surplus_pos_counts.get(pos, 0) + 1
+    _logjam_positions: set[str] = {
+        pos for pos, cnt in _surplus_pos_counts.items() if cnt >= 2
+    }
+
+    shop_intent: dict[int, str] = {}
+    for pid in surplus:
+        if pid in _recently_acq:
+            shop_intent[pid] = "flip_asset"
+        elif pid in _age_misfit_surplus_ids:
+            shop_intent[pid] = "age_misfit"
+        elif _position_for.get(pid, "") in _logjam_positions:
+            shop_intent[pid] = "positional_logjam"
+        else:
+            shop_intent[pid] = "other"
+
+    return core, flex, surplus, youth_overrides, shop_intent
 
 
 # ---------------------------------------------------------------------------
@@ -1064,11 +1133,34 @@ async def derive_plan(
     # 7. Player categorisation — augmented with current-season production.
     #    Players with GP < 10 fall back to prior-season BDL cache so that stars
     #    like Haliburton aren't bucketed as 'flex' at game 0 of a fresh league.
+    #    recently_acquired_ids: players acquired within the last 60 sim games
+    #    are eligible for "flip_asset" shop_intent if they land in surplus.
     production_map = await _fetch_season_production(pool, league_id, season, roster)
-    core_ids, flex_ids, surplus_ids, youth_overrides = _categorise_players(
+    _recently_acq_ids: set[int] = set()
+    try:
+        _last_game = await pool.fetchval(
+            "SELECT MAX(game_index) FROM games WHERE league_id=$1 AND status='simmed'",
+            league_id,
+        )
+        if _last_game is not None:
+            _acq_rows = await pool.fetch(
+                """SELECT id FROM players
+                   WHERE team_id IN (
+                       SELECT id FROM teams WHERE league_id=$1
+                   )
+                   AND last_traded_game_index IS NOT NULL
+                   AND last_traded_game_index >= $2""",
+                league_id, int(_last_game) - 60,
+            )
+            _recently_acq_ids = {r["id"] for r in _acq_rows}
+    except Exception:
+        pass  # recently_acquired fallback gracefully — flip_asset won't fire
+
+    core_ids, flex_ids, surplus_ids, youth_overrides, shop_intent = _categorise_players(
         goal, roster, avg_age,
         production_map=production_map,
         archetype_map=archetype_map,
+        recently_acquired_ids=_recently_acq_ids,
     )
 
     # 8. Asset targets
@@ -1116,6 +1208,9 @@ async def derive_plan(
         "roster_size": len(roster),
         "production_tiers": production_tiers,
         "youth_overrides": {str(pid): reason for pid, reason in youth_overrides.items()},
+        # shop_intent: why each surplus player is available.  Keyed by str(player_id)
+        # for JSON-serialisation compatibility (JSONB column).
+        "shop_intent": {str(pid): reason for pid, reason in shop_intent.items()},
     }
 
     return {
