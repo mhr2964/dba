@@ -2576,6 +2576,7 @@ def _score_outgoing_pair(
     posture_a: str,
     roster_a: list,
     cp_contexts: dict,
+    cp_r1_counts: dict | None = None,
 ) -> float:
     """Score (team_a, outgoing_pid, team_b, speculative_return) from A's perspective.
 
@@ -2652,7 +2653,8 @@ def _score_outgoing_pair(
                 _plan_bias += 0.20
             if "young_u23" in _asset_targets_a and _age_p is not None and _age_p < 23:
                 _plan_bias += 0.20
-        _b_r1_count = cp_r1_counts_ref.get(team_b.id, 0) if hasattr(cp_r1_counts_ref, "get") else 0
+        _r1_counts = cp_r1_counts or {}
+        _b_r1_count = _r1_counts.get(team_b.id, 0)
         if "picks_r1" in _asset_targets_a and speculative_return_pick_ids:
             _plan_bias += 0.25
         if "picks_any" in _asset_targets_a and speculative_return_pick_ids:
@@ -2686,12 +2688,6 @@ def _score_outgoing_pair(
                 _arch_penalty = min(_arch_penalty, 0.85)
 
     return base_value * need_multiplier * _plan_bias * _arch_penalty
-
-
-# Module-level reference used by _score_outgoing_pair for cp_r1_counts.
-# Set by _attempt_outgoing_first_offer before calling _score_outgoing_pair.
-# This avoids threading cp_r1_counts through every call site.
-cp_r1_counts_ref: dict = {}
 
 
 async def _attempt_outgoing_first_offer(
@@ -2729,9 +2725,6 @@ async def _attempt_outgoing_first_offer(
     Uses the same sweetener / ride-along / sanity-check tail as _attempt_one_offer
     to produce proposals in the same shape.
     """
-    global cp_r1_counts_ref
-    cp_r1_counts_ref = cp_r1_counts
-
     _plan_a = plan_a or {}
     _surplus_ids: list[int] = list(_plan_a.get("surplus_player_ids") or [])
     _flex_ids: list[int] = list(_plan_a.get("flex_player_ids") or [])
@@ -2875,6 +2868,7 @@ async def _attempt_outgoing_first_offer(
                     posture_a=posture_a,
                     roster_a=_roster_a,
                     cp_contexts=cp_contexts,
+                    cp_r1_counts=cp_r1_counts,
                 )
             except Exception as exc:
                 log.debug("_score_outgoing_pair failed: %s", exc)
