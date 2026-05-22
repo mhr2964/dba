@@ -262,6 +262,19 @@ async def generate(  # noqa: PLR0912, PLR0915
         log.warning(f"columnist_service: unknown persona_id {_persona_id!r}")
         return None
 
+    # Columnist ride-along: when a sidecar is attached to a specific persona,
+    # suppress every other persona at the entrypoint so no LLM call is made
+    # and no article lands in Discord. Returning None here is identical to any
+    # other "skip this fire" outcome the callers already handle.
+    from services import columnist_ride_along as _cra
+    if not _cra.should_fire_for(_persona_id):
+        log.debug(
+            "columnist_service: persona %r suppressed by ride-along (target=%r)",
+            _persona_id,
+            _cra.target_persona_id(),
+        )
+        return None
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         log.debug("columnist_service: ANTHROPIC_API_KEY not set, skipping article generation")

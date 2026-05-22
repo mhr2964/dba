@@ -89,6 +89,23 @@ def target_persona_id() -> str | None:
     return _CHOSEN_PERSONA_ID
 
 
+def should_fire_for(persona_id: str) -> bool:
+    """Gate for columnist_service.generate — True when this persona should fire.
+
+    When ride-along is detached, every persona fires (returns True for all).
+    When ride-along is attached, ONLY the chosen persona fires; all others are
+    suppressed at the generate() entrypoint so no LLM API call is made and no
+    Discord post lands. This avoids API cost and channel noise during iteration
+    sessions where the user is only critiquing one persona's voice.
+
+    Originally v2 design said "other personas fire normally" — that was reversed
+    after the first feedback runs proved the noise/cost wasn't worth the context.
+    """
+    if _CHOSEN_PERSONA_ID is None:
+        return True
+    return persona_id == _CHOSEN_PERSONA_ID
+
+
 # ---------------------------------------------------------------------------
 # JSONL log writer — schema unchanged from v1
 # ---------------------------------------------------------------------------
