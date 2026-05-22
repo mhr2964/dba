@@ -853,15 +853,12 @@ async def _attempt_one_offer(
     recently_signed_ids: set[int] | None = None,
     guild: Optional[discord.Guild] = None,
     postures: dict[int, dict] | None = None,
-    _single_team_a: Optional[team_repo.Team] = None,
 ) -> int:
-    """
-    Pick a team A, find the best target from team B, build a return package,
-    and call trade_service.propose. Returns 1 if a proposal was made, 0 otherwise.
+    """Mode dispatcher: picks a mode list per team A and routes to the appropriate
+    proposal function.  Returns 1 if any proposal was produced, 0 otherwise.
 
-    _single_team_a: when set, restricts the a-loop to exactly this one team and
-    skips the V2 dispatcher.  Used by the V2 incoming_first branch to route
-    incoming-only teams through the legacy body without code duplication.
+    The V2 mode dispatcher is now unconditional — DBA_PROPOSAL_DISPATCHER_V2 no
+    longer exists.  pick_proposal_modes runs for every team every cycle.
     """
     if recently_signed_ids is None:
         recently_signed_ids = set()
@@ -871,7 +868,6 @@ async def _attempt_one_offer(
     # ── Phase 3: memoized plans + contexts for all CPU teams ─────────────────
     # Built once per _attempt_one_offer call; reused for both counterparty scoring
     # and the b-loop plan lookups so we don't query the same plan 30 times.
-    _all_cp_ids = [t.id for t in cpu_teams]
 
     _cp_plan_list = await asyncio.gather(
         *[_get_franchise_plan(pool, league.id, t.id, season) for t in cpu_teams],
@@ -913,117 +909,136 @@ async def _attempt_one_offer(
         cp_r1_counts[t.id] = int(result) if isinstance(result, int) else 0
     # ── End Phase 3 memoization ───────────────────────────────────────────────
 
-    # ── V2 dispatcher flag ────────────────────────────────────────────────────
-    # When DBA_PROPOSAL_DISPATCHER_V2 is set to "1", "true", or "yes", the loop
-    # routes through pick_proposal_modes + _attempt_outgoing_first_offer for each
-    # team A.  When unset/empty/"0"/"false", the existing incoming-first body runs
-    # unchanged — byte-for-byte identical to before this commit.
-    # Skip V2 when called recursively for a single incoming-first team (prevents
-    # infinite recursion and re-entry into the dispatcher for that call).
-    _use_v2 = (
-        _single_team_a is None
-        and (os.getenv("DBA_PROPOSAL_DISPATCHER_V2", "") or "").lower() in ("1", "true", "yes")
-    )
+    # ── Mode dispatcher — unconditional ──────────────────────────────────────
+    # Each team A gets an ordered list of modes; we attempt each in order and
+    # stop as soon as one produces a proposal.
+    _total = 0
+    _shuffled = random.sample(cpu_teams, len(cpu_teams))
+    for _disp_a in _shuffled:
+        _disp_plan_a = cp_plans.get(_disp_a.id)
+        _disp_posture_a = postures.get(_disp_a.id) or _default_posture(_disp_a)
+        _disp_posture_str = (
+            _disp_posture_a.get("mode", "developing")
+            if isinstance(_disp_posture_a, dict)
+            else "developing"
+        )
+        _disp_roster_a = await player_repo.get_roster(pool, league.id, _disp_a.id)
+        _disp_cap_state = _derive_cap_state(_disp_a, cp_contexts, league)
 
-    if _use_v2:
-        # V2 path: mode dispatcher.  Each team A gets an ordered list of modes;
-        # we attempt each in order and stop as soon as one produces a proposal.
-        # Returns the total number of proposals produced (matches n_offers semantics).
-        _v2_total = 0
-        _v2_shuffled = random.sample(cpu_teams, len(cpu_teams))
-        for _v2_a in _v2_shuffled:
-            _v2_plan_a = cp_plans.get(_v2_a.id)
-            _v2_posture_a = postures.get(_v2_a.id) or _default_posture(_v2_a)
-            _v2_posture_str = _v2_posture_a.get("mode", "developing") if isinstance(_v2_posture_a, dict) else "developing"
-            _v2_roster_a = await player_repo.get_roster(pool, league.id, _v2_a.id)
-            _v2_cap_state = _derive_cap_state(_v2_a, cp_contexts, league)
+        _disp_modes = pick_proposal_modes(
+            team=_disp_a,
+            posture=_disp_posture_str,
+            plan=_disp_plan_a or {},
+            cap_state=_disp_cap_state,
+            roster_size=len(_disp_roster_a),
+        )
 
-            _v2_modes = pick_proposal_modes(
-                team=_v2_a,
-                posture=_v2_posture_str,
-                plan=_v2_plan_a or {},
-                cap_state=_v2_cap_state,
-                roster_size=len(_v2_roster_a),
-            )
+        _disp_proposed = 0
+        for _disp_mode in _disp_modes:
+            if _disp_mode == "outgoing_first":
+                try:
+                    _disp_proposed = await _attempt_outgoing_first_offer(
+                        pool=pool,
+                        league=league,
+                        season=season,
+                        team_a=_disp_a,
+                        cpu_teams=cpu_teams,
+                        block_by_team=block_by_team,
+                        used_pairs=used_pairs,
+                        taken_player_ids=taken_player_ids,
+                        deadline_game_index=deadline_game_index,
+                        recently_signed_ids=recently_signed_ids,
+                        guild=guild,
+                        postures=postures,
+                        cp_plans=cp_plans,
+                        cp_contexts=cp_contexts,
+                        cp_r1_counts=cp_r1_counts,
+                        plan_a=_disp_plan_a,
+                        posture_a=_disp_posture_str,
+                    )
+                except Exception as _disp_exc:
+                    log.warning(
+                        "[dispatcher] outgoing-first for team %d failed: %s",
+                        _disp_a.id, _disp_exc, exc_info=True,
+                    )
+                    _disp_proposed = 0
+            else:
+                # incoming_first — two-pass scoring helper.
+                try:
+                    _disp_proposed = await _run_incoming_first_for_team(
+                        pool=pool,
+                        league=league,
+                        season=season,
+                        team_a=_disp_a,
+                        cpu_teams=cpu_teams,
+                        block_by_team=block_by_team,
+                        used_pairs=used_pairs,
+                        taken_player_ids=taken_player_ids,
+                        deadline_game_index=deadline_game_index,
+                        recently_signed_ids=recently_signed_ids,
+                        guild=guild,
+                        postures=postures,
+                        cp_plans=cp_plans,
+                        cp_contexts=cp_contexts,
+                        cp_r1_counts=cp_r1_counts,
+                        roster_a_cache=_disp_roster_a,
+                    )
+                except Exception as _disp_inc_exc:
+                    log.warning(
+                        "[dispatcher] incoming-first for team %d failed: %s",
+                        _disp_a.id, _disp_inc_exc, exc_info=True,
+                    )
+                    _disp_proposed = 0
 
-            _v2_proposed = 0
-            for _v2_mode in _v2_modes:
-                if _v2_mode == "outgoing_first":
-                    try:
-                        _v2_proposed = await _attempt_outgoing_first_offer(
-                            pool=pool,
-                            league=league,
-                            season=season,
-                            team_a=_v2_a,
-                            cpu_teams=cpu_teams,
-                            block_by_team=block_by_team,
-                            used_pairs=used_pairs,
-                            taken_player_ids=taken_player_ids,
-                            deadline_game_index=deadline_game_index,
-                            recently_signed_ids=recently_signed_ids,
-                            guild=guild,
-                            postures=postures,
-                            cp_plans=cp_plans,
-                            cp_contexts=cp_contexts,
-                            cp_r1_counts=cp_r1_counts,
-                            plan_a=_v2_plan_a,
-                            posture_a=_v2_posture_str,
-                        )
-                    except Exception as _v2_exc:
-                        log.warning("[V2 dispatcher] outgoing-first for team %d failed: %s", _v2_a.id, _v2_exc, exc_info=True)
-                        _v2_proposed = 0
-                else:
-                    # incoming_first — run the legacy incoming-first body for this
-                    # specific team A.  _single_team_a restricts the a-loop to _v2_a
-                    # and suppresses V2 re-entry inside the recursive call.
-                    try:
-                        _v2_proposed = await _attempt_one_offer(
-                            pool=pool,
-                            league=league,
-                            season=season,
-                            cpu_teams=cpu_teams,
-                            block_by_team=block_by_team,
-                            used_pairs=used_pairs,
-                            taken_player_ids=taken_player_ids,
-                            deadline_game_index=deadline_game_index,
-                            recently_signed_ids=recently_signed_ids,
-                            guild=guild,
-                            postures=postures,
-                            _single_team_a=_v2_a,
-                        )
-                    except Exception as _v2_inc_exc:
-                        log.warning(
-                            "[V2 dispatcher] incoming-first for team %d failed: %s",
-                            _v2_a.id, _v2_inc_exc, exc_info=True,
-                        )
-                        _v2_proposed = 0
+            if _disp_proposed >= 1:
+                break
 
-                if _v2_proposed >= 1:
-                    break
+        _total += _disp_proposed
+        if _total >= 1:
+            return _total
+    # ── End mode dispatcher ───────────────────────────────────────────────────
 
-            _v2_total += _v2_proposed
-            if _v2_total >= 1:
-                return _v2_total
+    return 0
 
-        # If V2 found nothing, fall through to the legacy path below.
-        if _v2_total >= 1:
-            return _v2_total
-    # ── End V2 dispatcher ─────────────────────────────────────────────────────
 
-    # league-scan result storage: populated per surplus player in the a-loop
-    # so _plan_alignment_str() can reference it.
+async def _run_incoming_first_for_team(
+    pool,
+    league: league_repo.League,
+    season: int,
+    team_a: team_repo.Team,
+    cpu_teams: list[team_repo.Team],
+    block_by_team: dict[int, list[int]],
+    used_pairs: set[tuple[int, int]],
+    taken_player_ids: set[int],
+    deadline_game_index: int,
+    recently_signed_ids: set[int],
+    guild: Optional[discord.Guild],
+    postures: dict[int, dict],
+    cp_plans: dict[int, dict | None],
+    cp_contexts: dict[int, dict],
+    cp_r1_counts: dict[int, int],
+    roster_a_cache: list,
+) -> int:
+    """Incoming-first two-pass proposal for a single team A.
+
+    Pass 1 — score all candidates on team B's block without the archetype penalty.
+    Take the top-K (K=3) shortlist.
+
+    Pass 2 — for each shortlisted candidate:
+      - Call _build_return_package to materialise the actual outgoing players.
+      - Compute the exact post-trade archetype counts for team A.
+      - Re-score with the exact arch penalty applied.
+    Pick the best re-scored candidate; proceed to sweetener / ride-along / propose.
+
+    roster_a_cache: team A's roster, pre-fetched by the dispatcher to avoid
+    a redundant DB call.  Also used for the post-trade arch count in pass 2.
+    """
+    # league-scan result storage — referenced inside _plan_alignment_str closure.
     _league_scan_result: list[tuple[team_repo.Team, float, str]] = []
     _league_scan_player_name: str = ""
 
-    # When called with _single_team_a, only that team is attempted as team A.
-    # This is used by the V2 dispatcher's incoming_first branch so incoming-only
-    # teams run the full legacy body for their specific team without duplicating code.
-    if _single_team_a is not None:
-        candidates_a = [_single_team_a]
-    else:
-        # Shuffle so we don't always favour the same team.
-        candidates_a = random.sample(cpu_teams, len(cpu_teams))
-    team_a: Optional[team_repo.Team] = None
+    # The dispatcher has already selected team_a; we reference it via `a` in the loop
+    # body to match the historic variable name used by all downstream closures.
     target_team: Optional[team_repo.Team] = None
     target_player: Optional[player_repo.Player] = None
     posture_a_final: dict = {}
@@ -1032,45 +1047,31 @@ async def _attempt_one_offer(
     _plan_a_final: dict | None = None
     _plan_b_final: dict | None = None
 
-    for a in candidates_a:
-        # Reset per-a-team scan state so a previous team's scan doesn't bleed
-        # into the winning pair's _plan_alignment_str if this team has no surplus.
-        _league_scan_result = []
-        _league_scan_player_name = ""
+    a = team_a  # alias so downstream code (closures, log lines) is unchanged
+    posture_a = postures.get(a.id) or _default_posture(a)
+    mode_a = posture_a["mode"]
 
-        posture_a = postures.get(a.id) or _default_posture(a)
-        mode_a = posture_a["mode"]
+    # Tanking teams skip trading for vets — they want to lose.
+    if posture_a["urgency"] == "tanking" and mode_a not in ("rebuilding", "soft_rebuild"):
+        return 0
 
-        # Tanking teams skip trading for vets — they want to lose.
-        if posture_a["urgency"] == "tanking" and mode_a not in ("rebuilding", "soft_rebuild"):
-            continue
+    # Fetch team A's positional distribution once per team so we can score
+    # each target player by how much A needs that position.
+    pos_count_rows = await pool.fetch(
+        """SELECT p.position, COUNT(*) AS cnt
+           FROM lineups l JOIN players p ON p.id = l.player_id
+           WHERE l.league_id = $1 AND l.team_id = $2
+           GROUP BY p.position""",
+        league.id, a.id,
+    )
+    pos_count_map = {r["position"]: r["cnt"] for r in pos_count_rows}
 
-        # Fetch team A's positional distribution once per team so we can score
-        # each target player by how much A needs that position.
-        pos_count_rows = await pool.fetch(
-            """SELECT p.position, COUNT(*) AS cnt
-               FROM lineups l JOIN players p ON p.id = l.player_id
-               WHERE l.league_id = $1 AND l.team_id = $2
-               GROUP BY p.position""",
-            league.id, a.id,
-        )
-        pos_count_map = {r["position"]: r["cnt"] for r in pos_count_rows}
+    # Mode-driven target position filter: contending/fringe teams pursue
+    # specific positional gaps; all other modes take any position.
+    target_positions = _get_trade_target_positions(a, pos_count_map, mode_a)
 
-        # Mode-driven target position filter: contending/fringe teams pursue
-        # specific positional gaps; all other modes take any position.
-        target_positions = _get_trade_target_positions(a, pos_count_map, mode_a)
-
-        # B6: build archetype distribution for team A once per outer team.
-        # Exclude players on A's own trade block — they are the outgoing side of any
-        # deal A proposes.  Without this exclusion, if A's only playmaker is on the
-        # block and the incoming candidate is also a playmaker, the count shows 1 → the
-        # 0.85 penalty fires on what is actually a clean role swap.  Spec B6 explicitly
-        # exempts that case.  The block set is a subset of the roster, so subtracting is
-        # cheaper than a second DB query.
-        _a_roster_for_arch = await player_repo.get_roster(pool, league.id, a.id)
-        _a_block_set: set[int] = set(block_by_team.get(a.id, []))
-        _a_roster_excl_block = [p for p in _a_roster_for_arch if p.id not in _a_block_set]
-        _a_archetype_counts: dict[str, int] = _team_archetype_counts(_a_roster_excl_block)
+    # roster_a_cache is pre-fetched by the dispatcher; no additional DB call needed here.
+    # It is also used in pass-2 for exact post-trade archetype counting.
 
         # Mode-driven shop list: soft_rebuild/rebuilding teams shop their own
         # veterans across all b_candidates rather than just seeking inbound talent.
@@ -1079,334 +1080,290 @@ async def _attempt_one_offer(
         # A wants to receive (youth/picks) vs which A puts on the block (age/OVR filters
         # already handled in _build_cpu_trade_block).
 
-        # Use memoized plan for team A (no extra DB hit per iteration).
-        _plan_a = cp_plans.get(a.id)
-        _asset_targets_a: list[str] = _plan_a.get("asset_targets") or [] if _plan_a else []
-        _plan_a_goal: str = _plan_a.get("goal", "") if _plan_a else ""
+    # Use memoized plan for team A (no extra DB hit per iteration).
+    _plan_a = cp_plans.get(a.id)
+    _asset_targets_a: list[str] = _plan_a.get("asset_targets") or [] if _plan_a else []
+    _plan_a_goal: str = _plan_a.get("goal", "") if _plan_a else ""
 
-        # Hoist philosophy fetch for team A — constant across the entire b-team/player loop.
-        _a_philosophy = await pool.fetchval(
-            "SELECT coach_philosophy FROM teams WHERE id = $1", a.id
-        )
+    # Hoist philosophy fetch for team A — constant across the entire b-team/player loop.
+    _a_philosophy = await pool.fetchval(
+        "SELECT coach_philosophy FROM teams WHERE id = $1", a.id
+    )
 
-        # ── Phase 3: targeted counterparty scan for surplus players ──────────
-        # When team A has a specific high-value surplus player to shop, rank all
-        # counterparties by how much they'd value that player and restrict the
-        # b-loop to the top 3 matches.  This makes proposals targeted ("who should
-        # I call?") rather than iterating teams in arbitrary order.
-        _surplus_ids_a: list[int] = list((_plan_a or {}).get("surplus_player_ids") or [])
-        _scan_used: bool = False
-        if _surplus_ids_a:
-            # Find the highest-value surplus player on team A's block.
-            _best_surplus_player: player_repo.Player | None = None
-            _best_surplus_contract: object | None = None
-            _best_surplus_val: float = -1.0
-            for _sid in _surplus_ids_a:
-                if _sid in taken_player_ids:
-                    continue
-                _sp = await player_repo.get_by_id(pool, _sid)
-                if not _sp:
-                    continue
-                _sc = await player_repo.get_active_contract(pool, _sid)
-                _sv = trade_evaluator.player_trade_value(
-                    {"overall": _sp.overall, "age": _player_age(_sp) or 27},
-                    {"salary": getattr(_sc, "salary", 0) or 0,
-                     "years_remaining": getattr(_sc, "years_remaining", 1) or 1},
-                    league.salary_cap,
-                )
-                if _sv > _best_surplus_val:
-                    _best_surplus_val = _sv
-                    _best_surplus_player = _sp
-                    _best_surplus_contract = _sc
-
-            if _best_surplus_player is not None and _best_surplus_val >= 15:
-                try:
-                    _scan_top3 = await _league_scan_counterparties(
-                        pool=pool,
-                        league_id=league.id,
-                        season=season,
-                        surplus_player=_best_surplus_player,
-                        surplus_contract=_best_surplus_contract,
-                        offerer_team_id=a.id,
-                        offerer_asset_targets=_asset_targets_a,
-                        cpu_teams=cpu_teams,
-                        cp_plans=cp_plans,
-                        cp_contexts=cp_contexts,
-                        cp_r1_counts=cp_r1_counts,
-                        salary_cap=league.salary_cap,
-                    )
-                    if _scan_top3:
-                        _league_scan_result = _scan_top3
-                        _league_scan_player_name = (
-                            f"{_best_surplus_player.first_name} {_best_surplus_player.last_name}"
-                        )
-                        _scan_used = True
-                        # Restrict b-loop to top-3 counterparties; keep ordering from scan.
-                        _top3_ids = {t.id for t, _, _ in _scan_top3}
-                        b_candidates_base = [t for t, _, _ in _scan_top3]
-                        # Append remaining teams as fallback (preserving arbitrary shuffle).
-                        _remaining = [t for t in cpu_teams if t.id != a.id and t.id not in _top3_ids]
-                        random.shuffle(_remaining)
-                        b_candidates = b_candidates_base + _remaining
-                        log.info(
-                            "[CPU] league scan for %s (%s OVR %d val %.1f): %s",
-                            _league_scan_player_name, _best_surplus_player.position,
-                            _best_surplus_player.overall, _best_surplus_val,
-                            " | ".join(r for _, _, r in _scan_top3),
-                        )
-                        if _HEADLESS:
-                            try:
-                                _p_name = getattr(a, "nba_team_code", str(a.id))
-                                print(
-                                    f"   league scan: {_p_name} ranked "
-                                    f"{', '.join(r for _, _, r in _scan_top3)} "
-                                    f"as top counterparties for {_league_scan_player_name} "
-                                    f"(OVR {_best_surplus_player.overall})"
-                                )
-                            except Exception:
-                                pass
-                except Exception as exc:
-                    log.debug(
-                        "league scan failed for team %d player %d: %s — falling back to arbitrary order",
-                        a.id, _best_surplus_player.id if _best_surplus_player else -1, exc,
-                    )
-
-        if not _scan_used:
-            b_candidates = [t for t in cpu_teams if t.id != a.id]
-            random.shuffle(b_candidates)
-        # ── End Phase 3 league scan ───────────────────────────────────────────
-
-        # Collect all valid (score, b, player, posture_b) candidates so we can
-        # rank by plan-aligned score rather than taking the first valid match.
-        _scored_candidates: list[tuple[float, team_repo.Team, player_repo.Player, dict]] = []
-
-        for b in b_candidates:
-            posture_b = postures.get(b.id) or _default_posture(b)
-            pair = (min(a.id, b.id), max(a.id, b.id))
-            if pair in used_pairs:
+    # ── Phase 3: targeted counterparty scan for surplus players ──────────────
+    # When team A has a specific high-value surplus player to shop, rank all
+    # counterparties by how much they'd value that player and restrict the
+    # b-loop to the top 3 matches.  This makes proposals targeted ("who should
+    # I call?") rather than iterating teams in arbitrary order.
+    _surplus_ids_a: list[int] = list((_plan_a or {}).get("surplus_player_ids") or [])
+    _scan_used: bool = False
+    if _surplus_ids_a:
+        # Find the highest-value surplus player on team A's block.
+        _best_surplus_player: player_repo.Player | None = None
+        _best_surplus_contract: object | None = None
+        _best_surplus_val: float = -1.0
+        for _sid in _surplus_ids_a:
+            if _sid in taken_player_ids:
                 continue
-
-            # Skip this team pair if they already have an active trade proposal
-            # this season (any non-resolved status), preventing duplicate proposals
-            # across batch rounds.
-            active_pair_rows = await pool.fetch(
-                """SELECT 1 FROM trades
-                   WHERE league_id = $1 AND season = $2
-                     AND ((proposer_team_id = $3 AND counterparty_team_id = $4)
-                          OR (proposer_team_id = $4 AND counterparty_team_id = $3))
-                     AND status IN ('pending_counterparty', 'pending_commissioner')
-                   LIMIT 1""",
-                league.id, season, a.id, b.id,
+            _sp = await player_repo.get_by_id(pool, _sid)
+            if not _sp:
+                continue
+            _sc = await player_repo.get_active_contract(pool, _sid)
+            _sv = trade_evaluator.player_trade_value(
+                {"overall": _sp.overall, "age": _player_age(_sp) or 27},
+                {"salary": getattr(_sc, "salary", 0) or 0,
+                 "years_remaining": getattr(_sc, "years_remaining", 1) or 1},
+                league.salary_cap,
             )
-            if active_pair_rows:
+            if _sv > _best_surplus_val:
+                _best_surplus_val = _sv
+                _best_surplus_player = _sp
+                _best_surplus_contract = _sc
+
+        if _best_surplus_player is not None and _best_surplus_val >= 15:
+            try:
+                _scan_top3 = await _league_scan_counterparties(
+                    pool=pool,
+                    league_id=league.id,
+                    season=season,
+                    surplus_player=_best_surplus_player,
+                    surplus_contract=_best_surplus_contract,
+                    offerer_team_id=a.id,
+                    offerer_asset_targets=_asset_targets_a,
+                    cpu_teams=cpu_teams,
+                    cp_plans=cp_plans,
+                    cp_contexts=cp_contexts,
+                    cp_r1_counts=cp_r1_counts,
+                    salary_cap=league.salary_cap,
+                )
+                if _scan_top3:
+                    _league_scan_result = _scan_top3
+                    _league_scan_player_name = (
+                        f"{_best_surplus_player.first_name} {_best_surplus_player.last_name}"
+                    )
+                    _scan_used = True
+                    # Restrict b-loop to top-3 counterparties; keep ordering from scan.
+                    _top3_ids = {t.id for t, _, _ in _scan_top3}
+                    b_candidates_base = [t for t, _, _ in _scan_top3]
+                    # Append remaining teams as fallback (preserving arbitrary shuffle).
+                    _remaining = [t for t in cpu_teams if t.id != a.id and t.id not in _top3_ids]
+                    random.shuffle(_remaining)
+                    b_candidates = b_candidates_base + _remaining
+                    log.info(
+                        "[CPU] league scan for %s (%s OVR %d val %.1f): %s",
+                        _league_scan_player_name, _best_surplus_player.position,
+                        _best_surplus_player.overall, _best_surplus_val,
+                        " | ".join(r for _, _, r in _scan_top3),
+                    )
+                    if _HEADLESS:
+                        try:
+                            _p_name = getattr(a, "nba_team_code", str(a.id))
+                            print(
+                                f"   league scan: {_p_name} ranked "
+                                f"{', '.join(r for _, _, r in _scan_top3)} "
+                                f"as top counterparties for {_league_scan_player_name} "
+                                f"(OVR {_best_surplus_player.overall})"
+                            )
+                        except Exception:
+                            pass
+            except Exception as exc:
+                log.debug(
+                    "league scan failed for team %d player %d: %s — falling back to arbitrary order",
+                    a.id, _best_surplus_player.id if _best_surplus_player else -1, exc,
+                )
+
+    if not _scan_used:
+        b_candidates = [t for t in cpu_teams if t.id != a.id]
+        random.shuffle(b_candidates)
+    # ── End Phase 3 league scan ───────────────────────────────────────────────
+
+    # Collect all valid pass-1 candidates.  Each entry stores enough data for
+    # pass-2 re-scoring (score, b, player, posture_b, trade_value, contract).
+    _scored_candidates: list[tuple[float, team_repo.Team, player_repo.Player, dict, float, object]] = []
+
+    for b in b_candidates:
+        posture_b = postures.get(b.id) or _default_posture(b)
+        pair = (min(a.id, b.id), max(a.id, b.id))
+        if pair in used_pairs:
+            continue
+
+        # Skip this team pair if they already have an active trade proposal
+        # this season (any non-resolved status), preventing duplicate proposals
+        # across batch rounds.
+        active_pair_rows = await pool.fetch(
+            """SELECT 1 FROM trades
+               WHERE league_id = $1 AND season = $2
+                 AND ((proposer_team_id = $3 AND counterparty_team_id = $4)
+                      OR (proposer_team_id = $4 AND counterparty_team_id = $3))
+                 AND status IN ('pending_counterparty', 'pending_commissioner')
+               LIMIT 1""",
+            league.id, season, a.id, b.id,
+        )
+        if active_pair_rows:
+            continue
+
+        b_block_ids = block_by_team.get(b.id, [])
+        if not b_block_ids:
+            continue
+
+        # Use memoized plan for team B (no extra DB hit per b-team iteration).
+        _plan_b = cp_plans.get(b.id)
+        _b_surplus_set: set[int] = set((_plan_b or {}).get("surplus_player_ids") or [])
+        _b_core_set: set[int] = set((_plan_b or {}).get("core_player_ids") or [])
+        _b_flex_set: set[int] = set((_plan_b or {}).get("flex_player_ids") or [])
+
+        # Use memoized R1 count for team B — no per-b DB query needed.
+        _b_r1_count: int = cp_r1_counts.get(b.id, 0)
+
+        # picks_any count still needs a separate query (only used for plan_bias; low-cost).
+        _b_any_count: int = await pool.fetchval(
+            """SELECT COUNT(*) FROM draft_picks
+               WHERE league_id = $1 AND current_team_id = $2
+                 AND season > $3 AND season <= $3 + 3""",
+            league.id, b.id, season,
+        ) or 0
+
+        # Load and score B's trade block players.
+        for pid in b_block_ids:
+            # Skip players already committed to another offer this round.
+            if pid in taken_player_ids:
                 continue
 
-            b_block_ids = block_by_team.get(b.id, [])
-            if not b_block_ids:
+            p = await player_repo.get_by_id(pool, pid)
+            if not p:
                 continue
 
-            # Use memoized plan for team B (no extra DB hit per b-team iteration).
-            _plan_b = cp_plans.get(b.id)
-            _b_surplus_set: set[int] = set((_plan_b or {}).get("surplus_player_ids") or [])
-            _b_core_set: set[int] = set((_plan_b or {}).get("core_player_ids") or [])
-            _b_flex_set: set[int] = set((_plan_b or {}).get("flex_player_ids") or [])
+            if not _team_a_wants_player(posture_a, p):
+                continue
 
-            # Use memoized R1 count for team B — no per-b DB query needed.
-            _b_r1_count: int = cp_r1_counts.get(b.id, 0)
-
-            # picks_any count still needs a separate query (only used for plan_bias; low-cost).
-            _b_any_count: int = await pool.fetchval(
-                """SELECT COUNT(*) FROM draft_picks
-                   WHERE league_id = $1 AND current_team_id = $2
-                     AND season > $3 AND season <= $3 + 3""",
-                league.id, b.id, season,
-            ) or 0
-
-            # Load and score B's trade block players.
-            for pid in b_block_ids:
-                # Skip players already committed to another offer this round.
-                if pid in taken_player_ids:
+            # Contending/fringe teams only target their specific positional gaps.
+            if mode_a in ("contending", "play_in_fringe"):
+                if not _position_matches_need(p.position, target_positions):
                     continue
 
-                p = await player_repo.get_by_id(pool, pid)
-                if not p:
-                    continue
+            # Positional need multiplier: deprioritize if A already has 3+
+            # at this position; boost if A has 0-1.
+            pos_cnt = pos_count_map.get(p.position, 0)
+            if pos_cnt >= 3:
+                need_multiplier = 0.6
+            elif pos_cnt <= 1:
+                need_multiplier = 1.4
+            else:
+                need_multiplier = 1.0
 
-                if not _team_a_wants_player(posture_a, p):
-                    continue
+            # Compute a rough target value for the threshold check.
+            _tc = await player_repo.get_active_contract(pool, p.id)
+            _tv = trade_evaluator.player_trade_value(
+                {"overall": p.overall, "age": _player_age(p)},
+                {
+                    "salary": _tc.salary if _tc else 0,
+                    "years_remaining": _tc.years_remaining if _tc else 1,
+                },
+                league.salary_cap,
+            )
+            if _tv * need_multiplier < 15:
+                # Too low-priority given positional context — skip.
+                log.debug(
+                    f"CPU trade target skipped (need_multiplier={need_multiplier:.1f}): "
+                    f"player {p.id} OVR {p.overall} pos {p.position} "
+                    f"for team {a.id} — effective value {_tv * need_multiplier:.1f} < 15"
+                )
+                continue
 
-                # Contending/fringe teams only target their specific positional gaps.
-                if mode_a in ("contending", "play_in_fringe"):
-                    if not _position_matches_need(p.position, target_positions):
+            # Cap: skip if player already appears in an active trade proposal.
+            active_for_player = await pool.fetchval(
+                """SELECT COUNT(*) FROM trade_assets ta
+                   JOIN trades t ON t.id = ta.trade_id
+                   WHERE t.league_id = $1 AND ta.player_id = $2
+                     AND ta.asset_type = 'player'
+                     AND t.status NOT IN ('approved', 'rejected', 'declined', 'expired', 'superseded')
+                """,
+                league.id, pid,
+            )
+            if active_for_player and active_for_player >= 1:
+                continue
+
+            # 60-sim-day trade restriction: skip recently traded players.
+            if pid in (recently_signed_ids or set()):
+                continue
+            last_traded = await pool.fetchval(
+                "SELECT last_traded_at FROM players WHERE id = $1", pid
+            )
+            if last_traded is not None:
+                last_game_date = await pool.fetchval(
+                    "SELECT MAX(scheduled_date) FROM games "
+                    "WHERE league_id = $1 AND status = 'simmed'",
+                    league.id,
+                )
+                if last_game_date is not None:
+                    days_since = (last_game_date - last_traded).days
+                    if days_since < 60:
                         continue
-
-                # Positional need multiplier: deprioritize if A already has 3+
-                # at this position; boost if A has 0-1.
-                pos_cnt = pos_count_map.get(p.position, 0)
-                if pos_cnt >= 3:
-                    need_multiplier = 0.6
-                elif pos_cnt <= 1:
-                    need_multiplier = 1.4
-                else:
-                    need_multiplier = 1.0
-
-                # Compute a rough target value for the threshold check.
-                _tc = await player_repo.get_active_contract(pool, p.id)
-                _tv = trade_evaluator.player_trade_value(
-                    {"overall": p.overall, "age": _player_age(p)},
-                    {
-                        "salary": _tc.salary if _tc else 0,
-                        "years_remaining": _tc.years_remaining if _tc else 1,
-                    },
-                    league.salary_cap,
-                )
-                if _tv * need_multiplier < 15:
-                    # Too low-priority given positional context — skip.
-                    log.debug(
-                        f"CPU trade target skipped (need_multiplier={need_multiplier:.1f}): "
-                        f"player {p.id} OVR {p.overall} pos {p.position} "
-                        f"for team {a.id} — effective value {_tv * need_multiplier:.1f} < 15"
+                    # Also block if fewer than 60 days before deadline.
+                    deadline_date = await pool.fetchval(
+                        "SELECT MIN(scheduled_date) FROM games "
+                        "WHERE league_id = $1 AND season = $2 AND game_index = $3",
+                        league.id, league.current_season, deadline_game_index,
                     )
-                    continue
-
-                # Cap: skip if player already appears in an active trade proposal.
-                active_for_player = await pool.fetchval(
-                    """SELECT COUNT(*) FROM trade_assets ta
-                       JOIN trades t ON t.id = ta.trade_id
-                       WHERE t.league_id = $1 AND ta.player_id = $2
-                         AND ta.asset_type = 'player'
-                         AND t.status NOT IN ('approved', 'rejected', 'declined', 'expired', 'superseded')
-                    """,
-                    league.id, pid,
-                )
-                if active_for_player and active_for_player >= 1:
-                    continue
-
-                # 60-sim-day trade restriction: skip recently traded players.
-                if pid in (recently_signed_ids or set()):
-                    continue
-                last_traded = await pool.fetchval(
-                    "SELECT last_traded_at FROM players WHERE id = $1", pid
-                )
-                if last_traded is not None:
-                    last_game_date = await pool.fetchval(
-                        "SELECT MAX(scheduled_date) FROM games "
-                        "WHERE league_id = $1 AND status = 'simmed'",
-                        league.id,
-                    )
-                    if last_game_date is not None:
-                        days_since = (last_game_date - last_traded).days
-                        if days_since < 60:
+                    if deadline_date is not None:
+                        days_to_deadline = (deadline_date - last_game_date).days
+                        if days_to_deadline < 60:
                             continue
-                        # Also block if fewer than 60 days before deadline.
-                        deadline_date = await pool.fetchval(
-                            "SELECT MIN(scheduled_date) FROM games "
-                            "WHERE league_id = $1 AND season = $2 AND game_index = $3",
-                            league.id, league.current_season, deadline_game_index,
-                        )
-                        if deadline_date is not None:
-                            days_to_deadline = (deadline_date - last_game_date).days
-                            if days_to_deadline < 60:
-                                continue
 
-                # --- Counterparty hint: skip if target is core on B's plan ---
-                # Core players have huge penalty — they won't move him no matter what.
-                if pid in _b_core_set:
-                    log.debug(
-                        "CPU trade target skipped: player %d is core on team %d's plan",
-                        pid, b.id,
-                    )
-                    continue
-
-                # --- Score candidate with asset_target plan bias (+20-25% per match) ---
-                _age_p = _player_age(p)  # may be None; all comparisons guard for it
-                _plan_bias = 1.0
-                if _asset_targets_a:
-                    if "role_players" in _asset_targets_a and 78 <= p.overall <= 85:
-                        _plan_bias += 0.20
-                    if "veterans" in _asset_targets_a and _age_p is not None and _age_p >= 28 and p.overall >= 78:
-                        _plan_bias += 0.20
-                    if "young_u23" in _asset_targets_a and _age_p is not None and _age_p < 23 and (
-                        pid in _b_flex_set or pid in _b_surplus_set
-                    ):
-                        _plan_bias += 0.20
-                    if "expiring_contracts" in _asset_targets_a:
-                        _tc_yrs = _tc.years_remaining if _tc else 99
-                        if _tc_yrs <= 1:
-                            _plan_bias += 0.20
-                    # picks_r1: bias toward counterparties sitting on ≥4 R1s — they have surplus
-                    if "picks_r1" in _asset_targets_a and _b_r1_count >= 4:
-                        _plan_bias += 0.25
-                    # picks_any: bias toward counterparties with ≥6 total picks (any round)
-                    if "picks_any" in _asset_targets_a and _b_any_count >= 6:
-                        _plan_bias += 0.20
-                    # cap_space: bias toward expensive/expiring contracts the counterparty
-                    # wants to dump (1-year remaining or salary > 25% of cap)
-                    if "cap_space" in _asset_targets_a:
-                        _tc_yrs = _tc.years_remaining if _tc else 99
-                        _tc_sal = _tc.salary if _tc else 0
-                        _cap_threshold = int(league.salary_cap * 0.25)
-                        if _tc_yrs <= 1 or _tc_sal >= _cap_threshold:
-                            _plan_bias += 0.20
-                    # Bump further if B has this player flagged as surplus (willing to deal)
-                    if pid in _b_surplus_set:
-                        _plan_bias += 0.20
-
-                # Apply context modifier from team A's perspective so the CPU
-                # PREFERS targets who synergize, fit the window, scheme, etc.
-                # This is a rank-time modifier — it does not affect the final
-                # value submitted to evaluate_trade (that happens in cpu_should_accept).
-                _ctx_modifier = 1.0
-                try:
-                    from services import trade_context as _tc_mod
-                    _p_dict_ctx = {
-                        "id": p.id,
-                        "overall": p.overall,
-                        "age": _age_p or 27,
-                        "position": p.position,
-                        "tendency_3pt": getattr(p, "tendency_3pt", 50) or 50,
-                        "tendency_drive": getattr(p, "tendency_drive", 50) or 50,
-                        "tendency_pass": getattr(p, "tendency_pass", 50) or 50,
-                        "ast_tendency": getattr(p, "ast_tendency", 50) or 50,
-                        "reb_tendency": getattr(p, "reb_tendency", 50) or 50,
-                        "blk_tendency": getattr(p, "blk_tendency", 50) or 50,
-                        "stl_tendency": getattr(p, "stl_tendency", 50) or 50,
-                        "defense_tendency": getattr(p, "defense_tendency", 50) or 50,
-                        "defensive_archetype": getattr(p, "defensive_archetype", None),
-                        "usage_weight": getattr(p, "usage_weight", 0.5) or 0.5,
-                    }
-                    _a_plan_for_ctx = _plan_a or {}
-                    _a_posture_for_ctx = postures.get(a.id) or {}
-                    # _a_philosophy hoisted before b-team loop — no per-candidate DB hit.
-                    _form_mod_ctx = 1.0  # form not yet computed at rank time; use neutral
-                    _ctx_modifier, _ctx_sigs = await _tc_mod.compute_context_modifier(
-                        pool=pool,
-                        league_id=league.id,
-                        season=season,
-                        perspective_team_id=a.id,
-                        plan=_a_plan_for_ctx,
-                        posture=_a_posture_for_ctx,
-                        coach_philosophy=_a_philosophy,
-                        incoming_player=_p_dict_ctx,
-                        form_mod=_form_mod_ctx,
-                    )
-                except Exception as _ctx_rank_exc:
-                    log.debug("context modifier for candidate ranking failed pid=%d: %s", pid, _ctx_rank_exc)
-
-                # B3: asset upside modifier — boosts young/pedigree/award-race players
-                # so they don't get ranked as filler or offered away cheaply.
-                _upside_mod = _asset_upside_modifier(
-                    p,
-                    draft_year=getattr(p, "draft_year", None),
-                    current_season=season,
-                    # Award ranks not available at proposal-rank time without an
-                    # extra DB call per candidate. Skip here; B3 in cpu_should_accept
-                    # handles the accept-side valuation via player_trade_value modifiers.
+            # --- Counterparty hint: skip if target is core on B's plan ---
+            # Core players have huge penalty — they won't move him no matter what.
+            if pid in _b_core_set:
+                log.debug(
+                    "CPU trade target skipped: player %d is core on team %d's plan",
+                    pid, b.id,
                 )
+                continue
 
-                # B6: archetype redundancy penalty — downweight incoming player if
-                # team A already has 2+ players in the same archetype.
-                _incoming_arch = trade_evaluator._player_archetype({
+            # --- Score candidate with asset_target plan bias (+20-25% per match) ---
+            _age_p = _player_age(p)  # may be None; all comparisons guard for it
+            _plan_bias = 1.0
+            if _asset_targets_a:
+                if "role_players" in _asset_targets_a and 78 <= p.overall <= 85:
+                    _plan_bias += 0.20
+                if "veterans" in _asset_targets_a and _age_p is not None and _age_p >= 28 and p.overall >= 78:
+                    _plan_bias += 0.20
+                if "young_u23" in _asset_targets_a and _age_p is not None and _age_p < 23 and (
+                    pid in _b_flex_set or pid in _b_surplus_set
+                ):
+                    _plan_bias += 0.20
+                if "expiring_contracts" in _asset_targets_a:
+                    _tc_yrs = _tc.years_remaining if _tc else 99
+                    if _tc_yrs <= 1:
+                        _plan_bias += 0.20
+                # picks_r1: bias toward counterparties sitting on ≥4 R1s — they have surplus
+                if "picks_r1" in _asset_targets_a and _b_r1_count >= 4:
+                    _plan_bias += 0.25
+                # picks_any: bias toward counterparties with ≥6 total picks (any round)
+                if "picks_any" in _asset_targets_a and _b_any_count >= 6:
+                    _plan_bias += 0.20
+                # cap_space: bias toward expensive/expiring contracts the counterparty
+                # wants to dump (1-year remaining or salary > 25% of cap)
+                if "cap_space" in _asset_targets_a:
+                    _tc_yrs = _tc.years_remaining if _tc else 99
+                    _tc_sal = _tc.salary if _tc else 0
+                    _cap_threshold = int(league.salary_cap * 0.25)
+                    if _tc_yrs <= 1 or _tc_sal >= _cap_threshold:
+                        _plan_bias += 0.20
+                # Bump further if B has this player flagged as surplus (willing to deal)
+                if pid in _b_surplus_set:
+                    _plan_bias += 0.20
+
+            # Apply context modifier from team A's perspective so the CPU
+            # PREFERS targets who synergize, fit the window, scheme, etc.
+            # This is a rank-time modifier — it does not affect the final
+            # value submitted to evaluate_trade (that happens in cpu_should_accept).
+            _ctx_modifier = 1.0
+            try:
+                from services import trade_context as _tc_mod
+                _p_dict_ctx = {
+                    "id": p.id,
+                    "overall": p.overall,
+                    "age": _age_p or 27,
                     "position": p.position,
                     "tendency_3pt": getattr(p, "tendency_3pt", 50) or 50,
                     "tendency_drive": getattr(p, "tendency_drive", 50) or 50,
@@ -1415,39 +1372,128 @@ async def _attempt_one_offer(
                     "reb_tendency": getattr(p, "reb_tendency", 50) or 50,
                     "blk_tendency": getattr(p, "blk_tendency", 50) or 50,
                     "stl_tendency": getattr(p, "stl_tendency", 50) or 50,
-                })
-                _arch_penalty = 1.0
-                if _incoming_arch and _a_archetype_counts.get(_incoming_arch, 0) >= 2:
-                    # Already have 2+ of this archetype — materially downweight.
-                    _arch_penalty = 0.65
-                elif _incoming_arch and _a_archetype_counts.get(_incoming_arch, 0) == 1:
-                    # Light downweight for one existing match.
-                    _arch_penalty = 0.85
+                    "defense_tendency": getattr(p, "defense_tendency", 50) or 50,
+                    "defensive_archetype": getattr(p, "defensive_archetype", None),
+                    "usage_weight": getattr(p, "usage_weight", 0.5) or 0.5,
+                }
+                _a_plan_for_ctx = _plan_a or {}
+                _a_posture_for_ctx = postures.get(a.id) or {}
+                # _a_philosophy hoisted before b-team loop — no per-candidate DB hit.
+                _form_mod_ctx = 1.0  # form not yet computed at rank time; use neutral
+                _ctx_modifier, _ctx_sigs = await _tc_mod.compute_context_modifier(
+                    pool=pool,
+                    league_id=league.id,
+                    season=season,
+                    perspective_team_id=a.id,
+                    plan=_a_plan_for_ctx,
+                    posture=_a_posture_for_ctx,
+                    coach_philosophy=_a_philosophy,
+                    incoming_player=_p_dict_ctx,
+                    form_mod=_form_mod_ctx,
+                )
+            except Exception as _ctx_rank_exc:
+                log.debug("context modifier for candidate ranking failed pid=%d: %s", pid, _ctx_rank_exc)
 
-                _score = _tv * need_multiplier * _plan_bias * _ctx_modifier * _upside_mod * _arch_penalty
-                _scored_candidates.append((_score, b, p, posture_b))
+            # B3: asset upside modifier — boosts young/pedigree/award-race players
+            # so they don't get ranked as filler or offered away cheaply.
+            _upside_mod = _asset_upside_modifier(
+                p,
+                draft_year=getattr(p, "draft_year", None),
+                current_season=season,
+                # Award ranks not available at proposal-rank time without an
+                # extra DB call per candidate. Skip here; B3 in cpu_should_accept
+                # handles the accept-side valuation via player_trade_value modifiers.
+            )
 
-        if not _scored_candidates:
+            # Pass 1: score WITHOUT arch penalty — arch check deferred to pass 2
+            # where the actual outgoing player is known.
+            _score = _tv * need_multiplier * _plan_bias * _ctx_modifier * _upside_mod
+            # Store _tv and _tc for pass-2 target-value reuse (avoids re-fetching).
+            _scored_candidates.append((_score, b, p, posture_b, _tv, _tc))
+
+    if not _scored_candidates:
+        return 0
+
+    # ── Pass 2: exact archetype re-score for top-K shortlist ─────────────────
+    # Sort pass-1 candidates and take the top-3.
+    _scored_candidates.sort(key=lambda x: x[0], reverse=True)
+    _top_k = _scored_candidates[:3]
+
+    _pass2_candidates: list[tuple[float, team_repo.Team, player_repo.Player, dict, list[int], list[int], float]] = []
+    # Elements: (pass2_score, b, p, posture_b, offer_player_ids, offer_pick_ids, package_value)
+
+    for _p1_score, _cand_b, _cand_p, _cand_posture_b, _cand_tv, _cand_tc in _top_k:
+        try:
+            # Build the actual return package for this specific candidate.
+            _p2_offer_player_ids, _p2_offer_pick_ids, _p2_package_value = await _build_return_package(
+                pool,
+                league,
+                a,
+                block_by_team.get(a.id, []),
+                _cand_tv,
+                taken_player_ids,
+                recently_signed_ids,
+                counterparty_mode=_cand_posture_b.get("mode", "developing"),
+                plan_a=_plan_a,
+            )
+
+            # Compute exact post-trade archetype counts:
+            #   roster_a - actual_outgoing + incoming_candidate.
+            _outgoing_set = set(_p2_offer_player_ids)
+            _post_trade_roster = [
+                rp for rp in roster_a_cache if rp.id not in _outgoing_set
+            ] + [_cand_p]
+            _post_arch_counts = _team_archetype_counts(_post_trade_roster)
+
+            # Exact arch penalty for this candidate.
+            _incoming_arch = trade_evaluator._player_archetype({
+                "position": _cand_p.position,
+                "tendency_3pt": getattr(_cand_p, "tendency_3pt", 50) or 50,
+                "tendency_drive": getattr(_cand_p, "tendency_drive", 50) or 50,
+                "tendency_pass": getattr(_cand_p, "tendency_pass", 50) or 50,
+                "ast_tendency": getattr(_cand_p, "ast_tendency", 50) or 50,
+                "reb_tendency": getattr(_cand_p, "reb_tendency", 50) or 50,
+                "blk_tendency": getattr(_cand_p, "blk_tendency", 50) or 50,
+                "stl_tendency": getattr(_cand_p, "stl_tendency", 50) or 50,
+            })
+            _arch_penalty_exact = 1.0
+            if _incoming_arch:
+                # Count in the post-trade roster, which already includes _cand_p.
+                # Subtract 1 to get the "before this player" count.
+                _pre_count = _post_arch_counts.get(_incoming_arch, 0) - 1
+                if _pre_count >= 2:
+                    _arch_penalty_exact = 0.65
+                elif _pre_count == 1:
+                    _arch_penalty_exact = 0.85
+
+            _pass2_score = _p1_score * _arch_penalty_exact
+            _pass2_candidates.append((
+                _pass2_score, _cand_b, _cand_p, _cand_posture_b,
+                _p2_offer_player_ids, _p2_offer_pick_ids, _p2_package_value,
+            ))
+        except Exception as _p2_exc:
+            log.debug(
+                "[pass2] failed for candidate player %d team %d: %s",
+                _cand_p.id, _cand_b.id, _p2_exc,
+            )
             continue
 
-        # Pick the highest-scoring candidate.
-        _scored_candidates.sort(key=lambda x: x[0], reverse=True)
-        _best_score, _best_b, _best_p, _best_posture_b = _scored_candidates[0]
+    if not _pass2_candidates:
+        return 0
 
-        team_a = a
-        target_team = _best_b
-        target_player = _best_p
-        posture_a_final = posture_a
-        posture_b_final = _best_posture_b
-        # Capture plans for ride-along / headless output and return-package building.
-        _plan_a_final = _plan_a
-        # Use memoized plan for the winning b-team — no extra DB query needed.
-        _plan_b_final = cp_plans.get(_best_b.id)
+    # Pick the best pass-2 candidate.
+    _pass2_candidates.sort(key=lambda x: x[0], reverse=True)
+    _, _best_b, _best_p, _best_posture_b, _p2_offer_ids, _p2_pick_ids, _p2_pkg_val = _pass2_candidates[0]
+    # ── End pass-2 ────────────────────────────────────────────────────────────
 
-        if team_a:
-            break
+    target_team = _best_b
+    target_player = _best_p
+    posture_a_final = posture_a
+    posture_b_final = _best_posture_b
+    _plan_a_final = _plan_a
+    _plan_b_final = cp_plans.get(_best_b.id)
 
-    if not (team_a and target_team and target_player):
+    if not (target_team and target_player):
         return 0
 
     posture_a = posture_a_final  # type: ignore[assignment]
@@ -1455,6 +1501,9 @@ async def _attempt_one_offer(
     # Plan references for the winning pair (may be None if plan unavailable).
     _offer_plan_a: dict | None = _plan_a_final
     _offer_plan_b: dict | None = _plan_b_final
+
+    # team_a alias kept for all downstream code in this function.
+    team_a = a
 
     pair = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
     used_pairs.add(pair)
@@ -1531,17 +1580,11 @@ async def _attempt_one_offer(
     else:
         _sec_form_mod, _sec_stats = 1.0, {}
 
-    offer_player_ids, offer_pick_ids, package_value = await _build_return_package(
-        pool,
-        league,
-        team_a,
-        block_by_team.get(team_a.id, []),
-        target_value,
-        taken_player_ids,
-        recently_signed_ids,
-        counterparty_mode=posture_b["mode"],
-        plan_a=_offer_plan_a,
-    )
+    # Pass-2 already built the return package for this candidate.  Use those
+    # results directly — no second _build_return_package call needed.
+    offer_player_ids: list[int] = _p2_offer_ids
+    offer_pick_ids: list[int] = _p2_pick_ids
+    package_value: float = _p2_pkg_val
 
     if not offer_player_ids and not offer_pick_ids:
         log.debug(
@@ -2412,9 +2455,7 @@ async def _attempt_one_offer(
     return 1
 
 
-# ── V2 dispatcher helpers ─────────────────────────────────────────────────────
-# These functions are only called when DBA_PROPOSAL_DISPATCHER_V2 is active.
-# The flag-off path uses the existing _attempt_one_offer body unchanged.
+# ── Dispatcher helpers ────────────────────────────────────────────────────────
 
 
 async def _derive_return_from_b(
@@ -2477,7 +2518,7 @@ async def _derive_return_from_b(
     scored_players: list[tuple[int, float, int]] = []
     # contracts_by_id: retain fetched contracts so _score_outgoing_pair can use
     # real salary/years_remaining instead of the synthetic {salary:0, years:1} shim.
-    _contracts_by_id: dict[int, object] = {}
+    _contracts_by_id: dict[int, player_repo.Contract | None] = {}
     for p in b_roster:
         if p.id in taken_player_ids or p.id in recently_signed_ids:
             continue
@@ -2595,7 +2636,7 @@ async def _derive_return_from_b(
         return None
 
     # Build contracts_map for only the player IDs actually selected.
-    _ret_contracts: dict[int, object] = {
+    _ret_contracts: dict[int, player_repo.Contract | None] = {
         pid: _contracts_by_id.get(pid)
         for pid in player_ids
     }
@@ -2614,7 +2655,7 @@ def _score_outgoing_pair(
     roster_a: list,
     cp_contexts: dict,
     cp_r1_counts: dict | None = None,
-    incoming_contracts: dict | None = None,
+    incoming_contracts: dict[int, player_repo.Contract | None] | None = None,
 ) -> float:
     """Score (team_a, outgoing_pid, team_b, speculative_return) from A's perspective.
 
@@ -2639,7 +2680,7 @@ def _score_outgoing_pair(
     _plan_goal_a: str = _plan_a.get("goal", "")
     _ctx_a = cp_contexts.get(team_a.id, {})
     _cap_a = _ctx_a.get("current_payroll", 0)
-    _inc_contracts: dict = incoming_contracts or {}
+    _inc_contracts: dict[int, player_repo.Contract | None] = incoming_contracts or {}
 
     # ── Base value: team-specific value of each incoming item to A ────────────
     base_value = 0.0
@@ -2652,10 +2693,10 @@ def _score_outgoing_pair(
                 # Contract is known-absent (FA edge case) — skip this player.
                 continue
             if p.id not in _inc_contracts:
-                # Not in the provided map — fall back to neutral defaults rather than
-                # fabricating a bad value (shouldn't happen if caller is correct).
-                _salary = 0
-                _years = 1
+                # Caller must populate _inc_contracts for every player in the return set.
+                assert p.id in _inc_contracts, (
+                    f"_score_outgoing_pair: missing contract for player {p.id}"
+                )
             else:
                 _salary = getattr(_c, "salary", 0) or 0
                 _years = getattr(_c, "years_remaining", 1) or 1

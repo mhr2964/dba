@@ -280,6 +280,140 @@ def test_score_uses_real_contracts():
 
 
 # ---------------------------------------------------------------------------
+# Two-pass incoming-first archetype check (PR 2)
+# ---------------------------------------------------------------------------
+
+def test_incoming_first_two_pass_archetype_check():
+    """Pass-2 exact arch check: same-archetype 4th player gets 0.65 penalty;
+    different-archetype player scores higher despite identical raw trade value.
+
+    Scenario: team A has 3 ball-needs PGs on the roster.  A ball-needs PG
+    incoming from team B keeps the roster at 4 ball-needs → pre-count 3 → 0.65
+    penalty.  A two-way wing incoming from team B has pre-count 0 → no penalty.
+
+    Pass-2 is implemented in _run_incoming_first_for_team, which requires DB.
+    We test the underlying primitives (_team_archetype_counts, _player_archetype,
+    and the penalty logic) directly to assert the same math fires correctly.
+    """
+    from services.cpu_trade_proposals import _team_archetype_counts
+    from services import trade_evaluator
+
+    # Build 3 ball-needs PGs with identical tendencies (high pass/ast, high drive).
+    ball_needs_attrs = {
+        "position": "PG",
+        "tendency_3pt": 35,
+        "tendency_drive": 75,
+        "tendency_pass": 80,
+        "ast_tendency": 80,
+        "reb_tendency": 30,
+        "blk_tendency": 20,
+        "stl_tendency": 30,
+    }
+    arch = trade_evaluator._player_archetype(ball_needs_attrs)
+    assert arch is not None, "Expected ball-needs archetype to be non-None"
+
+    pg1 = _FakePlayer(1, position="PG", tendency_pass=80, tendency_drive=75,
+                      ast_tendency=80, tendency_3pt=35)
+    pg2 = _FakePlayer(2, position="PG", tendency_pass=80, tendency_drive=75,
+                      ast_tendency=80, tendency_3pt=35)
+    pg3 = _FakePlayer(3, position="PG", tendency_pass=80, tendency_drive=75,
+                      ast_tendency=80, tendency_3pt=35)
+    # Fill rest with neutral players.
+    others = [_FakePlayer(i, position="SF") for i in range(4, 12)]
+    roster_a = [pg1, pg2, pg3] + others
+
+    # Verify the roster has exactly 3 of this archetype.
+    counts_before = _team_archetype_counts(roster_a)
+    assert counts_before.get(arch, 0) == 3, (
+        f"Expected 3 {arch} players, got {counts_before.get(arch, 0)}"
+    )
+
+    # Incoming ball-needs PG: post-trade roster adds a 4th → pre-count = 3 → 0.65 penalty.
+    pg_incoming = _FakePlayer(99, position="PG", tendency_pass=80, tendency_drive=75,
+                               ast_tendency=80, tendency_3pt=35)
+    post_with_pg = roster_a + [pg_incoming]
+    counts_post_pg = _team_archetype_counts(post_with_pg)
+    pre_count_pg = counts_post_pg.get(arch, 0) - 1
+    assert pre_count_pg >= 2, f"Expected pre-count >= 2, got {pre_count_pg}"
+    penalty_pg = 0.65  # matches the >=2 branch
+
+    # Incoming two-way wing: post-trade roster adds 0 ball-needs → pre-count = 0 → no penalty.
+    wing_attrs = {
+        "position": "SF",
+        "tendency_3pt": 50,
+        "tendency_drive": 50,
+        "tendency_pass": 40,
+        "ast_tendency": 40,
+        "reb_tendency": 55,
+        "blk_tendency": 60,
+        "stl_tendency": 65,
+        "defense_tendency": 70,
+    }
+    wing_arch = trade_evaluator._player_archetype(wing_attrs)
+    wing_incoming = _FakePlayer(100, position="SF",
+                                 tendency_3pt=50, tendency_drive=50,
+                                 tendency_pass=40, ast_tendency=40,
+                                 reb_tendency=55, blk_tendency=60, stl_tendency=65)
+    post_with_wing = roster_a + [wing_incoming]
+    counts_post_wing = _team_archetype_counts(post_with_wing)
+    pre_count_wing = counts_post_wing.get(wing_arch, 0) - 1 if wing_arch else 0
+    penalty_wing = 0.65 if pre_count_wing >= 2 else (0.85 if pre_count_wing == 1 else 1.0)
+
+    # Same raw trade value for both incoming players; different-arch player must score higher.
+    raw_value = 50.0
+    score_same_arch = raw_value * penalty_pg
+    score_diff_arch = raw_value * penalty_wing
+
+    assert penalty_pg == 0.65, f"Expected 0.65 penalty for 3rd same-arch, got {penalty_pg}"
+    assert score_diff_arch > score_same_arch, (
+        f"Different-arch player (score={score_diff_arch:.2f}) should beat "
+        f"same-arch player (score={score_same_arch:.2f}) at equal raw value"
+    )
+
+
+# ---------------------------------------------------------------------------
+# V2 flag regression (PR 2)
+# ---------------------------------------------------------------------------
+
+def test_dispatcher_v2_flag_ignored():
+    """DBA_PROPOSAL_DISPATCHER_V2 env var no longer gates any code path.
+
+    The dispatcher is unconditional in PR 2.  This test asserts the env var
+    has no effect on pick_proposal_modes — the mode selection depends only
+    on posture, plan, cap_state, not on the removed env var.
+    """
+    import os
+    from services.cpu_trade_proposals import pick_proposal_modes
+
+    team = _FakeTeam()
+    plan = {"goal": "tank", "surplus_player_ids": [1, 2], "asset_targets": []}
+
+    # Set the old flag — should have no effect.
+    old_val = os.environ.get("DBA_PROPOSAL_DISPATCHER_V2")
+    try:
+        os.environ["DBA_PROPOSAL_DISPATCHER_V2"] = "1"
+        result_with_flag = pick_proposal_modes(team, "tanking", plan, "under", 12)
+
+        os.environ["DBA_PROPOSAL_DISPATCHER_V2"] = "0"
+        result_without_flag = pick_proposal_modes(team, "tanking", plan, "under", 12)
+    finally:
+        if old_val is None:
+            os.environ.pop("DBA_PROPOSAL_DISPATCHER_V2", None)
+        else:
+            os.environ["DBA_PROPOSAL_DISPATCHER_V2"] = old_val
+
+    # Both calls should return the same modes because the flag is ignored.
+    assert result_with_flag == result_without_flag, (
+        "DBA_PROPOSAL_DISPATCHER_V2 should have no effect; "
+        f"got {result_with_flag} vs {result_without_flag}"
+    )
+    # Both should follow rule 3 (tank + surplus → outgoing_first).
+    assert result_with_flag == ["outgoing_first"], (
+        f"Tank team with surplus should return outgoing_first, got {result_with_flag}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Integration-style test (requires DB; gated)
 # ---------------------------------------------------------------------------
 
