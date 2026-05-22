@@ -225,7 +225,32 @@ async def _compute_live_mode(pool, league: league_repo.League, team_id: int) -> 
         ages = [r["age"] for r in age_rows if r["age"] is not None]
         avg_age = sum(ages) / len(ages) if ages else 27.0
 
-        return trade_evaluator.compute_team_mode(projected_wins, avg_age, conf_rank)
+        # B7 posture floor: star_count and plan_goal required — same queries as
+        # cpu_trade_posture._compute_team_posture so accept-side and propose-side agree.
+        star_count_val = await pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM lineups l
+            JOIN players p ON p.id = l.player_id
+            WHERE l.league_id = $1 AND l.team_id = $2 AND p.overall >= 85
+            """,
+            league.id, team_id,
+        )
+        star_count = int(star_count_val or 0)
+
+        plan_goal_row = await pool.fetchrow(
+            """
+            SELECT goal FROM franchise_plans
+            WHERE league_id = $1 AND team_id = $2 AND season = $3
+            """,
+            league.id, team_id, league.current_season,
+        )
+        plan_goal = plan_goal_row["goal"] if plan_goal_row else None
+
+        return trade_evaluator.compute_team_mode(
+            projected_wins, avg_age, conf_rank,
+            star_count=star_count, plan_goal=plan_goal,
+        )
     except Exception as exc:
         log.warning(f"_compute_live_mode failed for team {team_id}, falling back to 'developing': {exc}")
         return "developing"

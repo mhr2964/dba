@@ -991,11 +991,18 @@ async def derive_plan(
     valid_ages = [p["age"] for p in top8 if p["age"] is not None]
     avg_age = sum(valid_ages) / len(valid_ages) if valid_ages else 27.0
 
-    # Team mode — shared 5-bucket classification; computed here so avg_age is available
+    # Team mode — shared 5-bucket classification; computed here so avg_age is available.
+    # star_count derived from roster already loaded above (OVR >= 85 threshold matches
+    # cpu_trade_posture._compute_team_posture).  plan_goal is None here because this IS
+    # the derive step — the goal doesn't exist yet.  B7 posture floor still fires via
+    # star_count; the plan_goal floor only applies when re-evaluating an existing plan.
+    _derive_star_count = sum(1 for r in roster if r["overall"] >= 85)
     team_mode = _trade_eval.compute_team_mode(
         projected_wins if games_played >= 10 else None,
         avg_age,
         conf_rank,
+        star_count=_derive_star_count,
+        plan_goal=None,  # REQUIRED for B7 posture floor — goal not yet derived at this step
     )
 
     # 4. Star flags
