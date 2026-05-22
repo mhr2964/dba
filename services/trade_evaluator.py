@@ -304,6 +304,9 @@ def compute_team_mode(
     projected_wins: int | None,
     avg_age: float,
     conf_rank: int | None,
+    *,
+    star_count: int = 0,
+    plan_goal: str | None = None,
 ) -> str:
     """
     Derive the 5-bucket trade posture mode from season projection data.
@@ -320,37 +323,79 @@ def compute_team_mode(
       developing    — middle band, ambiguous direction
 
     When projected_wins is None (< 10 games played), falls back to avg_age tiers.
+
+    star_count: number of players with OVR ≥ 85 on the roster.  A team with 2+
+    stars cannot be classified as transition/soft_rebuild/rebuilding/tanking
+    regardless of record dip — their floor is play_in_fringe.
+
+    plan_goal: the franchise_plans.goal value ('win_now'|'transition'|'rebuild'|
+    'tank').  When explicitly set to 'win_now'/'contend', the floor rises to
+    contending unless record evidence STRONGLY contradicts (< 40 projected wins).
     """
     in_top4 = conf_rank is not None and conf_rank <= 4
     in_top10 = conf_rank is not None and conf_rank <= 10
 
+    # ── Star-count floor: 2+ OVR-85 players = never below play_in_fringe ────
+    # Even a bad-record season (e.g. NYK starting 18-25 with Brunson + KAT)
+    # is a contender in a slump, not a transition/rebuild team.
+    has_star_floor = star_count >= 2
+
+    # ── Plan-goal floor: explicit win_now goal = at least play_in_fringe ─────
+    # Respect the front office's stated direction unless record is lottery-pace.
+    plan_says_contend = plan_goal in ("win_now", "contend")
+
     if projected_wins is not None:
+        raw_mode: str
         if projected_wins >= 50 or (projected_wins >= 45 and avg_age >= 27.0 and in_top4):
-            return "contending"
-        if (40 <= projected_wins <= 49) or (35 <= projected_wins <= 44 and avg_age >= 26.0 and in_top10):
-            return "play_in_fringe"
+            raw_mode = "contending"
+        elif (40 <= projected_wins <= 49) or (35 <= projected_wins <= 44 and avg_age >= 26.0 and in_top10):
+            raw_mode = "play_in_fringe"
         # Hard rebuild: bottom-tier record — 22-win teams are clearly rebuilding,
         # not "threading the needle."  Conf_rank ≥ 14 catches the bottom of a 15-team
         # conference regardless of how the wins pace is computed.
-        if projected_wins <= 25 or (conf_rank is not None and conf_rank >= 14):
-            return "rebuilding"
+        elif projected_wins <= 25 or (conf_rank is not None and conf_rank >= 14):
+            raw_mode = "rebuilding"
         # Soft rebuild: clearly losing but not at rock bottom
-        if projected_wins <= 30:
-            return "soft_rebuild"
-        if projected_wins <= 35 and avg_age >= 26.0:
-            return "soft_rebuild"
-        if avg_age < 24.0:
-            return "rebuilding"
-        return "developing"
+        elif projected_wins <= 30:
+            raw_mode = "soft_rebuild"
+        elif projected_wins <= 35 and avg_age >= 26.0:
+            raw_mode = "soft_rebuild"
+        elif avg_age < 24.0:
+            raw_mode = "rebuilding"
+        else:
+            raw_mode = "developing"
+
+        # Apply star-count floor: 2+ stars can't be mis-labeled soft_rebuild/rebuilding/developing
+        # when the record is just a slump (projected >= 30W).  Below 30W even star teams
+        # can be in genuine trouble so don't override there.
+        if has_star_floor and raw_mode in ("soft_rebuild", "rebuilding", "developing", "transition") and projected_wins >= 30:
+            raw_mode = "play_in_fringe"
+
+        # Apply plan-goal floor: explicit win_now plan can't be below play_in_fringe
+        # unless the record is deep-lottery pace (< 30 projected wins).
+        if plan_says_contend and raw_mode in ("soft_rebuild", "rebuilding", "developing", "transition") and projected_wins >= 30:
+            raw_mode = "play_in_fringe"
+
+        return raw_mode
 
     # Too early to project — use age as proxy
+    base_mode: str
     if avg_age > 29.0:
-        return "contending"
-    if avg_age >= 27.0:
-        return "play_in_fringe"
-    if avg_age >= 24.5:
-        return "developing"
-    return "rebuilding"
+        base_mode = "contending"
+    elif avg_age >= 27.0:
+        base_mode = "play_in_fringe"
+    elif avg_age >= 24.5:
+        base_mode = "developing"
+    else:
+        base_mode = "rebuilding"
+
+    # Apply floors even in the early-season no-data path.
+    if has_star_floor and base_mode in ("soft_rebuild", "rebuilding", "developing"):
+        base_mode = "play_in_fringe"
+    if plan_says_contend and base_mode in ("soft_rebuild", "rebuilding", "developing"):
+        base_mode = "play_in_fringe"
+
+    return base_mode
 
 
 def experience_premium(
@@ -839,7 +884,27 @@ async def build_team_context(pool, league_id: int, team_id: int, season: int) ->
         )
         ages = [r["age"] for r in age_rows if r["age"] is not None]
         avg_age = sum(ages) / len(ages) if ages else 27.0
-        mode = compute_team_mode(projected_wins, avg_age, conf_rank)
+
+        # Star count for posture floor (OVR >= 85).
+        _star_val = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM lineups l JOIN players p ON p.id = l.player_id
+            WHERE l.league_id = $1 AND l.team_id = $2 AND p.overall >= 85
+            """,
+            league_id, team_id,
+        )
+        _star_count = int(_star_val or 0)
+
+        _plan_row = await pool.fetchrow(
+            "SELECT goal FROM franchise_plans WHERE league_id=$1 AND team_id=$2 AND season=$3",
+            league_id, team_id, season,
+        )
+        _plan_goal = _plan_row["goal"] if _plan_row else None
+
+        mode = compute_team_mode(
+            projected_wins, avg_age, conf_rank,
+            star_count=_star_count, plan_goal=_plan_goal,
+        )
 
         # Current payroll
         payroll_val = await pool.fetchval(

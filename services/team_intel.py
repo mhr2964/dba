@@ -147,7 +147,31 @@ async def compute_posture(
     ages = [r["age"] for r in age_rows if r["age"] is not None]
     avg_age = sum(ages) / len(ages) if ages else 27.0
 
-    mode = trade_evaluator.compute_team_mode(projected_wins, avg_age, conf_rank)
+    # Query star count (OVR >= 85) and plan goal for posture floor logic.
+    star_count_val = await pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM lineups l
+        JOIN players p ON p.id = l.player_id
+        WHERE l.league_id = $1 AND l.team_id = $2 AND p.overall >= 85
+        """,
+        league.id, team_id,
+    )
+    star_count = int(star_count_val or 0)
+
+    plan_goal_row = await pool.fetchrow(
+        """
+        SELECT goal FROM franchise_plans
+        WHERE league_id = $1 AND team_id = $2 AND season = $3
+        """,
+        league.id, team_id, league.current_season,
+    )
+    plan_goal = plan_goal_row["goal"] if plan_goal_row else None
+
+    mode = trade_evaluator.compute_team_mode(
+        projected_wins, avg_age, conf_rank,
+        star_count=star_count, plan_goal=plan_goal,
+    )
 
     games_remaining = max(0, _TOTAL_GAMES - games_played)
     in_top4 = conf_rank is not None and conf_rank <= 4
@@ -432,6 +456,43 @@ async def build_team_intel(
             r["team_id"]: r["avg_age"] for r in age_rows
         }
 
+        # ------------------------------------------------------------------
+        # Query 2b: star count (OVR >= 85) per team — drives posture floor.
+        # ------------------------------------------------------------------
+        star_rows = await pool.fetch(
+            """
+            SELECT l.team_id, COUNT(*) AS star_count
+            FROM lineups l
+            JOIN players p ON p.id = l.player_id
+            WHERE l.league_id = $1
+              AND l.team_id   = ANY($2::int[])
+              AND p.overall   >= 85
+            GROUP BY l.team_id
+            """,
+            league.id, team_ids,
+        )
+        star_count_by_team: dict[int, int] = {
+            r["team_id"]: int(r["star_count"]) for r in star_rows
+        }
+
+        # ------------------------------------------------------------------
+        # Query 2c: franchise plan goals (for plan_goal floor override).
+        # Only needed when "posture" slice is included; reuses the plan query
+        # if "plan" is also included — but that runs later, so fetch minimally.
+        # ------------------------------------------------------------------
+        plan_goal_rows = await pool.fetch(
+            """
+            SELECT team_id, goal
+            FROM franchise_plans
+            WHERE league_id = $1 AND season = $2
+              AND team_id   = ANY($3::int[])
+            """,
+            league.id, season, team_ids,
+        )
+        plan_goal_by_team: dict[int, str | None] = {
+            r["team_id"]: r["goal"] for r in plan_goal_rows
+        }
+
         for tid in team_ids:
             sc = sc_by_team.get(tid, {})
             wins = sc.get("wins", 0) or 0
@@ -444,7 +505,12 @@ async def build_team_intel(
                 projected_wins = round((wins / games_played) * _TOTAL_GAMES)
 
             avg_age: float = avg_age_by_team.get(tid, 27.0) or 27.0
-            mode = trade_evaluator.compute_team_mode(projected_wins, avg_age, conf_rank)
+            star_count: int = star_count_by_team.get(tid, 0)
+            plan_goal: str | None = plan_goal_by_team.get(tid)
+            mode = trade_evaluator.compute_team_mode(
+                projected_wins, avg_age, conf_rank,
+                star_count=star_count, plan_goal=plan_goal,
+            )
 
             games_remaining = max(0, _TOTAL_GAMES - games_played)
             in_top4 = conf_rank is not None and conf_rank <= 4

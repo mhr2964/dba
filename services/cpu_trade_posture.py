@@ -171,6 +171,27 @@ async def _compute_team_posture(
     ages = [r["age"] for r in age_rows if r["age"] is not None]
     avg_age = sum(ages) / len(ages) if ages else 27.0
 
+    # Star count (OVR >= 85) and plan goal — feed into posture floor logic.
+    star_count_val = await pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM lineups l
+        JOIN players p ON p.id = l.player_id
+        WHERE l.league_id = $1 AND l.team_id = $2 AND p.overall >= 85
+        """,
+        league.id, team_id,
+    )
+    star_count = int(star_count_val or 0)
+
+    plan_goal_row = await pool.fetchrow(
+        """
+        SELECT goal FROM franchise_plans
+        WHERE league_id = $1 AND team_id = $2 AND season = $3
+        """,
+        league.id, league.current_season, team_id,
+    )
+    plan_goal = plan_goal_row["goal"] if plan_goal_row else None
+
     # --- Derive mode (5-bucket system) via shared trade_evaluator function ---
     # Using trade_evaluator.compute_team_mode ensures propose-side and accept-side
     # always agree on mode — no divergence between _compute_team_posture and
@@ -178,7 +199,10 @@ async def _compute_team_posture(
     in_top4 = conf_rank is not None and conf_rank <= 4
     in_top6 = conf_rank is not None and conf_rank <= 6
     in_top10 = conf_rank is not None and conf_rank <= 10
-    mode = trade_evaluator.compute_team_mode(projected_wins, avg_age, conf_rank)
+    mode = trade_evaluator.compute_team_mode(
+        projected_wins, avg_age, conf_rank,
+        star_count=star_count, plan_goal=plan_goal,
+    )
 
     # --- Derive urgency ---
     games_remaining = max(0, 82 - games_played)
