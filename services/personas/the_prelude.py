@@ -47,7 +47,12 @@ the_prelude = register_persona(Persona(
         "**{LS} wins if:** {1 sentence on their path to winning the series}\n\n"
         "**X-factor:** {one player whose performance swings the series — name + one sentence why}\n\n"
         "**Prelude's pick:** {team} in {games}\n\n"
-        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '**{HIGHER SEED} vs {LOWER SEED}**'."
+        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '**{HIGHER SEED} vs {LOWER SEED}**'.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("series_preview",),
     format_style="passthrough",

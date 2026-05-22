@@ -36,7 +36,12 @@ the_race = register_persona(Persona(
         "> 🥉 **{Player}** — {one-line case + key stat}\n\n"
         "**Eliminated this week:** {player + why their case collapsed — be specific}\n\n"
         "**Sleeper:** {dark horse + the case for them in one sentence}\n\n"
-        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with the italic award race header."
+        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with the italic award race header.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("award_race",),
     format_style="passthrough",

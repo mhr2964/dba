@@ -62,7 +62,12 @@ power_list = register_persona(Persona(
         "- No tier labels. No 'Tier 1 — Contenders' headers. Just the ranked list.\n"
         "- The arrow glyph goes immediately after the team code, before the em-dash.\n"
         "- 'Biggest mover' picks the team with the largest absolute delta from rank_deltas.\n"
-        "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '> **1.**'."
+        "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '> **1.**'.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("power_rankings",),
     format_style="passthrough",

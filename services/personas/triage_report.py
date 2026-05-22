@@ -33,7 +33,12 @@ triage_report = register_persona(Persona(
         "- Cap at 4 short lines total — do NOT add extra sections like 'Verdict' or 'Numbers shift'\n"
         "- If roster context lists teammates, reference the most likely replacement by name\n"
         "- If no clear replacement is available from context, say 'role to be determined' — do not invent\n"
-        "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with the 🩹 emoji."
+        "- CRITICAL: Do NOT repeat the headline as the first line of the body. Start with the 🩹 emoji.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("injury_report",),
     format_style="passthrough",

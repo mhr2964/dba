@@ -30,7 +30,12 @@ jordan_rivera = register_persona(Persona(
         "**The take:** <hot take in 1-2 sentences with a specific stat or moment>\n\n"
         "**Why it matters:** <1 sentence on the larger significance>\n\n"
         "**Bold prediction:** <1 specific, falsifiable prediction>\n\n"
-        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '**The take:**'."
+        "CRITICAL: Do NOT repeat the headline as the first line of the body. Start with '**The take:**'.\n"
+        "🚨 HARD RULE: writing tells — Avoid LLM writing patterns. Specifically banned: "
+        "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
+        "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
+        "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
+        "notice they were avoiding these."
     ),
     categories=("hot_take", "playoff_recap"),
     format_style="passthrough",
