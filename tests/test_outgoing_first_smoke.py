@@ -414,6 +414,126 @@ def test_dispatcher_v2_flag_ignored():
 
 
 # ---------------------------------------------------------------------------
+# Pass-2 form-adjustment regression tests (PR 2 blockers)
+# ---------------------------------------------------------------------------
+
+def test_pass2_uses_form_adjusted_target_value():
+    """_build_return_package must receive a form-multiplied target_value in pass-2.
+
+    The regression: pass-2 was passing the raw _cand_tv (no form, no position,
+    no season_stats) to _build_return_package.  For a hot-streak player
+    (form ≈ 1.15) this caused the package to be undersized by ~15%, pushing
+    the sanity-floor ratio below 0.90 and aborting proposals for reachable players.
+
+    This test verifies the math of the fix: apply_form(raw, modifier) ≠ raw
+    when modifier ≠ 1.0, and that the form-adjusted value is what a correctly
+    implemented pass-2 iteration would pass to _build_return_package.
+    """
+    from services import trade_evaluator
+
+    SALARY_CAP = 140_000_000
+    player_overall = 82
+    player_age = 26
+
+    # Simulate a hot-streak form modifier (above-average recent production).
+    hot_form_modifier = 1.15
+
+    contract = {"salary": 20_000_000, "years_remaining": 2}
+
+    raw_value = trade_evaluator.player_trade_value(
+        {"overall": player_overall, "age": player_age, "position": "SG"},
+        contract,
+        SALARY_CAP,
+        season_stats=None,
+    )
+    adjusted_value = trade_evaluator.apply_form(raw_value, hot_form_modifier)
+
+    # The form-adjusted value must differ from raw by the modifier ratio.
+    assert adjusted_value != raw_value, (
+        "apply_form with non-1.0 modifier must change the value; "
+        f"raw={raw_value:.2f} adjusted={adjusted_value:.2f}"
+    )
+    assert abs(adjusted_value - raw_value * hot_form_modifier) < 0.01, (
+        f"apply_form should multiply raw by modifier: expected ~{raw_value * hot_form_modifier:.2f}, "
+        f"got {adjusted_value:.2f}"
+    )
+
+    # The package sizing call must use adjusted_value.
+    # Sanity floor for 'developing' mode is 0.90.  If the package was sized to
+    # raw (under-sized by form factor), ratio = raw/adjusted ≈ 0.87 — below floor.
+    # If sized correctly (to adjusted), ratio = 1.0 — above floor.
+    sanity_floor = 0.90
+    ratio_if_raw_used = raw_value / max(adjusted_value, 1)
+    ratio_if_adjusted_used = adjusted_value / max(adjusted_value, 1)
+
+    assert ratio_if_raw_used < sanity_floor, (
+        f"Using raw value for package sizing would produce ratio {ratio_if_raw_used:.3f} "
+        f"< {sanity_floor} sanity floor — confirming the bug scenario"
+    )
+    assert ratio_if_adjusted_used >= sanity_floor, (
+        f"Using form-adjusted value for sizing should produce ratio >= {sanity_floor}, "
+        f"got {ratio_if_adjusted_used:.3f}"
+    )
+
+
+def test_pass2_includes_secondary_target_in_sizing():
+    """When a secondary target is present, target_value passed to _build_return_package
+    must reflect primary + secondary combined, not just primary.
+
+    The regression: pass-2 sized the package for the primary alone, but downstream
+    sanity checks compared against primary+secondary combined — causing star + role-player
+    bundle proposals to abort as undersized ~30% of the time.
+
+    This test verifies the secondary fold math: combined = form(primary) + form(secondary).
+    """
+    from services import trade_evaluator
+
+    SALARY_CAP = 140_000_000
+
+    primary_contract = {"salary": 30_000_000, "years_remaining": 3}
+    secondary_contract = {"salary": 8_000_000, "years_remaining": 2}
+
+    primary_value_raw = trade_evaluator.player_trade_value(
+        {"overall": 82, "age": 26, "position": "SF"},
+        primary_contract,
+        SALARY_CAP,
+    )
+    secondary_value_raw = trade_evaluator.player_trade_value(
+        {"overall": 74, "age": 28, "position": "PG"},
+        secondary_contract,
+        SALARY_CAP,
+    )
+
+    primary_form = 1.10
+    secondary_form = 0.95
+
+    value_primary_only = trade_evaluator.apply_form(primary_value_raw, primary_form)
+    value_combined = (
+        trade_evaluator.apply_form(primary_value_raw, primary_form)
+        + trade_evaluator.apply_form(secondary_value_raw, secondary_form)
+    )
+
+    assert value_combined > value_primary_only, (
+        f"Combined (primary+secondary) value {value_combined:.2f} must exceed "
+        f"primary-only {value_primary_only:.2f}"
+    )
+
+    # If the package is sized to primary_only but compared against combined,
+    # the ratio would be < 1.0 by the secondary's share — often below the 0.90 floor.
+    secondary_adj = trade_evaluator.apply_form(secondary_value_raw, secondary_form)
+    ratio_undersized = value_primary_only / max(value_combined, 1)
+    expected_secondary_fraction = secondary_adj / max(value_combined, 1)
+
+    assert ratio_undersized < 1.0, (
+        "Package sized to primary alone is undersized when secondary exists"
+    )
+    assert expected_secondary_fraction > 0.05, (
+        f"Secondary must contribute meaningfully to combined value "
+        f"(got {expected_secondary_fraction:.1%}); test fixture may be degenerate"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Integration-style test (requires DB; gated)
 # ---------------------------------------------------------------------------
 

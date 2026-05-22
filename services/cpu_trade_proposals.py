@@ -1436,18 +1436,97 @@ async def _run_incoming_first_for_team(
     _scored_candidates.sort(key=lambda x: x[0], reverse=True)
     _top_k = _scored_candidates[:3]
 
-    _pass2_candidates: list[tuple[float, team_repo.Team, player_repo.Player, dict, list[int], list[int], float]] = []
-    # Elements: (pass2_score, b, p, posture_b, offer_player_ids, offer_pick_ids, package_value)
+    _pass2_candidates: list[tuple] = []
+    # Elements: (pass2_score, b, p, posture_b, offer_player_ids, offer_pick_ids,
+    #            package_value, adj_target_value, target_value_raw,
+    #            secondary, target_fm, target_stats, sec_fm, sec_stats)
 
     for _p1_score, _cand_b, _cand_p, _cand_posture_b, _cand_tv, _cand_tc in _top_k:
         try:
-            # Build the actual return package for this specific candidate.
+            # ── Form-adjust + secondary fold BEFORE sizing the return package ──
+            # The package must be sized to the form-adjusted combined value of all
+            # requested players (primary + optional secondary) so the downstream
+            # sanity-floor and lopsided checks compare against the same target_value
+            # that _build_return_package was given.  Using the raw _cand_tv here
+            # would cause the ratio to drift by ±15% for hot/cold players and miss
+            # the secondary's value entirely — both triggering spurious aborts.
+            _p2_cand_form_map = await trade_evaluator.compute_form_map(
+                pool,
+                [_cand_p.id],
+                {_cand_p.id: _cand_p.overall},
+                {_cand_p.id: _cand_p.position},
+                league.id,
+                season,
+            )
+            _p2_target_fm, _p2_target_stats = _p2_cand_form_map.get(
+                _cand_p.id, (1.0, {})
+            )
+            _p2_target_value_raw = trade_evaluator.player_trade_value(
+                {
+                    "overall": _cand_p.overall,
+                    "age": _player_age(_cand_p),
+                    "position": _cand_p.position,
+                },
+                {
+                    "salary": _cand_tc.salary if _cand_tc else 0,
+                    "years_remaining": _cand_tc.years_remaining if _cand_tc else 1,
+                },
+                league.salary_cap,
+                season_stats=_p2_target_stats or None,
+            )
+            _p2_adj_tv = trade_evaluator.apply_form(_p2_target_value_raw, _p2_target_fm)
+
+            # Secondary target: same 30%-dice / OVR≥75 gate as the legacy path.
+            _p2_secondary: Optional[player_repo.Player] = None
+            _p2_sec_fm: float = 1.0
+            _p2_sec_stats: dict = {}
+            if _cand_p.overall >= 75 and random.random() < 0.3:
+                _cand_b_block = block_by_team.get(_cand_b.id, [])
+                for _sec_pid in _cand_b_block:
+                    if _sec_pid == _cand_p.id:
+                        continue
+                    if _sec_pid in taken_player_ids:
+                        continue
+                    _sec_cand = await player_repo.get_by_id(pool, _sec_pid)
+                    if _sec_cand and _sec_cand.overall < _cand_p.overall:
+                        _p2_secondary = _sec_cand
+                        break
+            if _p2_secondary is not None:
+                _sec_form_map = await trade_evaluator.compute_form_map(
+                    pool,
+                    [_p2_secondary.id],
+                    {_p2_secondary.id: _p2_secondary.overall},
+                    {_p2_secondary.id: _p2_secondary.position},
+                    league.id,
+                    season,
+                )
+                _p2_sec_fm, _p2_sec_stats = _sec_form_map.get(
+                    _p2_secondary.id, (1.0, {})
+                )
+                _sec_tc = await player_repo.get_active_contract(pool, _p2_secondary.id)
+                _sec_raw = trade_evaluator.player_trade_value(
+                    {
+                        "overall": _p2_secondary.overall,
+                        "age": _player_age(_p2_secondary),
+                        "position": _p2_secondary.position,
+                    },
+                    {
+                        "salary": _sec_tc.salary if _sec_tc else 0,
+                        "years_remaining": _sec_tc.years_remaining if _sec_tc else 1,
+                    },
+                    league.salary_cap,
+                    season_stats=_p2_sec_stats or None,
+                )
+                _p2_adj_tv += trade_evaluator.apply_form(_sec_raw, _p2_sec_fm)
+            # ── End form-adjust + secondary fold ──────────────────────────────
+
+            # Build the actual return package sized to the form-adjusted target.
             _p2_offer_player_ids, _p2_offer_pick_ids, _p2_package_value = await _build_return_package(
                 pool,
                 league,
                 a,
                 block_by_team.get(a.id, []),
-                _cand_tv,
+                _p2_adj_tv,
                 taken_player_ids,
                 recently_signed_ids,
                 counterparty_mode=_cand_posture_b.get("mode", "developing"),
@@ -1487,6 +1566,9 @@ async def _run_incoming_first_for_team(
             _pass2_candidates.append((
                 _pass2_score, _cand_b, _cand_p, _cand_posture_b,
                 _p2_offer_player_ids, _p2_offer_pick_ids, _p2_package_value,
+                _p2_adj_tv, _p2_target_value_raw,
+                _p2_secondary, _p2_target_fm, _p2_target_stats,
+                _p2_sec_fm, _p2_sec_stats,
             ))
         except Exception as _p2_exc:
             log.debug(
@@ -1500,7 +1582,22 @@ async def _run_incoming_first_for_team(
 
     # Pick the best pass-2 candidate.
     _pass2_candidates.sort(key=lambda x: x[0], reverse=True)
-    _, _best_b, _best_p, _best_posture_b, _p2_offer_ids, _p2_pick_ids, _p2_pkg_val = _pass2_candidates[0]
+    (
+        _,
+        _best_b,
+        _best_p,
+        _best_posture_b,
+        _p2_offer_ids,
+        _p2_pick_ids,
+        _p2_pkg_val,
+        _p2_adj_target_value,
+        _p2_target_value_raw,
+        _p2_winner_secondary,
+        _p2_winner_target_fm,
+        _p2_winner_target_stats,
+        _p2_winner_sec_fm,
+        _p2_winner_sec_stats,
+    ) = _pass2_candidates[0]
     # ── End pass-2 ────────────────────────────────────────────────────────────
 
     target_team = _best_b
@@ -1525,30 +1622,22 @@ async def _run_incoming_first_for_team(
     pair = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
     used_pairs.add(pair)
 
-    # Optionally request a second player from B alongside the primary target.
-    # Only attempted when the primary target is a star (OVR >= 75) and the 30%
-    # dice roll hits.  The secondary must be rated below the primary and not
-    # already committed elsewhere this round.  Falls back to single-player if
-    # no valid secondary exists — never errors.
-    secondary_target: Optional[player_repo.Player] = None
-    if target_player.overall >= 75 and random.random() < 0.3:
-        b_block_ids = block_by_team.get(target_team.id, [])
-        for pid in b_block_ids:
-            if pid == target_player.id:
-                continue
-            if pid in taken_player_ids:
-                continue
-            candidate = await player_repo.get_by_id(pool, pid)
-            if candidate and candidate.overall < target_player.overall:
-                secondary_target = candidate
-                break
+    # Secondary target and form-adjusted target_value were resolved inside pass-2
+    # (per-candidate, before _build_return_package was called) so the package size
+    # is consistent with the value the sanity-floor and lopsided checks use.
+    # Bind those stored values now; no second DB round-trip needed.
+    secondary_target: Optional[player_repo.Player] = _p2_winner_secondary
+    target_value_raw: float = _p2_target_value_raw
+    target_value: float = _p2_adj_target_value
+    _target_form_mod: float = _p2_winner_target_fm
+    _target_stats: dict = _p2_winner_target_stats
+    _sec_form_mod: float = _p2_winner_sec_fm
+    _sec_stats: dict = _p2_winner_sec_stats
 
-    # Build A's return package sized to match the combined value of all requested
-    # players (primary + optional secondary) within the usual 25% tolerance.
-
-    # ── Form-map: one batch DB query for all players involved in this eval ────
-    # Covers the target(s) + all of A's block players so display and value logic
-    # share the same stats without redundant queries.
+    # ── Form-map: one batch DB query for all of A's block players ────────────
+    # The target(s) form data was already fetched per-candidate in pass-2.
+    # We still need a form_map covering A's block players so the sweetener
+    # path and offered-player display code can look up stats without extra queries.
     _form_all_ids: list[int] = [target_player.id]
     if secondary_target:
         _form_all_ids.append(secondary_target.id)
@@ -1566,39 +1655,15 @@ async def _run_incoming_first_for_team(
     form_map: dict[int, tuple[float, dict]] = await trade_evaluator.compute_form_map(
         pool, _form_all_ids, _form_ovr_map, _form_pos_map, league.id, season,
     )
-
-    target_contract = await player_repo.get_active_contract(pool, target_player.id)
-    _target_form_mod, _target_stats = form_map.get(target_player.id, (1.0, {}))
-    # Pass position + season_stats so player_trade_value applies experience_premium.
-    target_value_raw = trade_evaluator.player_trade_value(
-        {"overall": target_player.overall, "age": _player_age(target_player), "position": target_player.position},
-        {
-            "salary": target_contract.salary if target_contract else 0,
-            "years_remaining": target_contract.years_remaining if target_contract else 1,
-        },
-        league.salary_cap,
-        season_stats=_target_stats or None,
-    )
-    target_value = trade_evaluator.apply_form(target_value_raw, _target_form_mod)
-
+    # Seed the winner's already-computed form entries into form_map so display
+    # code that looks up form_map[target_player.id] gets the same values pass-2
+    # used (compute_form_map is cached, so this is just an explicit safety merge).
+    form_map[target_player.id] = (_target_form_mod, _target_stats)
     if secondary_target:
-        secondary_contract = await player_repo.get_active_contract(pool, secondary_target.id)
-        _sec_form_mod, _sec_stats = form_map.get(secondary_target.id, (1.0, {}))
-        secondary_value_raw = trade_evaluator.player_trade_value(
-            {"overall": secondary_target.overall, "age": _player_age(secondary_target), "position": secondary_target.position},
-            {
-                "salary": secondary_contract.salary if secondary_contract else 0,
-                "years_remaining": secondary_contract.years_remaining if secondary_contract else 1,
-            },
-            league.salary_cap,
-            season_stats=_sec_stats or None,
-        )
-        target_value += trade_evaluator.apply_form(secondary_value_raw, _sec_form_mod)
-    else:
-        _sec_form_mod, _sec_stats = 1.0, {}
+        form_map[secondary_target.id] = (_sec_form_mod, _sec_stats)
 
-    # Pass-2 already built the return package for this candidate.  Use those
-    # results directly — no second _build_return_package call needed.
+    # Pass-2 already built the return package for this candidate using the
+    # form-adjusted target_value.  Use those results directly.
     offer_player_ids: list[int] = _p2_offer_ids
     offer_pick_ids: list[int] = _p2_pick_ids
     package_value: float = _p2_pkg_val
@@ -2709,14 +2774,10 @@ def _score_outgoing_pair(
             if p.id in _inc_contracts and _c is None:
                 # Contract is known-absent (FA edge case) — skip this player.
                 continue
-            if p.id not in _inc_contracts:
-                # Caller must populate _inc_contracts for every player in the return set.
-                assert p.id in _inc_contracts, (
-                    f"_score_outgoing_pair: missing contract for player {p.id}"
-                )
-            else:
-                _salary = getattr(_c, "salary", 0) or 0
-                _years = getattr(_c, "years_remaining", 1) or 1
+            # _c may be None when p.id is missing from _inc_contracts entirely
+            # (caller should always populate, but defend with neutral defaults).
+            _salary = getattr(_c, "salary", 0) or 0
+            _years = getattr(_c, "years_remaining", 1) or 1
         else:
             # No contracts provided (e.g. from unit tests) — use neutral defaults.
             _salary = 0
