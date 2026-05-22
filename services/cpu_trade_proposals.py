@@ -2849,11 +2849,12 @@ def _asset_upside_modifier(
         elif age == 25:
             modifier += 0.02
 
-    # Draft pedigree: top-10 pick within last 2 seasons
-    if draft_year is not None and current_season - draft_year <= 2:
-        _draft_slot = getattr(player, "draft_pick", None) or getattr(player, "draft_position", None)
-        if _draft_slot is not None and _draft_slot <= 10:
-            modifier += 0.08
+    # TODO B3+1: wire draft_year/draft_pick via plumbing pass once Player schema includes them.
+    # The Player dataclass has no draft_year, draft_pick, or draft_position field — every
+    # getattr(..., None) returned None and the pedigree branch was unreachable.  The age
+    # premium above already covers most of the Ware case (age 22 → +0.10).  Removing the
+    # dead branch makes the gap explicit rather than silently returning 1.0 via None checks.
+    # (draft_year param kept in signature for future wire-up; callers still pass it as None)
 
     # Award race
     if roy_rank is not None and roy_rank <= 5:

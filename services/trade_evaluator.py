@@ -329,8 +329,8 @@ def compute_team_mode(
     regardless of record dip — their floor is play_in_fringe.
 
     plan_goal: the franchise_plans.goal value ('win_now'|'transition'|'rebuild'|
-    'tank').  When explicitly set to 'win_now'/'contend', the floor rises to
-    contending unless record evidence STRONGLY contradicts (< 40 projected wins).
+    'tank').  When explicitly set to 'win_now', the floor rises to play_in_fringe
+    unless record evidence STRONGLY contradicts (< 30 projected wins).
     """
     in_top4 = conf_rank is not None and conf_rank <= 4
     in_top10 = conf_rank is not None and conf_rank <= 10
@@ -342,7 +342,9 @@ def compute_team_mode(
 
     # ── Plan-goal floor: explicit win_now goal = at least play_in_fringe ─────
     # Respect the front office's stated direction unless record is lottery-pace.
-    plan_says_contend = plan_goal in ("win_now", "contend")
+    # Valid franchise_plans.goal values: win_now | transition | rebuild | tank
+    # "contend" is not a DB value — using it here would silently never match.
+    plan_says_contend = plan_goal == "win_now"
 
     if projected_wins is not None:
         raw_mode: str
