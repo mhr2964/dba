@@ -862,9 +862,16 @@ async def _attempt_one_offer(
         target_positions = _get_trade_target_positions(a, pos_count_map, mode_a)
 
         # B6: build archetype distribution for team A once per outer team.
-        # Used in the inner player-scoring loop to downweight redundant archetypes.
+        # Exclude players on A's own trade block — they are the outgoing side of any
+        # deal A proposes.  Without this exclusion, if A's only playmaker is on the
+        # block and the incoming candidate is also a playmaker, the count shows 1 → the
+        # 0.85 penalty fires on what is actually a clean role swap.  Spec B6 explicitly
+        # exempts that case.  The block set is a subset of the roster, so subtracting is
+        # cheaper than a second DB query.
         _a_roster_for_arch = await player_repo.get_roster(pool, league.id, a.id)
-        _a_archetype_counts: dict[str, int] = _team_archetype_counts(_a_roster_for_arch)
+        _a_block_set: set[int] = set(block_by_team.get(a.id, []))
+        _a_roster_excl_block = [p for p in _a_roster_for_arch if p.id not in _a_block_set]
+        _a_archetype_counts: dict[str, int] = _team_archetype_counts(_a_roster_excl_block)
 
         # Mode-driven shop list: soft_rebuild/rebuilding teams shop their own
         # veterans across all b_candidates rather than just seeking inbound talent.
