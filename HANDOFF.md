@@ -1,89 +1,77 @@
 # HANDOFF — dba
 
-Forward-looking handoff for the columnist ride-along v2 work-stream.
+B8 gate parity + B5 contender sub-rules (two commits, run 4 regressions).
 
 ```yaml
-last-model: claude-sonnet-4-6
-last-session: 2026-05-21
-state: green
+session: 2026-05-22
+agent: backend-dev (claude-sonnet-4-6)
+commits: 762a950 (B8), 7f96c2b (B5 retune)
+branch: master
 ```
 
-## Next action
+## did
 
-Hand off to user for first-run smoke test (see spec §11 for the checklist).
-Critic round 2 fixes are committed — see "Round 2 fixes" section below.
+### B8 — Gate parity on outgoing-first path
 
-## Known issues / v2 backlog
+Extracted `_apply_final_trade_gates()` from the inline pre-propose checks in
+`_run_incoming_first_for_team`. The helper runs six gates:
+1. Sanity floor (mode-specific ratio threshold)
+2. OVR sanity (no 10+ OVR giveaway)
+3. Lopsided check (ratio outside [0.50, 2.00])
+4. B1 posture gate (each incoming player must match team A's mode)
+5. B5 asymmetric rejection (`cpu_should_accept` from proposer's POV)
+6. B6 archetype redundancy on receiving side (2+ existing → reject)
 
-Critic round 2 HIGHs and NITs that were intentionally deferred:
+`_run_incoming_first_for_team` now calls the helper instead of inline checks.
+`_attempt_outgoing_first_offer` calls the helper after `_score_outgoing_pair`
+picks the winner, before `trade_service.propose`.
 
-- **#2 Pause UUID is article_id** — acceptable; 6-hex random suffix prevents
-  spoofing in practice since the sidecar must know the exact article_id to fake
-  a matching feedback payload.
-- **#5 `_HEARTBEAT_MISS_COUNT` is module-global, not reset on attach** — safe
-  today (only one sidecar at a time), fragile if re-attach semantics change.
-- **#6 `_sidecar_alive` race during attach window** — narrow window between
-  start.cmd accepted and first heartbeat file written; hard to trigger in
-  practice.
-- **NITs #8–13** — not fixed; tracked here for next reviewer pass.
-  (e.g., spinner not cleared before pause banner in .sh, `:tag` re-emit of
-  pause.json still races on mid-write pause.json, etc.)
+### B5 retune — Contender pick-parity and 2-for-1 upgrade rules
 
-## Round 2 fixes (critic review 2026-05-21)
+Added `_CONTENDER_TIER_MODES` constant and two sub-rules to `cpu_should_accept`
+after the existing 15% differential block:
 
-Four commits (new, not amended):
+**Sub-rule 1 (pick parity):** contender-tier team sending any pick with
+net OVR change <= 0 → reject. Catches DEN/HOU (Gordon + 2nd → Brooks)
+and LAC/TOR (depth + pick → Poeltl downgrade) from run 4.
 
-1. **Fix self-comparison bug in PS1 sidecar restart detection** — captures
-   `$ORIGINAL_BOT_PID` after attach; loop compares against it. SH sidecar
-   also gets PID-change check (was missing entirely) plus explicit detached-
-   status check.
-2. **Decouple state.json write from 300 ms poll loop** — periodic heartbeat
-   every 5 s (`_STATE_WRITE_INTERVAL_SEC`); transition writes remain immediate.
-   Drops ~288 K idle writes/day to ~17 K. Cold-sweep sentinel moved to retry
-   semantics: a transient mkdir failure no longer permanently disables the
-   feature.
-3. **Fix feedback read-then-delete race** — order is now read → validate →
-   apply → delete. Mid-write None returns skip (retry); invalid payload deletes
-   without applying; valid payload applies first then deletes.
-4. **Make cold_sweep retry on failure** — `_cold_sweep_ipc_dir` now raises
-   on mkdir failure; `_cold_sweep_done` only set True after success; outer
-   except loop retries until it works.
+**Sub-rule 2 (2-for-1 upgrade):** contender-tier team shipping 2+ starters
+(OVR >= 75) must receive 1 player with OVR strictly greater than each
+outgoing starter. Only fires when receiving <= 1 player (2-for-2 unaffected).
+Catches NYK/GSW (Bridges + Anunoby → Kuminga) from run 4.
 
-## Traps
+## found
 
-- `_pending_event` and `_pending_article_id` are module-level globals mutated
-  by both `request_pause()` (coroutine) and `ipc_watch_task()` (background
-  coroutine). Both run on the same asyncio loop — no threading race — but any
-  future refactor that introduces threads must add a lock.
-- `_apply_stop_cmd` resets `_fires`, `_pauses_seen`, and `_LOG_FILE` to 0/None.
-  If the same persona re-attaches later in the same bot lifetime, `_get_log_file()`
-  re-builds the path with `_SESSION_TS` (bot-start timestamp) — same file, correct.
-- `shutdown()` is unconditional (no `is_enabled()` guard). The old `stop()` was
-  guarded. Any caller that still calls `stop()` will get AttributeError — but
-  grep confirms no live callers remain.
-- PS1 sidecar: `:tag` and `:sev` restore `pause.json` so the user can answer the
-  current pause after setting the modifier. The bot only acts on `feedback.json`,
-  not on `pause.json` absence, so the momentary delete-then-restore is safe.
-- Heartbeat timeout is 10 s; sidecar touches every 300 ms; 3 consecutive misses
-  (~0.9 s) trigger drain. Fast recovery from a hard-killed sidecar is intentional.
-- `should_stop()` was removed from the public API. v1 callers that checked this
-  between batches no longer have a drain-mode signal — but none exist in
-  batch_sim_runner.py (grep confirmed).
+- `_team_a_wants_player` for "contending" mode requires OVR >= 79 (comfortable urgency).
+  B8 tests that use OVR 76 for incoming players will be blocked by B1 before B5.
+  This is correct behavior — tests updated to use OVR 80+ to reach B5.
+- The fleecing floor in `cpu_should_accept` fires before the new sub-rules if score
+  ratios are below 0.85. B5 test fixtures calibrated to pass the floor.
+- `test_progression.py::test_high_potential_grows_more` is a pre-existing flaky test
+  (fails occasionally in full suite, passes in isolation). Not a regression.
 
-## Do not touch
+## files-touched
 
-- `services/batch_sim_runner.py` hook sites — no changes needed; the
-  `is_enabled()` / `target_persona_id()` interface is preserved verbatim.
-- `services/columnist_service.py` — `_capture_prompt` param unchanged.
+- `services/cpu_trade_proposals.py` — `_apply_final_trade_gates` (new), refactored
+  `_run_incoming_first_for_team` pre-propose block, wired into `_attempt_outgoing_first_offer`
+- `services/trade_evaluator.py` — `_CONTENDER_TIER_MODES`, `_STARTING_QUALITY_OVR` constants;
+  B5 sub-rules 1 and 2 in `cpu_should_accept`
+- `tests/test_apply_final_trade_gates.py` — 4 new tests (B8)
+- `tests/test_cpu_should_accept_contender_rules.py` — 9 new tests (B5 sub-rules)
 
-## Recent context
+## contract changes callers need to know
 
-- Architect (claude-opus-4.7) wrote the v2 spec at
-  `Projects/dba/.design/columnist-ride-along-2026-05-21.md`.
-  Key pivot: attach-only bot; sidecar owns stdin; file IPC replaces env vars.
-- Four commits landed 2026-05-21:
-  - `7493528` — rewrite `columnist_ride_along.py` (no stdin thread; ipc_watch_task; shutdown)
-  - `6ecd2f4` — wire v2 into `bot/client.py` (setup_hook task, close→shutdown)
-  - `814c8b3` — sidecar CLI (ps1 + sh): persona menu, attach, pause panel, :quit
-  - `a5fea55` — delete v1: `columnist_ride_along.ps1/.sh`, `_columnist_ra_bootstrap.py`,
-    desktop shortcut `DBA Columnist Ride-Along.lnk`
+- `_apply_final_trade_gates` is a new module-level async function in
+  `cpu_trade_proposals`. Signature: see docstring. Takes `postures` dict
+  as final kwarg so both callers thread the live posture map.
+- `cpu_should_accept` now rejects more aggressively for contender-tier modes.
+  Callers that simulate `cpu_should_accept` in tests should expect False when
+  a contender sends picks on laterals or does non-upgrade 2-for-1 consolidations.
+- `_CONTENDER_TIER_MODES` is exported at module level in `trade_evaluator` for
+  any future callers that need the same posture set.
+
+## test counts
+
+Pre-existing failures: 10 (test_setup_cog × 8, test_trade_evaluator × 2)
+New tests: 13 (4 B8, 9 B5)
+All pass: yes. No new failures introduced.
