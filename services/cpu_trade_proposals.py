@@ -1741,7 +1741,6 @@ async def _run_incoming_first_for_team(
     # Delegates the pre-propose checks to _apply_final_trade_gates so both the
     # incoming-first and outgoing-first paths run identical safety logic.
     _mode_a_floor = posture_a.get("mode", "developing")
-    _posture_b_str_gate = posture_b.get("mode", "developing") if isinstance(posture_b, dict) else str(posture_b)
     _gates_ok, _gates_reason = await _apply_final_trade_gates(
         pool=pool,
         league=league,
@@ -1753,10 +1752,7 @@ async def _run_incoming_first_for_team(
         incoming_picks_a=list(counterparty_pick_ids),
         package_value=package_value,
         target_value=target_value,
-        plan_a=_offer_plan_a or {},
-        plan_b=_offer_plan_b or {},
         posture_a=_mode_a_floor,
-        posture_b=_posture_b_str_gate,
         cp_contexts=cp_contexts,
         cp_r1_counts=cp_r1_counts,
         roster_a=roster_a_cache,
@@ -2843,10 +2839,7 @@ async def _apply_final_trade_gates(
     incoming_picks_a: list[int],
     package_value: float,
     target_value: float,
-    plan_a: dict,
-    plan_b: dict,
     posture_a: str,
-    posture_b: str,
     cp_contexts: dict,
     cp_r1_counts: dict,
     roster_a: list,
@@ -2862,15 +2855,14 @@ async def _apply_final_trade_gates(
       3. Lopsided     — ratio must be inside [0.50, 2.00].
       4. B1 posture   — each incoming player must match team A's posture.
       5. B5 asymmetric rejection — cpu_should_accept called from team A's POV.
-      6. B6 archetype redundancy — reject if incoming player duplicates an existing
-                                   archetype at 2+ on team A's post-trade roster.
 
-    posture_a/posture_b: string mode value (e.g. "contending", "developing").
+    B6 archetype redundancy is NOT applied here.  Incoming-first applies B6 as a
+    soft scoring penalty in pass-2 (0.65×/0.85× multiplier) so high-value targets
+    still surface with reduced priority rather than being hard-rejected.  Outgoing-
+    first applies B6 as a hard reject inline before calling this helper.
+
+    posture_a: string mode value (e.g. "contending", "developing").
     postures: full posture-dict map (team_id -> posture dict) for B1 gate.
-
-    This helper is called by both _run_incoming_first_for_team (post-pass-2) and
-    _attempt_outgoing_first_offer (after scoring picks the best candidate).
-    Behavior on the incoming-first path must match the prior inline checks bit-for-bit.
     """
     _mode_a = posture_a
 
@@ -3012,58 +3004,20 @@ async def _apply_final_trade_gates(
         }
         _b5_ctx = cp_contexts.get(team_a.id, {}) if cp_contexts else {}
         _b5_cap_used = _b5_ctx.get("current_payroll", 0) or 0
-        try:
-            _b5_ok, _b5_reason = await trade_evaluator.cpu_should_accept(
-                cpu_team_mode=_mode_a,
-                assets_receiving=_assets_receiving_a,
-                assets_giving=_assets_giving_a,
-                evaluation=_b5_eval,
-                salary_cap=league.salary_cap,
-                current_cap_used=_b5_cap_used,
-            )
-            if not _b5_ok:
-                log.debug(
-                    "[gates] B5 reject for team %s (%s): %s",
-                    team_a.nba_team_code, _mode_a, _b5_reason,
-                )
-                return False, f"B5: {_b5_reason}"
-        except Exception as _b5_exc:
-            log.debug("[gates] B5 cpu_should_accept error: %s", _b5_exc)
-
-    # ── Gate 6: B6 archetype redundancy on RECEIVING side ──────────────────
-    # Reject if incoming player duplicates an archetype already at 2+ on team A's
-    # post-trade roster (current roster minus outgoing players).
-    _outgoing_set = set(outgoing_pids_a)
-    _post_trade_roster = [p for p in roster_a if p.id not in _outgoing_set]
-    _arch_counts = _team_archetype_counts(_post_trade_roster)
-
-    for _pid in incoming_pids_a:
-        _ip = await player_repo.get_by_id(pool, _pid)
-        if not _ip:
-            continue
-        _incoming_arch = trade_evaluator._player_archetype({
-            "position": _ip.position,
-            "tendency_3pt": getattr(_ip, "tendency_3pt", 50) or 50,
-            "tendency_drive": getattr(_ip, "tendency_drive", 50) or 50,
-            "tendency_pass": getattr(_ip, "tendency_pass", 50) or 50,
-            "ast_tendency": getattr(_ip, "ast_tendency", 50) or 50,
-            "reb_tendency": getattr(_ip, "reb_tendency", 50) or 50,
-            "blk_tendency": getattr(_ip, "blk_tendency", 50) or 50,
-            "stl_tendency": getattr(_ip, "stl_tendency", 50) or 50,
-        })
-        if _incoming_arch and _arch_counts.get(_incoming_arch, 0) >= 2:
+        _b5_ok, _b5_reason = await trade_evaluator.cpu_should_accept(
+            cpu_team_mode=_mode_a,
+            assets_receiving=_assets_receiving_a,
+            assets_giving=_assets_giving_a,
+            evaluation=_b5_eval,
+            salary_cap=league.salary_cap,
+            current_cap_used=_b5_cap_used,
+        )
+        if not _b5_ok:
             log.debug(
-                "[gates] B6 arch reject for team %s: incoming %s %s has arch %s, "
-                "already %d on roster",
-                team_a.nba_team_code,
-                _ip.first_name, _ip.last_name,
-                _incoming_arch, _arch_counts[_incoming_arch],
+                "[gates] B5 reject for team %s (%s): %s",
+                team_a.nba_team_code, _mode_a, _b5_reason,
             )
-            return False, (
-                f"B6_arch: incoming {_ip.first_name} {_ip.last_name} "
-                f"archetype '{_incoming_arch}' already has {_arch_counts[_incoming_arch]} "
-                f"on team A's post-trade roster"
-            )
+            return False, f"B5: {_b5_reason}"
 
     return True, ""
 
@@ -3270,68 +3224,143 @@ async def _attempt_outgoing_first_offer(
     if not all_candidates:
         return 0
 
-    # Take the best (team_b, speculative_return) combination.
+    # Iterate through candidates in score order — try next-best if gates reject.
+    # used_pairs.add is deferred to AFTER gate approval so a rejected (A, B) pair
+    # isn't poisoned for the rest of the cycle (e.g. incoming-first could still fire).
     all_candidates.sort(key=lambda x: x[0], reverse=True)
-    best_score, target_team, best_ret, outgoing_player_obj, outgoing_pid = all_candidates[0]
 
-    _ret_player_ids, _ret_pick_ids, _ret_value = best_ret
-    _posture_b_final = postures.get(target_team.id, {})
-
-    # Outgoing from A = the surplus player we're shopping.
-    offer_player_ids: list[int] = [outgoing_pid]
-    offer_pick_ids: list[int] = []
-
-    # Incoming = what B would send (the speculative return becomes counterparty side).
-    counterparty_player_ids = _ret_player_ids
-    counterparty_pick_ids = _ret_pick_ids
-
-    # Value computation for sanity checks.
-    _outgoing_contract = await player_repo.get_active_contract(pool, outgoing_pid)
-    target_value = trade_evaluator.player_trade_value(
-        {"overall": outgoing_player_obj.overall, "age": _player_age(outgoing_player_obj) or 27, "position": outgoing_player_obj.position},
-        {"salary": _outgoing_contract.salary if _outgoing_contract else 0, "years_remaining": _outgoing_contract.years_remaining if _outgoing_contract else 1},
-        league.salary_cap,
-    )
-    package_value = _ret_value
-
-    pair_key = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
-    used_pairs.add(pair_key)
-
-    # ── Final gates: B1/B5/B6 + sanity floor + lopsided ─────────────────────
-    # Run the same gate battery that incoming-first applies post-pass-2.
-    # Replaces the prior inline sanity-floor + lopsided checks and adds the
-    # contender-specific posture, asymmetric-rejection, and archetype guards.
     _posture_a_dict = postures.get(team_a.id, {})
     _mode_a = _posture_a_dict.get("mode", "developing") if isinstance(_posture_a_dict, dict) else "developing"
-    _posture_b_str_for_gates = _posture_b_final.get("mode", "developing") if isinstance(_posture_b_final, dict) else "developing"
-    _plan_b_for_gates = cp_plans.get(target_team.id) or {}
-    _gates_ok, _gates_reason = await _apply_final_trade_gates(
-        pool=pool,
-        league=league,
-        team_a=team_a,
-        team_b=target_team,
-        outgoing_pids_a=offer_player_ids,
-        incoming_pids_a=list(counterparty_player_ids),
-        outgoing_picks_a=offer_pick_ids,
-        incoming_picks_a=list(counterparty_pick_ids),
-        package_value=package_value,
-        target_value=target_value,
-        plan_a=_plan_a or {},
-        plan_b=_plan_b_for_gates,
-        posture_a=_mode_a,
-        posture_b=_posture_b_str_for_gates,
-        cp_contexts=cp_contexts,
-        cp_r1_counts=cp_r1_counts,
-        roster_a=_roster_a,
-        postures=postures,
-    )
-    if not _gates_ok:
-        log.debug(
-            "[CPU outgoing-first] %s → %s: gate rejected: %s",
-            team_a.nba_team_code, target_team.nba_team_code, _gates_reason,
+
+    # These will be set when a candidate passes gates.
+    best_score: float = 0.0
+    target_team = None
+    outgoing_player_obj = None
+    outgoing_pid: int = 0
+    offer_player_ids: list[int] = []
+    offer_pick_ids: list[int] = []
+    counterparty_player_ids: list[int] = []
+    counterparty_pick_ids: list[int] = []
+    target_value: float = 0.0
+    package_value: float = 0.0
+    pair_key: tuple[int, int] = (0, 0)
+
+    for _cand_score, _cand_team_b, _cand_ret, _cand_player, _cand_pid in all_candidates:
+        _cand_ret_player_ids, _cand_ret_pick_ids, _cand_ret_value = _cand_ret
+        _posture_b_cand = postures.get(_cand_team_b.id, {})
+
+        # Value computation for sanity checks.
+        _cand_outgoing_contract = await player_repo.get_active_contract(pool, _cand_pid)
+        _cand_target_value = trade_evaluator.player_trade_value(
+            {"overall": _cand_player.overall, "age": _player_age(_cand_player) or 27, "position": _cand_player.position},
+            {"salary": _cand_outgoing_contract.salary if _cand_outgoing_contract else 0, "years_remaining": _cand_outgoing_contract.years_remaining if _cand_outgoing_contract else 1},
+            league.salary_cap,
         )
+        _cand_package_value = _cand_ret_value
+        _cand_posture_b_str = _posture_b_cand.get("mode", "developing") if isinstance(_posture_b_cand, dict) else "developing"
+        _cand_plan_b = cp_plans.get(_cand_team_b.id) or {}
+
+        # ── B6 hard-reject for outgoing-first: archetype redundancy ──────────
+        # In outgoing-first the speculative return is known before gating, so B6
+        # is applied as a hard reject here (not a scoring penalty).  Incoming-first
+        # applies B6 as a soft penalty in pass-2 and does NOT hard-reject via gates.
+        _cand_outgoing_set_b6 = {_cand_pid}
+        _cand_post_trade_roster_b6 = [p for p in _roster_a if p.id not in _cand_outgoing_set_b6]
+        _cand_arch_counts_b6 = _team_archetype_counts(_cand_post_trade_roster_b6)
+        _b6_rejected = False
+        for _rpid in _cand_ret_player_ids:
+            _rp_b6 = await player_repo.get_by_id(pool, _rpid)
+            if not _rp_b6:
+                continue
+            _rp_arch = trade_evaluator._player_archetype({
+                "position": _rp_b6.position,
+                "tendency_3pt": getattr(_rp_b6, "tendency_3pt", 50) or 50,
+                "tendency_drive": getattr(_rp_b6, "tendency_drive", 50) or 50,
+                "tendency_pass": getattr(_rp_b6, "tendency_pass", 50) or 50,
+                "ast_tendency": getattr(_rp_b6, "ast_tendency", 50) or 50,
+                "reb_tendency": getattr(_rp_b6, "reb_tendency", 50) or 50,
+                "blk_tendency": getattr(_rp_b6, "blk_tendency", 50) or 50,
+                "stl_tendency": getattr(_rp_b6, "stl_tendency", 50) or 50,
+            })
+            if _rp_arch and _cand_arch_counts_b6.get(_rp_arch, 0) >= 2:
+                _b6_reject_reason = (
+                    f"B6_arch: incoming {_rp_b6.first_name} {_rp_b6.last_name} "
+                    f"archetype '{_rp_arch}' already has {_cand_arch_counts_b6[_rp_arch]} "
+                    f"on team A's post-trade roster"
+                )
+                log.info(
+                    "[CPU outgoing-first] %s → %s: B6 arch reject (candidate pid=%d): %s",
+                    team_a.nba_team_code, _cand_team_b.nba_team_code, _cand_pid, _b6_reject_reason,
+                )
+                if _HEADLESS:
+                    try:
+                        print(
+                            f"CPU [{team_a.nba_team_code}] — outgoing-first gate REJECTED "
+                            f"(B6_arch: {_rp_arch} ×{_cand_arch_counts_b6[_rp_arch]} already) "
+                            f"candidate pid={_cand_pid} → [{_cand_team_b.nba_team_code}]"
+                        )
+                    except Exception:
+                        pass
+                _b6_rejected = True
+                break
+        if _b6_rejected:
+            continue
+
+        # ── Final gates: B1/B5 + sanity floor + lopsided ─────────────────────
+        # B6 is handled above (hard-reject inline); excluded from the helper for
+        # outgoing-first so incoming-first's soft-penalty semantics are preserved.
+        _cand_gates_ok, _cand_gates_reason = await _apply_final_trade_gates(
+            pool=pool,
+            league=league,
+            team_a=team_a,
+            team_b=_cand_team_b,
+            outgoing_pids_a=[_cand_pid],
+            incoming_pids_a=list(_cand_ret_player_ids),
+            outgoing_picks_a=[],
+            incoming_picks_a=list(_cand_ret_pick_ids),
+            package_value=_cand_package_value,
+            target_value=_cand_target_value,
+            posture_a=_mode_a,
+            cp_contexts=cp_contexts,
+            cp_r1_counts=cp_r1_counts,
+            roster_a=_roster_a,
+            postures=postures,
+        )
+        if not _cand_gates_ok:
+            log.info(
+                "[CPU outgoing-first] %s → %s: gate rejected (candidate pid=%d): %s",
+                team_a.nba_team_code, _cand_team_b.nba_team_code, _cand_pid, _cand_gates_reason,
+            )
+            if _HEADLESS:
+                try:
+                    print(
+                        f"CPU [{team_a.nba_team_code}] — outgoing-first gate REJECTED "
+                        f"({_cand_gates_reason.split(':')[0]}) "
+                        f"candidate pid={_cand_pid} → [{_cand_team_b.nba_team_code}]"
+                    )
+                except Exception:
+                    pass
+            continue
+        # ── End final gates ───────────────────────────────────────────────────
+
+        # Candidate approved — capture and break.
+        best_score = _cand_score
+        target_team = _cand_team_b
+        outgoing_player_obj = _cand_player
+        outgoing_pid = _cand_pid
+        offer_player_ids = [outgoing_pid]
+        offer_pick_ids = []
+        counterparty_player_ids = _cand_ret_player_ids
+        counterparty_pick_ids = _cand_ret_pick_ids
+        target_value = _cand_target_value
+        package_value = _cand_package_value
+        pair_key = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
+        # Mark pair only after a proposal is actually going to fire.
+        used_pairs.add(pair_key)
+        break
+
+    if target_team is None:
         return 0
-    # ── End final gates ───────────────────────────────────────────────────────
 
     _final_ratio = package_value / max(target_value, 1)
     log.info(

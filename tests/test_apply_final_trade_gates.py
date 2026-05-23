@@ -173,10 +173,7 @@ async def test_approved_trade_returns_true():
             incoming_picks_a=[],
             package_value=48.0,     # ratio = 1.0, above the 0.85 floor
             target_value=48.0,
-            plan_a={"goal": "win_now"},
-            plan_b={},
             posture_a="contending",
-            posture_b="developing",
             cp_contexts={1: {"current_payroll": int(SALARY_CAP * 0.85)}},
             cp_r1_counts={},
             roster_a=roster_a,
@@ -233,10 +230,7 @@ async def test_contender_lateral_swap_with_pick_rejected():
             incoming_picks_a=[],
             package_value=48.0,     # close to target (passes sanity floor)
             target_value=48.0,
-            plan_a={"goal": "win_now"},
-            plan_b={},
             posture_a="contending",
-            posture_b="developing",
             cp_contexts={1: {"current_payroll": int(SALARY_CAP * 0.85)}},
             cp_r1_counts={},
             roster_a=roster_a,
@@ -295,10 +289,7 @@ async def test_contender_2for1_without_upgrade_rejected():
             incoming_picks_a=[],
             package_value=60.0,          # close to combined value (passes sanity floor)
             target_value=60.0,
-            plan_a={"goal": "win_now"},
-            plan_b={},
             posture_a="contending",
-            posture_b="developing",
             cp_contexts={1: {"current_payroll": int(SALARY_CAP * 0.90)}},
             cp_r1_counts={},
             roster_a=roster_a,
@@ -469,4 +460,290 @@ async def test_outgoing_first_proposes_nothing_when_gates_fail():
     )
     assert len(propose_calls) == 0, (
         "trade_service.propose must not be called when gates reject all candidates"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: BLOCKER 1 — outgoing-first tries next candidate when first is rejected
+# ---------------------------------------------------------------------------
+
+
+async def test_outgoing_first_tries_next_candidate_when_first_rejected():
+    """Two candidates: first fails gate (archetype-redundant), second passes.
+
+    Assert that propose is called with the SECOND candidate's team, not the first,
+    proving the loop does not stop at index [0] on a gate failure.
+    """
+    league = _make_league()
+    team_a = team_repo.Team(
+        id=1, league_id=LEAGUE_ID, nba_team_code="DEN", name="Denver",
+        city="Denver", conference="West", division="Northwest",
+        manager_user_id=None, cpu_mode="contending",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+    team_b_first = team_repo.Team(
+        id=2, league_id=LEAGUE_ID, nba_team_code="HOU", name="Houston",
+        city="Houston", conference="West", division="Southwest",
+        manager_user_id=None, cpu_mode="rebuilding",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+    team_b_second = team_repo.Team(
+        id=3, league_id=LEAGUE_ID, nba_team_code="OKC", name="OKC",
+        city="OKC", conference="West", division="Northwest",
+        manager_user_id=None, cpu_mode="rebuilding",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+
+    outgoing_player = player_repo.Player(
+        id=10, league_id=LEAGUE_ID, external_id=None,
+        first_name="Aaron", last_name="Gordon", position="PF",
+        height_in=79, weight_lb=220, birth_date=datetime.date(1995, 9, 16),
+        years_pro=8, is_rookie=False, team_id=1,
+        roster_status="active", overall=76,
+        speed=78, shooting_2pt=72, shooting_3pt=72, shooting_mid=72,
+        finishing=76, playmaking=70, defense=82, rebounding=78,
+        iq=76, potential=76, peak_age_start=26, peak_age_end=30,
+        loyalty=60, money_drive=40, win_drive=70, market_pref="any",
+        star_leverage=40,
+    )
+    outgoing_contract = player_repo.Contract(
+        id=1, league_id=LEAGUE_ID, player_id=10, team_id=1,
+        salary=20_000_000, years_remaining=2, total_years=4,
+        contract_type="standard", signed_in_season=SEASON - 2,
+        is_active=True, terminated_reason=None,
+    )
+    incoming_player_first = player_repo.Player(
+        id=20, league_id=LEAGUE_ID, external_id=None,
+        first_name="Player", last_name="FirstCandidate", position="SF",
+        height_in=77, weight_lb=215, birth_date=datetime.date(1996, 1, 22),
+        years_pro=6, is_rookie=False, team_id=2,
+        roster_status="active", overall=76,
+        speed=77, shooting_2pt=72, shooting_3pt=74, shooting_mid=72,
+        finishing=72, playmaking=70, defense=80, rebounding=68,
+        iq=74, potential=76, peak_age_start=26, peak_age_end=30,
+        loyalty=50, money_drive=50, win_drive=60, market_pref="any",
+        star_leverage=30,
+    )
+    incoming_player_second = player_repo.Player(
+        id=30, league_id=LEAGUE_ID, external_id=None,
+        first_name="Player", last_name="SecondCandidate", position="PG",
+        height_in=75, weight_lb=200, birth_date=datetime.date(1997, 3, 10),
+        years_pro=5, is_rookie=False, team_id=3,
+        roster_status="active", overall=77,
+        speed=80, shooting_2pt=74, shooting_3pt=76, shooting_mid=74,
+        finishing=70, playmaking=78, defense=74, rebounding=65,
+        iq=76, potential=78, peak_age_start=26, peak_age_end=31,
+        loyalty=55, money_drive=45, win_drive=65, market_pref="any",
+        star_leverage=25,
+    )
+    incoming_contract_first = player_repo.Contract(
+        id=2, league_id=LEAGUE_ID, player_id=20, team_id=2,
+        salary=18_000_000, years_remaining=2, total_years=3,
+        contract_type="standard", signed_in_season=SEASON - 1,
+        is_active=True, terminated_reason=None,
+    )
+    incoming_contract_second = player_repo.Contract(
+        id=3, league_id=LEAGUE_ID, player_id=30, team_id=3,
+        salary=17_000_000, years_remaining=2, total_years=3,
+        contract_type="standard", signed_in_season=SEASON - 1,
+        is_active=True, terminated_reason=None,
+    )
+
+    pool = MagicMock()
+
+    async def _fetch(sql, *args):
+        if "pending_counterparty" in sql.lower():
+            return []
+        return []
+
+    async def _fetchval(sql, *args):
+        return None
+
+    async def _fetchrow(sql, *args):
+        return None
+
+    pool.fetch = _fetch
+    pool.fetchval = _fetchval
+    pool.fetchrow = _fetchrow
+
+    plan_a = {
+        "goal": "win_now",
+        "surplus_player_ids": [10],
+        "flex_player_ids": [],
+        "core_player_ids": [],
+        "asset_targets": [],
+        "derived_from_record": {},
+    }
+    postures = {
+        1: {"mode": "contending", "urgency": "comfortable", "avg_age": 28.0,
+            "projected_wins": 50, "conf_rank": 2},
+        2: {"mode": "rebuilding", "urgency": "tanking", "avg_age": 24.0,
+            "projected_wins": 25, "conf_rank": 14},
+        3: {"mode": "rebuilding", "urgency": "tanking", "avg_age": 23.0,
+            "projected_wins": 22, "conf_rank": 15},
+    }
+
+    # _derive_return_from_b: first team returns player 20, second team returns player 30.
+    async def _fake_derive_return(pool, league, team_b, outgoing_player,
+                                   asset_targets_a, taken_player_ids,
+                                   recently_signed_ids, plan_b, posture_b,
+                                   cp_contexts, cp_r1_counts):
+        if team_b.id == 2:
+            return ([20], [], 35.0, {20: incoming_contract_first})
+        return ([30], [], 37.0, {30: incoming_contract_second})
+
+    # Score both candidates as positive (gate, not score, is the differentiator).
+    # First candidate scores higher so it sorts first and hits the gate rejection first.
+    def _fake_score(team_a, outgoing_pid, team_b, speculative_return_player_ids,
+                    speculative_return_pick_ids, speculative_return_players,
+                    plan_a, posture_a, roster_a, cp_contexts, cp_r1_counts=None,
+                    incoming_contracts=None):
+        return 2.0 if team_b.id == 2 else 1.5
+
+    propose_calls: list[int] = []
+
+    async def _fake_propose(**kwargs):
+        propose_calls.append(kwargs["counterparty_team"].id)
+
+        class _FakeTrade:
+            id = 999
+            status = "pending_commissioner"
+
+        return _FakeTrade()
+
+    async def _fake_auto_approve(pool, league, trade, guild):
+        pass
+
+    gate_call_count = [0]
+
+    async def _fake_gates(**kwargs):
+        gate_call_count[0] += 1
+        # First call (highest-scored candidate — team 2): reject.
+        # Second call (team 3): approve.
+        if gate_call_count[0] == 1:
+            return False, "test_gate_fail: B6_arch redundant"
+        return True, ""
+
+    with (
+        patch.object(_mod.player_repo, "get_by_id", AsyncMock(side_effect=lambda pool, pid: {
+            10: outgoing_player, 20: incoming_player_first, 30: incoming_player_second,
+        }.get(pid))),
+        patch.object(_mod.player_repo, "get_active_contract", AsyncMock(side_effect=lambda pool, pid: {
+            10: outgoing_contract, 20: incoming_contract_first, 30: incoming_contract_second,
+        }.get(pid))),
+        patch.object(_mod.player_repo, "get_roster", AsyncMock(return_value=[outgoing_player])),
+        patch("services.cpu_trade_proposals._league_scan_counterparties",
+              AsyncMock(return_value=[(team_b_first, 1.0, "fit"), (team_b_second, 0.9, "fit")])),
+        patch("services.cpu_trade_proposals._derive_return_from_b", _fake_derive_return),
+        patch("services.cpu_trade_proposals._score_outgoing_pair", _fake_score),
+        patch("services.cpu_trade_proposals._apply_final_trade_gates", _fake_gates),
+        patch("services.cpu_trade_proposals._team_archetype_counts", return_value={}),
+        patch("services.cpu_trade_proposals.trade_evaluator._player_archetype", return_value=None),
+        patch.object(_mod.trade_service, "propose", _fake_propose),
+        patch("services.cpu_trade_proposals._maybe_auto_approve", _fake_auto_approve),
+    ):
+        result = await _mod._attempt_outgoing_first_offer(
+            pool=pool,
+            league=league,
+            season=SEASON,
+            team_a=team_a,
+            cpu_teams=[team_a, team_b_first, team_b_second],
+            block_by_team={1: [10]},
+            used_pairs=set(),
+            taken_player_ids=set(),
+            deadline_game_index=50,
+            recently_signed_ids=set(),
+            guild=None,
+            postures=postures,
+            cp_plans={1: plan_a, 2: None, 3: None},
+            cp_contexts={1: {"current_payroll": int(SALARY_CAP * 0.85)}},
+            cp_r1_counts={},
+            plan_a=plan_a,
+            posture_a="contending",
+        )
+
+    assert result == 1, (
+        f"_attempt_outgoing_first_offer must return 1 when second candidate passes gates; got {result}"
+    )
+    assert len(propose_calls) == 1, (
+        f"trade_service.propose must be called exactly once; got {len(propose_calls)} calls"
+    )
+    assert propose_calls[0] == 3, (
+        f"propose must fire for the second candidate (team 3), not the first (team 2); "
+        f"got team_id={propose_calls[0]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: BLOCKER 4 — B6 is soft-penalty in incoming-first (NOT hard-reject)
+# ---------------------------------------------------------------------------
+
+
+async def test_incoming_first_b6_remains_soft_penalty():
+    """B6 archetype redundancy does NOT hard-reject via _apply_final_trade_gates.
+
+    _apply_final_trade_gates no longer contains a B6 gate; B6 is applied only
+    as a soft penalty in pass-2 scoring.  So a trade where the incoming player
+    has a redundant archetype (count >= 2) must still pass the gate helper.
+
+    This mirrors the pre-B8 behavior: incoming-first downscores B6 candidates
+    rather than outright rejecting them, so high-value redundant-archetype
+    targets can still surface if no better option exists.
+    """
+    team_a = _FakeTeam(1, cpu_mode="contending")
+    team_b = _FakeTeam(2)
+    league = _make_league()
+
+    # Outgoing: OVR-79 player (no archetype impact on the test)
+    outgoing_p = _FakePlayer(10, overall=79, position="PF")
+    incoming_p = _FakePlayer(
+        20, overall=82, position="SG",
+        # High 3pt tendency → would be "3pt_specialist" archetype
+        tendency_3pt=90,
+    )
+
+    # Team A's post-trade roster already has 2 players with 3pt_specialist archetype.
+    # This simulates the B6 redundancy condition that WOULD hard-reject in outgoing-first.
+    arch_player_1 = _FakePlayer(30, overall=76, position="SG", tendency_3pt=85)
+    arch_player_2 = _FakePlayer(31, overall=75, position="SF", tendency_3pt=88)
+    roster_a = (
+        [_FakePlayer(i, overall=74) for i in range(40, 50)]
+        + [outgoing_p, arch_player_1, arch_player_2]
+    )
+
+    pool, _get_by_id, _get_active_contract = _make_pool(
+        players={10: outgoing_p, 20: incoming_p},
+        contracts={10: _FakeContract(salary=14_000_000), 20: _FakeContract(salary=18_000_000)},
+    )
+
+    with (
+        patch.object(_mod.player_repo, "get_by_id", _get_by_id),
+        patch.object(_mod.player_repo, "get_active_contract", _get_active_contract),
+    ):
+        ok, reason = await _apply_final_trade_gates(
+            pool=pool,
+            league=league,
+            team_a=team_a,
+            team_b=team_b,
+            outgoing_pids_a=[10],
+            incoming_pids_a=[20],
+            outgoing_picks_a=[],
+            incoming_picks_a=[],
+            package_value=50.0,   # ratio ≈ 1.05, above floor
+            target_value=48.0,
+            posture_a="contending",
+            cp_contexts={1: {"current_payroll": int(SALARY_CAP * 0.85)}},
+            cp_r1_counts={},
+            roster_a=roster_a,
+            postures=_default_postures(1, "contending"),
+        )
+
+    # B6 is NOT a hard gate here — the helper should approve.
+    # The downscoring happens in pass-2, not in the gate layer.
+    assert ok is True, (
+        f"_apply_final_trade_gates must NOT hard-reject B6 archetype redundancy "
+        f"(soft-penalty belongs in pass-2 scoring); got ok=False reason={reason!r}"
+    )
+    assert "B6" not in reason, (
+        f"No B6 rejection expected from gate helper; got: {reason!r}"
     )
