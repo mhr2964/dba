@@ -188,7 +188,7 @@ async def _compute_team_posture(
         SELECT goal FROM franchise_plans
         WHERE league_id = $1 AND team_id = $2 AND season = $3
         """,
-        league.id, league.current_season, team_id,
+        league.id, team_id, league.current_season,
     )
     plan_goal = plan_goal_row["goal"] if plan_goal_row else None
 

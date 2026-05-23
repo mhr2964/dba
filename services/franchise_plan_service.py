@@ -351,6 +351,11 @@ def _derive_goal_and_horizon(
             if ovr_list and max(ovr_list) <= 75:
                 return "rebuild", 3
             return "tank", 2
+        # play_in_fringe team with any star is already pushing for a playoff spot.
+        # Same logic as the post-record check (line below games_played >= 10 block)
+        # but applied preseason so the plan doesn't fall through to "transition".
+        if mode == "play_in_fringe" and has_any_star:
+            return "win_now", 2
         # Mode-guided early disambiguation instead of defaulting to transition
         if mode in ("soft_rebuild", "rebuilding"):
             return "rebuild", 3
