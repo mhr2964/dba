@@ -21,6 +21,7 @@ from services.personas import PERSONAS as _PERSONAS
 from services.player_style_service import context_summary as _player_style_context
 from services.role_service import ROLE_REGISTRY, get_or_derive_roles
 from services import columnist_ride_along as _columnist_ride_along
+from services import feedback_log as _feedback_log
 
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
@@ -997,6 +998,13 @@ async def _run_cpu_trades_inner(
             )
         embed.set_footer(text=f"CPU-initiated · Trade #{trade_id}")
         trade_msg = await transactions_channel.send(embed=embed)
+        await _feedback_log.register_trade_announcement(
+            pool, trade_msg,
+            league_id=league_id, season=season, trade_id=trade_id,
+            proposer_team_id=proposer_id, counterparty_team_id=counterparty_id,
+            status=status,
+            headline=f"{proposer_code} / {counterparty_code} (Trade #{trade_id})",
+        )
 
         # Open a thread on the lead message so all follow-up activity stays grouped.
         try:
@@ -1175,7 +1183,15 @@ async def _run_cpu_trades_inner(
                 )
                 if mc_persona:
                     embed.set_footer(text=f"by {mc_persona.display_name} · {mc_persona.byline}")
-                await analysis_channel.send(embed=embed)
+                _sent = await analysis_channel.send(embed=embed)
+                await _feedback_log.register_columnist_post(
+                    pool, _sent,
+                    league_id=league_id, season=season,
+                    persona_id="marcus_cole", category="trade_report",
+                    headline=mc_article["headline"], body=mc_article["body"],
+                    subject_team_ids=[proposer_id, counterparty_id],
+                    subject_trade_id=trade_id,
+                )
                 # Ride-along: pause AFTER embed lands in Discord.
                 if _mc_ra_capture is not None:
                     await _columnist_ride_along.request_pause({
@@ -1347,9 +1363,18 @@ async def _maybe_post_potm(
                 )
                 embed.set_footer(text=f"by {pat.display_name} · {pat.byline}")
                 try:
-                    await news_channel.send(embed=embed)
+                    _sent = await news_channel.send(embed=embed)
                 except Exception as exc:
                     log.warning(f"POTM post failed: {exc}")
+                else:
+                    await _feedback_log.register_columnist_post(
+                        pool, _sent,
+                        league_id=league_id, season=season,
+                        persona_id="pat_chen", category="player_of_the_month",
+                        headline=article["headline"], body=article["body"],
+                        game_index=current_game_index,
+                        subject_player_ids=[a["player_id"] for a in month_awards if a.get("player_id")],
+                    )
 
         # Award races fire once per month, right after POTM announcements.
         await _maybe_post_awards_races(
@@ -1511,7 +1536,14 @@ async def _maybe_post_coach_beat(
                 color=discord.Color.from_rgb(160, 82, 45),
             )
             embed.set_footer(text=f"by {cb_persona.display_name} · {cb_persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="coach_beat", category="coaching_beat",
+                headline=cb_article["headline"], body=cb_article["body"],
+                subject_team_ids=[subject_team_id],
+            )
             # Reset counter only after a successful post so empty-content batches
             # can retry immediately on the next batch.
             _coach_beat_game_counter[league_id] = 0
@@ -1642,7 +1674,13 @@ async def _maybe_post_power_list(
                 color=discord.Color.from_rgb(212, 175, 55),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="power_list", category="power_rankings",
+                headline=article["headline"], body=article["body"],
+            )
     except Exception as exc:
         log.warning(f"_maybe_post_power_list failed: {exc}", exc_info=True)
 
@@ -1715,7 +1753,14 @@ async def _maybe_post_rookie_watch(
                 color=discord.Color.from_rgb(100, 200, 120),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="rookie_watch", category="rookie_watch",
+                headline=article["headline"], body=article["body"],
+                subject_player_ids=[r["id"] for r in rookies if r.get("id")],
+            )
     except Exception as exc:
         log.warning(f"_maybe_post_rookie_watch failed: {exc}", exc_info=True)
 
@@ -1787,7 +1832,13 @@ async def _maybe_post_big_picture(
                 color=discord.Color.from_rgb(70, 90, 160),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="big_picture", category="sunday_column",
+                headline=article["headline"], body=article["body"],
+            )
     except Exception as exc:
         log.warning(f"_maybe_post_big_picture failed: {exc}", exc_info=True)
 
@@ -1920,7 +1971,13 @@ async def _maybe_post_ledger(
                 color=discord.Color.from_rgb(120, 120, 120),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="the_ledger", category="front_office_grade",
+                headline=article["headline"], body=article["body"],
+            )
             # Mark first post done and reset counter after successful send.
             _ledger_first_post_done[_season_key] = True
             _ledger_game_counter[league_id] = 0
@@ -2025,7 +2082,13 @@ async def _maybe_post_the_race(
                 color=discord.Color.from_rgb(200, 160, 40),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="the_race", category="award_race",
+                headline=article["headline"], body=article["body"],
+            )
     except Exception as exc:
         log.warning(f"_maybe_post_the_race failed: {exc}", exc_info=True)
 
@@ -2098,7 +2161,15 @@ async def _maybe_post_triage_report(
                 color=discord.Color.red(),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            _injured_pid = injury_info.get("player_id")
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=injury_info.get("season", season),
+                persona_id="triage_report", category="injury_report",
+                headline=article["headline"], body=article["body"],
+                subject_player_ids=[_injured_pid] if _injured_pid else None,
+            )
     except Exception as exc:
         log.warning(f"_maybe_post_triage_report failed: {exc}", exc_info=True)
 
@@ -2141,7 +2212,20 @@ async def _maybe_post_prelude(
                 color=discord.Color.from_rgb(80, 40, 120),
             )
             embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            _series_team_ids = [
+                tid for tid in (
+                    series_context.get("high_seed_team_id"),
+                    series_context.get("low_seed_team_id"),
+                ) if tid
+            ]
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="the_prelude", category="series_preview",
+                headline=article["headline"], body=article["body"],
+                subject_team_ids=_series_team_ids or None,
+            )
     except Exception as exc:
         log.warning(f"_maybe_post_prelude failed: {exc}", exc_info=True)
 
@@ -2759,7 +2843,15 @@ async def _maybe_post_columnist(
                 )
                 if persona:
                     embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id=persona_id, category="game_recap",
+                headline=article["headline"], body=article["body"],
+                game_index=batch_end_index,
+                subject_team_ids=list(subject_team_ids) if subject_team_ids else None,
+            )
             # Ride-along: pause AFTER the embed lands in Discord.
             if _ra_capture is not None:
                 _persona_obj = _PERSONAS.get(persona_id)
@@ -2860,7 +2952,15 @@ async def _maybe_post_columnist(
                 )
                 dc_embed.set_footer(text=f"by {dc_persona.display_name} · {dc_persona.byline}")
                 try:
-                    await analysis_channel.send(embed=dc_embed)
+                    _sent = await analysis_channel.send(embed=dc_embed)
+                    await _feedback_log.register_columnist_post(
+                        pool, _sent,
+                        league_id=league_id, season=season,
+                        persona_id="darius_cole", category="tank_watch",
+                        headline=dc_article["headline"], body=dc_article["body"],
+                        game_index=batch_end_index,
+                        subject_team_ids=_bottom5_team_ids or None,
+                    )
                     log.info("Darius Cole article posted to #analysis")
                     # Ride-along: pause AFTER embed lands in Discord.
                     if _dc_ra_capture is not None:
@@ -2922,7 +3022,15 @@ async def _maybe_post_columnist(
             )
             if mb_persona:
                 embed.set_footer(text=f"by {mb_persona.display_name} · {mb_persona.byline}")
-            await analysis_channel.send(embed=embed)
+            _sent = await analysis_channel.send(embed=embed)
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="marcus_brooks", category="power_rankings",
+                headline=mb_article["headline"], body=mb_article["body"],
+                game_index=batch_end_index,
+                subject_team_ids=list(subject_team_ids) if subject_team_ids else None,
+            )
             # Ride-along: pause AFTER embed lands in Discord.
             if _mb_ra_capture is not None:
                 _mb_p = mb_persona
@@ -2991,9 +3099,23 @@ async def _maybe_post_playoff_columnist(
     )
     embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
     try:
-        await analysis_channel.send(embed=embed)
+        _sent = await analysis_channel.send(embed=embed)
     except Exception as exc:
         log.warning(f"Playoff columnist post failed: {exc}")
+    else:
+        _series_team_ids = [
+            tid for tid in (
+                context.get("high_seed_team_id"),
+                context.get("low_seed_team_id"),
+            ) if tid
+        ]
+        await _feedback_log.register_columnist_post(
+            pool, _sent,
+            league_id=league_id, season=season,
+            persona_id=persona_id, category="playoff_recap",
+            headline=article["headline"], body=article["body"],
+            subject_team_ids=_series_team_ids or None,
+        )
 
 
 async def _maybe_advance_trade_deadline(

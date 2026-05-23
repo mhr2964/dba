@@ -1,6 +1,11 @@
+from typing import TYPE_CHECKING
+
 import discord
 from discord import app_commands
 from core.logging import get_logger
+
+if TYPE_CHECKING:
+    from services.feedback_log import FeedbackContext
 
 log = get_logger(__name__)
 
@@ -52,6 +57,7 @@ async def safe_respond(
     embeds: list[discord.Embed] | None = None,
     view: discord.ui.View | None = None,
     ephemeral: bool = False,
+    feedback_context: "FeedbackContext | None" = None,
 ) -> None:
     """Send the first response to an interaction, editing the deferred
     placeholder if defer() was called, otherwise responding fresh.
@@ -66,6 +72,11 @@ async def safe_respond(
     `ephemeral` is honored on the initial response path; if the interaction
     is already deferred, ephemerality was fixed by the defer() call and
     this parameter is ignored (Discord's API limitation).
+
+    `feedback_context` (opt-in) anchors the sent message in `bot_message_log`
+    so a user reply can be joined back to its league/sim/entity context.
+    Only non-ephemeral sends are registered — Discord doesn't permit replies
+    to ephemeral messages.
     """
     kwargs: dict = {}
     if content is not None:
@@ -77,6 +88,7 @@ async def safe_respond(
     if view is not None:
         kwargs["view"] = view
 
+    send_ok = False
     try:
         if interaction.response.is_done():
             # Deferred — edit the placeholder in place
@@ -84,6 +96,12 @@ async def safe_respond(
         else:
             # Not deferred — send a fresh response
             await interaction.response.send_message(ephemeral=ephemeral, **kwargs)
+        send_ok = True
+    except discord.NotFound as exc:
+        # Expected when the invocation channel/message was deleted between defer and respond
+        # (e.g. /admin purge-server destroys its own context). Caller is responsible for
+        # any user-visible fallback; nothing actionable here.
+        log.info(f"safe_respond: original interaction gone for {interaction.id} ({exc}) — continuing")
     except discord.HTTPException as exc:
         log.warning(f"safe_respond failed for interaction {interaction.id} ({exc}) — attempting fallback")
         # If the payload was too large (400/50035), the placeholder is still
@@ -99,8 +117,30 @@ async def safe_respond(
                 )
             except Exception as inner:
                 log.warning(f"safe_respond fallback also failed for interaction {interaction.id} ({inner})")
-    except discord.NotFound as exc:
-        log.warning(f"safe_respond failed for interaction {interaction.id} ({exc}) — continuing")
+
+    if send_ok and feedback_context is not None and not ephemeral:
+        await _register_interaction_response(interaction, feedback_context)
+
+
+async def _register_interaction_response(
+    interaction: discord.Interaction,
+    feedback_context: "FeedbackContext",
+) -> None:
+    """Resolve the sent message and register it for feedback capture.
+
+    Imports are deferred so the optional dependency on services.feedback_log
+    doesn't pull DB modules at import time for environments that don't need it
+    (e.g. lint-only runs of cogs in isolation).
+    """
+    try:
+        sent = await interaction.original_response()
+    except discord.HTTPException as exc:
+        log.warning(f"safe_respond: could not fetch original response for tracking ({exc})")
+        return
+    from data.db import get_pool
+    from services import feedback_log
+    pool = await get_pool()
+    await feedback_log.register_bot_post(pool, sent, feedback_context)
 
 
 async def post_to_channel_or_respond(
@@ -110,6 +150,7 @@ async def post_to_channel_or_respond(
     embed: discord.Embed | None = None,
     content: str | None = None,
     ephemeral_ack: str = "Posted.",
+    feedback_context: "FeedbackContext | None" = None,
 ) -> None:
     """Post to a dedicated channel, deduping if the user is already there.
 
@@ -119,6 +160,10 @@ async def post_to_channel_or_respond(
     - target_channel_id set, user is ELSEWHERE: post to target AND respond
       visibly (they can't see the target channel from here).
     - No target channel: respond visibly, same as before.
+
+    `feedback_context` registers the channel-side post (never the ephemeral
+    ack or the user-visible mirror in their own channel — only the canonical
+    post in the target channel is anchored).
     """
     channel = interaction.guild.get_channel(target_channel_id) if target_channel_id else None
 
@@ -129,7 +174,7 @@ async def post_to_channel_or_respond(
             kwargs["embed"] = embed
         if content is not None:
             kwargs["content"] = content
-        await safe_respond(interaction, **kwargs)
+        await safe_respond(interaction, feedback_context=feedback_context, **kwargs)
         return
 
     # Post to the target channel unconditionally.
@@ -138,7 +183,13 @@ async def post_to_channel_or_respond(
         post_kwargs["embed"] = embed
     if content is not None:
         post_kwargs["content"] = content
-    await channel.send(**post_kwargs)
+    sent = await channel.send(**post_kwargs)
+
+    if feedback_context is not None:
+        from data.db import get_pool
+        from services import feedback_log
+        pool = await get_pool()
+        await feedback_log.register_bot_post(pool, sent, feedback_context)
 
     if interaction.channel_id == target_channel_id:
         # User is already in the target channel — they see the channel.send.

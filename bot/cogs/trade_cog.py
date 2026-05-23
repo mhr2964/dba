@@ -16,7 +16,7 @@ from data.repositories import league_repo, player_repo, team_repo, trade_block_r
 from phase.helpers import require_commissioner, require_phase
 import os
 
-from services import league_service, trade_service
+from services import feedback_log, league_service, trade_service
 from services.trade_evaluator import get_ai_reasoning
 
 log = get_logger(__name__)
@@ -203,7 +203,16 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             if transactions_channel_id:
                 tx_channel = interaction.guild.get_channel(transactions_channel_id)
                 if tx_channel and tx_channel.id != interaction.channel_id:
-                    await tx_channel.send(embed=announced)
+                    _sent = await tx_channel.send(embed=announced)
+                    await feedback_log.register_trade_announcement(
+                        pool, _sent,
+                        league_id=league.id, season=league.current_season,
+                        trade_id=trade.id,
+                        proposer_team_id=proposer_team.id,
+                        counterparty_team_id=counterparty_team.id,
+                        status=trade.status,
+                        headline=f"{proposer_team.full_name} / {counterparty_team.full_name} (Trade #{trade.id})",
+                    )
             return
 
         # Human counterparty — send DM with accept/decline view
@@ -235,7 +244,16 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
             if tx_channel and tx_channel.id != interaction.channel_id:
                 announced = trade_embeds.trade_proposed(trade, proposer_team, counterparty_team)
-                await tx_channel.send(embed=announced)
+                _sent = await tx_channel.send(embed=announced)
+                await feedback_log.register_trade_announcement(
+                    pool, _sent,
+                    league_id=league.id, season=league.current_season,
+                    trade_id=trade.id,
+                    proposer_team_id=proposer_team.id,
+                    counterparty_team_id=counterparty_team.id,
+                    status=trade.status,
+                    headline=f"{proposer_team.full_name} / {counterparty_team.full_name} (Trade #{trade.id})",
+                )
 
     @app_commands.command(
         name="propose-cpu",
@@ -369,7 +387,16 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
             if tx_channel and tx_channel.id != interaction.channel_id:
                 announced = trade_embeds.trade_proposed(trade, proposer_team, cpu_team)
-                await tx_channel.send(embed=announced)
+                _sent = await tx_channel.send(embed=announced)
+                await feedback_log.register_trade_announcement(
+                    pool, _sent,
+                    league_id=league.id, season=league.current_season,
+                    trade_id=trade.id,
+                    proposer_team_id=proposer_team.id,
+                    counterparty_team_id=cpu_team.id,
+                    status=trade.status,
+                    headline=f"{proposer_team.full_name} / {cpu_team.full_name} (Trade #{trade.id})",
+                )
 
     @app_commands.command(name="accept", description="Accept an incoming trade offer")
     @app_commands.describe(trade_id="The trade ID to accept")
@@ -404,7 +431,16 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         if transactions_channel_id:
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
             if tx_channel and tx_channel.id != interaction.channel_id:
-                await tx_channel.send(embed=trade_embeds.trade_proposed(trade, proposer_team, user_team))
+                _sent = await tx_channel.send(embed=trade_embeds.trade_proposed(trade, proposer_team, user_team))
+                await feedback_log.register_trade_announcement(
+                    pool, _sent,
+                    league_id=league.id, season=league.current_season,
+                    trade_id=trade.id,
+                    proposer_team_id=proposer_team.id,
+                    counterparty_team_id=user_team.id,
+                    status=trade.status,
+                    headline=f"{proposer_team.full_name} / {user_team.full_name} (Trade #{trade.id})",
+                )
 
     @app_commands.command(name="decline", description="Decline an incoming trade offer")
     @app_commands.describe(trade_id="The trade ID to decline")
@@ -448,11 +484,20 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
         if transactions_channel_id:
             tx_channel = interaction.guild.get_channel(transactions_channel_id)
             if tx_channel and tx_channel.id != interaction.channel_id:
-                await tx_channel.send(embed=result_embed)
+                _sent = await tx_channel.send(embed=result_embed)
 
                 proposer_team = await team_repo.get_by_id(pool, trade.proposer_team_id)
                 counterparty_team = await team_repo.get_by_id(pool, trade.counterparty_team_id)
                 if proposer_team and counterparty_team:
+                    await feedback_log.register_trade_announcement(
+                        pool, _sent,
+                        league_id=league.id, season=league.current_season,
+                        trade_id=trade.id,
+                        proposer_team_id=proposer_team.id,
+                        counterparty_team_id=counterparty_team.id,
+                        status="approved",
+                        headline=f"{proposer_team.full_name} / {counterparty_team.full_name} (Trade #{trade.id}) — approved",
+                    )
                     # Query win-loss records for both teams to give AI context.
                     rec_a = await pool.fetchrow(
                         "SELECT wins, losses FROM standings_cache "
@@ -492,7 +537,16 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                         rationale=grade_info["rationale"],
                         ai_reasoning=ai_reasoning or None,
                     )
-                    await tx_channel.send(embed=grade_embed)
+                    _grade_sent = await tx_channel.send(embed=grade_embed)
+                    await feedback_log.register_trade_announcement(
+                        pool, _grade_sent,
+                        league_id=league.id, season=league.current_season,
+                        trade_id=trade.id,
+                        proposer_team_id=proposer_team.id,
+                        counterparty_team_id=counterparty_team.id,
+                        status="approved_grade",
+                        headline=f"Grade: {proposer_team.full_name} {grade_info['grade_a']} / {counterparty_team.full_name} {grade_info['grade_b']} (Trade #{trade.id})",
+                    )
 
     @app_commands.command(name="veto", description="Commissioner: veto a pending trade")
     @app_commands.describe(trade_id="The trade ID to veto", reason="Reason for veto")

@@ -117,6 +117,7 @@ async def patch_get_pool(db_pool):
         patch("bot.cogs.roster_cog.get_pool", pool_mock),
         patch("bot.cogs.draft_cog.get_pool", pool_mock),
         patch("bot.cogs.strategy_cog.get_pool", pool_mock),
+        patch("bot.cogs.feedback_cog.get_pool", pool_mock),
         patch("bot.ui.stats_views.get_pool", pool_mock),
         patch("phase.helpers.get_pool", pool_mock),
     ):

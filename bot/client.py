@@ -62,6 +62,7 @@ COGS = [
     "bot.cogs.strategy_cog",
     "bot.cogs.admin_cog",
     "bot.cogs.coach_cog",
+    "bot.cogs.feedback_cog",
 ]
 
 
@@ -70,6 +71,10 @@ class DBABot(commands.Bot):
         intents = discord.Intents.default()
         intents.guilds = True
         intents.members = True
+        # Required to read reply text in feedback_cog.on_message — must also
+        # be enabled in Discord Developer Portal → Bot → Privileged Gateway
+        # Intents. Bot will fail to start if portal hasn't granted it.
+        intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, tree_cls=DedupeTree)
         self.tree.on_error = handle_app_command_error
 
