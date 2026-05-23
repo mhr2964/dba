@@ -1192,6 +1192,16 @@ LEAD_ROLES: frozenset[str] = frozenset({
 })
 
 
+# Posture values that represent a "contender-tier" team for B5 sub-rules.
+# Must match the posture strings emitted by compute_team_mode / _default_posture.
+_CONTENDER_TIER_MODES: frozenset[str] = frozenset(
+    {"contending", "play_in_fringe", "win_now"}
+)
+
+# Minimum OVR to be considered "starting quality" for the 2-for-1 sub-rule.
+_STARTING_QUALITY_OVR: int = 75
+
+
 async def cpu_should_accept(
     cpu_team_mode: str,
     assets_receiving: list,
@@ -1421,6 +1431,73 @@ async def cpu_should_accept(
     giving_players = [a for a in assets_giving if a.get("asset_type") == "player"]
     receiving_picks = [a for a in assets_receiving if a.get("asset_type") == "pick"]
     receiving_players = [a for a in assets_receiving if a.get("asset_type") == "player"]
+
+    # ── B5 sub-rule 1: Pick parity for contenders ─────────────────────────────
+    # A contender-tier team should not give away any pick on a lateral or
+    # downgrade swap.  "Lateral or downgrade" = net OVR change <= 0.
+    # Catches DEN/HOU (2nd pick + Gordon for Brooks) and LAC/TOR (picks + depth for Poeltl).
+    if cpu_team_mode in _CONTENDER_TIER_MODES:
+        _giving_pick_count = sum(
+            1 for a in assets_giving if a.get("asset_type") == "pick"
+        )
+        if _giving_pick_count > 0:
+            _sum_incoming_ovr = sum(
+                a.get("player", {}).get("overall", 0)
+                for a in receiving_players
+            )
+            _sum_outgoing_ovr = sum(
+                a.get("player", {}).get("overall", 0)
+                for a in giving_players
+            )
+            _net_ovr_change = _sum_incoming_ovr - _sum_outgoing_ovr
+            if _net_ovr_change <= 0:
+                log.debug(
+                    "[B5-sub1] contender pick-parity reject: mode=%s giving %d pick(s), "
+                    "net_OVR_change=%+d (incoming=%d outgoing=%d) — lateral/downgrade swap with lost pick",
+                    cpu_team_mode, _giving_pick_count, _net_ovr_change,
+                    _sum_incoming_ovr, _sum_outgoing_ovr,
+                )
+                return False, (
+                    f"B5-sub1: contender ({cpu_team_mode}) sending {_giving_pick_count} pick(s) "
+                    f"on a lateral/downgrade swap (net OVR {_net_ovr_change:+d}) — no pick parity"
+                )
+    # ── End B5 sub-rule 1 ────────────────────────────────────────────────────
+
+    # ── B5 sub-rule 2: Contender 2-for-1 needs upgrade ────────────────────────
+    # A contender shipping 2+ starting-quality players (OVR >= 75) must receive
+    # at least 1 player whose OVR is STRICTLY greater than EACH outgoing player.
+    # Catches NYK/GSW (Bridges 76 + Anunoby 82 → Kuminga 76).
+    # Only applies when receiving <= 1 player (true consolidation scenario).
+    # Contender 2-for-2 deals are not gated here.
+    if cpu_team_mode in _CONTENDER_TIER_MODES:
+        _giving_starters = [
+            a for a in giving_players
+            if a.get("player", {}).get("overall", 0) >= _STARTING_QUALITY_OVR
+        ]
+        if len(_giving_starters) >= 2 and len(receiving_players) <= 1:
+            _giving_ovrs = [
+                a.get("player", {}).get("overall", 0)
+                for a in _giving_starters
+            ]
+            _max_giving_ovr = max(_giving_ovrs) if _giving_ovrs else 0
+            _incoming_ovr = (
+                receiving_players[0].get("player", {}).get("overall", 0)
+                if receiving_players else 0
+            )
+            # Strict upgrade: incoming must be better than EACH outgoing starter.
+            _is_strict_upgrade = _incoming_ovr > _max_giving_ovr
+            if not _is_strict_upgrade:
+                log.debug(
+                    "[B5-sub2] contender 2-for-1 reject: mode=%s giving %d starters "
+                    "(max OVR %d), receiving 1 player (OVR %d) — not a strict upgrade",
+                    cpu_team_mode, len(_giving_starters), _max_giving_ovr, _incoming_ovr,
+                )
+                return False, (
+                    f"B5-sub2: contender ({cpu_team_mode}) trading {len(_giving_starters)} starters "
+                    f"(max OVR {_max_giving_ovr}) for OVR {_incoming_ovr} — "
+                    f"2-for-1 consolidation requires a strict OVR upgrade over each outgoing player"
+                )
+    # ── End B5 sub-rule 2 ────────────────────────────────────────────────────
 
     # ── B3: High-upside asset guard — don't give away young/pedigree players cheap ──
     # Applies when the CPU is giving away a player whose upside is materially
