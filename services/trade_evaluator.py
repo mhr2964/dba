@@ -1194,8 +1194,10 @@ LEAD_ROLES: frozenset[str] = frozenset({
 
 # Posture values that represent a "contender-tier" team for B5 sub-rules.
 # Must match the posture strings emitted by compute_team_mode / _default_posture.
+# "win_now" is a plan GOAL, not a posture mode — cpu_team_mode is always a posture
+# string ("contending", "play_in_fringe", etc.) so "win_now" here was dead.
 _CONTENDER_TIER_MODES: frozenset[str] = frozenset(
-    {"contending", "play_in_fringe", "win_now"}
+    {"contending", "play_in_fringe"}
 )
 
 # Minimum OVR to be considered "starting quality" for the 2-for-1 sub-rule.
@@ -1434,12 +1436,14 @@ async def cpu_should_accept(
 
     # ── B5 sub-rule 1: Pick parity for contenders ─────────────────────────────
     # A contender-tier team should not give away any pick on a lateral or
-    # downgrade swap.  "Lateral or downgrade" = net OVR change <= 0.
+    # downgrade swap UNLESS they receive a pick of equal-or-better tier in return.
+    # "Equal-or-better tier" = receiving R1 when sending R2, or matching tiers.
+    # "Lateral or downgrade" = net OVR change <= 0.
     # Catches DEN/HOU (2nd pick + Gordon for Brooks) and LAC/TOR (picks + depth for Poeltl).
+    # Does NOT reject legitimate consolidations like "send R2 + player, get R1 + player".
     if cpu_team_mode in _CONTENDER_TIER_MODES:
-        _giving_pick_count = sum(
-            1 for a in assets_giving if a.get("asset_type") == "pick"
-        )
+        _giving_picks = [a for a in assets_giving if a.get("asset_type") == "pick"]
+        _giving_pick_count = len(_giving_picks)
         if _giving_pick_count > 0:
             _sum_incoming_ovr = sum(
                 a.get("player", {}).get("overall", 0)
@@ -1451,16 +1455,34 @@ async def cpu_should_accept(
             )
             _net_ovr_change = _sum_incoming_ovr - _sum_outgoing_ovr
             if _net_ovr_change <= 0:
-                log.debug(
-                    "[B5-sub1] contender pick-parity reject: mode=%s giving %d pick(s), "
-                    "net_OVR_change=%+d (incoming=%d outgoing=%d) — lateral/downgrade swap with lost pick",
-                    cpu_team_mode, _giving_pick_count, _net_ovr_change,
-                    _sum_incoming_ovr, _sum_outgoing_ovr,
-                )
-                return False, (
-                    f"B5-sub1: contender ({cpu_team_mode}) sending {_giving_pick_count} pick(s) "
-                    f"on a lateral/downgrade swap (net OVR {_net_ovr_change:+d}) — no pick parity"
-                )
+                # Check if incoming picks compensate with equal-or-better tier.
+                # Tier: 1 = R1 (best), 2 = R2 (worse). min() finds the best tier.
+                _receiving_picks = [a for a in assets_receiving if a.get("asset_type") == "pick"]
+                _outgoing_tiers = [
+                    int(a.get("pick", a).get("round", a.get("round", 2)))
+                    for a in _giving_picks
+                ]
+                _incoming_tiers = [
+                    int(a.get("pick", a).get("round", a.get("round", 99)))
+                    for a in _receiving_picks
+                ]
+                _outgoing_best = min(_outgoing_tiers) if _outgoing_tiers else 99
+                _incoming_best = min(_incoming_tiers) if _incoming_tiers else 99
+                # Only reject if incoming picks are WORSE tier than outgoing (or absent).
+                # If incoming_best <= outgoing_best → equal-or-better tier → allow.
+                if _incoming_best > _outgoing_best:
+                    log.debug(
+                        "[B5-sub1] contender pick-parity reject: mode=%s giving %d pick(s) "
+                        "(best tier R%d), net_OVR_change=%+d, incoming best tier R%d — no parity",
+                        cpu_team_mode, _giving_pick_count, _outgoing_best,
+                        _net_ovr_change, _incoming_best,
+                    )
+                    return False, (
+                        f"B5-sub1: contender ({cpu_team_mode}) sending {_giving_pick_count} pick(s) "
+                        f"(best R{_outgoing_best}) on a lateral/downgrade swap "
+                        f"(net OVR {_net_ovr_change:+d}) without equal-or-better pick in return "
+                        f"(best incoming R{_incoming_best if _incoming_best < 99 else 'none'})"
+                    )
     # ── End B5 sub-rule 1 ────────────────────────────────────────────────────
 
     # ── B5 sub-rule 2: Contender 2-for-1 needs upgrade ────────────────────────

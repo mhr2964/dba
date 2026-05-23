@@ -387,3 +387,111 @@ async def test_play_in_fringe_also_gated_by_sub_rules():
     assert "B5-sub1" in reason, (
         f"Expected B5-sub1 pick-parity rejection for play_in_fringe; got: {reason}"
     )
+
+
+# ---------------------------------------------------------------------------
+# B5 sub-rule 1: equal-or-better pick tier exemption (BLOCKER 2 fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_contender_accepts_2nd_for_1st_pick_swap_on_lateral_player():
+    """Contender ships R2 + OVR-76 player, receives R1 + OVR-76 player.
+
+    Net OVR change = 0 (lateral swap). Sends a 2nd-round pick.
+    BUT receives a 1st-round pick in return (equal-or-better tier: R1 <= R2).
+    Sub-rule 1 must NOT reject — this is a legitimate consolidation.
+    """
+    assets_giving = [
+        _make_player_asset(overall=76, last_name="LateralOut"),
+        _make_pick_asset(round_num=2),  # outgoing R2
+    ]
+    assets_receiving = [
+        _make_player_asset(overall=76, last_name="LateralIn"),
+        _make_pick_asset(round_num=1),  # incoming R1 — better tier than R2
+    ]
+
+    # Balanced value (lateral player swap + pick upgrade).
+    evaluation = _build_evaluation(score_a=50.0, score_b=48.0)
+
+    accept, reason = await trade_evaluator.cpu_should_accept(
+        cpu_team_mode="contending",
+        assets_receiving=assets_receiving,
+        assets_giving=assets_giving,
+        evaluation=evaluation,
+        salary_cap=SALARY_CAP,
+        current_cap_used=int(SALARY_CAP * 0.85),
+    )
+
+    assert "B5-sub1" not in reason, (
+        f"B5-sub1 must not reject when receiving equal-or-better pick tier (R1 for R2); "
+        f"got: {reason}"
+    )
+
+
+async def test_contender_rejects_r2_for_no_pick_on_lateral_player():
+    """Contender ships R2 + OVR-76 player, receives ONLY OVR-76 player (no pick back).
+
+    Incoming pick tier = none (99 > R2=2). Sub-rule 1 must reject — no parity.
+    This is the base DEN/HOU case with no pick in return.
+    """
+    assets_giving = [
+        _make_player_asset(overall=76, last_name="LateralOut"),
+        _make_pick_asset(round_num=2),  # outgoing R2
+    ]
+    assets_receiving = [
+        _make_player_asset(overall=76, last_name="LateralIn"),
+        # no pick incoming
+    ]
+
+    evaluation = _build_evaluation(score_a=38.0, score_b=42.0)
+
+    accept, reason = await trade_evaluator.cpu_should_accept(
+        cpu_team_mode="contending",
+        assets_receiving=assets_receiving,
+        assets_giving=assets_giving,
+        evaluation=evaluation,
+        salary_cap=SALARY_CAP,
+        current_cap_used=int(SALARY_CAP * 0.85),
+    )
+
+    assert accept is False, (
+        f"Contender must reject R2 + lateral for player-only return; got accept=True. reason={reason}"
+    )
+    assert "B5-sub1" in reason, (
+        f"Expected B5-sub1 rejection; got: {reason}"
+    )
+
+
+async def test_contender_rejects_r1_for_r2_on_lateral_player():
+    """Contender ships R1 + OVR-76 player, receives R2 + OVR-76 player.
+
+    Sends a 1st-round pick, receives only a 2nd-round pick — worse tier (R2 > R1).
+    Sub-rule 1 must reject — no equal-or-better pick parity.
+    """
+    assets_giving = [
+        _make_player_asset(overall=76, last_name="LateralOut"),
+        _make_pick_asset(round_num=1),  # outgoing R1
+    ]
+    assets_receiving = [
+        _make_player_asset(overall=76, last_name="LateralIn"),
+        _make_pick_asset(round_num=2),  # incoming R2 — worse tier than R1
+    ]
+
+    evaluation = _build_evaluation(score_a=45.0, score_b=50.0)
+
+    accept, reason = await trade_evaluator.cpu_should_accept(
+        cpu_team_mode="contending",
+        assets_receiving=assets_receiving,
+        assets_giving=assets_giving,
+        evaluation=evaluation,
+        salary_cap=SALARY_CAP,
+        current_cap_used=int(SALARY_CAP * 0.85),
+    )
+
+    assert accept is False, (
+        f"Contender must reject R1 + lateral for R2 + player return; got accept=True. reason={reason}"
+    )
+    assert "B5-sub1" in reason, (
+        f"Expected B5-sub1 rejection when outgoing pick tier (R1) > incoming pick tier (R2); "
+        f"got: {reason}"
+    )
