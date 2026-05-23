@@ -1732,27 +1732,40 @@ async def _run_incoming_first_for_team(
                     pass
     # ── End sweetener ─────────────────────────────────────────────────────────
 
-    # ── Pre-propose sanity floor ──────────────────────────────────────────────
-    # After the base package and any sweetener have been assembled, re-check the
-    # final ratio using the form-adjusted target value.  If CPU is still offering
-    # less than mode-floor of target value it would be laughed out of the room —
-    # abort without submitting.
-    # Mode-specific floors:
-    #   contending   — 0.85 (willing to overpay for fit)
-    #   play_in_fringe — 0.87 (slightly less aggressive)
-    #   others       — 0.90 standard
+    counterparty_player_ids = [target_player.id]
+    if secondary_target:
+        counterparty_player_ids.append(secondary_target.id)
+    counterparty_pick_ids: list[int] = []
+
+    # ── Final gates: sanity floor + OVR sanity + lopsided + B1/B5/B6 ─────────
+    # Delegates the pre-propose checks to _apply_final_trade_gates so both the
+    # incoming-first and outgoing-first paths run identical safety logic.
     _mode_a_floor = posture_a.get("mode", "developing")
-    _sanity_floor = (
-        0.85 if _mode_a_floor == "contending"
-        else 0.87 if _mode_a_floor == "play_in_fringe"
-        else 0.90
+    _posture_b_str_gate = posture_b.get("mode", "developing") if isinstance(posture_b, dict) else str(posture_b)
+    _gates_ok, _gates_reason = await _apply_final_trade_gates(
+        pool=pool,
+        league=league,
+        team_a=team_a,
+        team_b=target_team,
+        outgoing_pids_a=list(offer_player_ids),
+        incoming_pids_a=list(counterparty_player_ids),
+        outgoing_picks_a=list(offer_pick_ids),
+        incoming_picks_a=list(counterparty_pick_ids),
+        package_value=package_value,
+        target_value=target_value,
+        plan_a=_offer_plan_a or {},
+        plan_b=_offer_plan_b or {},
+        posture_a=_mode_a_floor,
+        posture_b=_posture_b_str_gate,
+        cp_contexts=cp_contexts,
+        cp_r1_counts=cp_r1_counts,
+        roster_a=roster_a_cache,
+        postures=postures,
     )
-    _final_ratio = package_value / max(target_value, 1)
-    if _final_ratio < _sanity_floor:
+    if not _gates_ok:
         _abort_msg = (
             f"[CPU] {team_a.nba_team_code} abandoning proposal to "
-            f"{target_team.nba_team_code}: final ratio {_final_ratio:.2f} below "
-            f"{_sanity_floor:.2f} sanity floor ({_mode_a_floor} mode)"
+            f"{target_team.nba_team_code}: gate rejected — {_gates_reason}"
         )
         log.info(_abort_msg)
         if _HEADLESS:
@@ -1761,71 +1774,21 @@ async def _run_incoming_first_for_team(
                     f"{target_player.first_name} {target_player.last_name}"
                 )
                 print(
-                    f"CPU [{team_a.nba_team_code}] — trade ABORTED (sanity floor)\n"
+                    f"CPU [{team_a.nba_team_code}] — trade ABORTED ({_gates_reason.split(':')[0]})\n"
                     f"   wanted: {_target_name_abort} (OVR {target_player.overall})"
                     f" value={target_value:.1f}\n"
-                    f"   pkg value={package_value:.1f} ratio={_final_ratio:.2f}"
-                    f" → below {_sanity_floor:.2f} ({_mode_a_floor}) → ABORTED (not proposed)"
+                    f"   pkg value={package_value:.1f} → gate: {_gates_reason}"
                 )
             except Exception:
                 pass
         return 0
-    # ── End pre-propose sanity floor ─────────────────────────────────────────
+    # ── End final gates ───────────────────────────────────────────────────────
 
-    # OVR sanity check — reject if team A is giving away a player 10+ OVR points
-    # above the best player received.  The salary-weighted value metric can make
-    # a superstar on a max contract appear equal in value to a cheaper role player,
-    # producing absurd trades (e.g. Luka OVR 93 for Cameron Johnson OVR 79).
-    # This check bypasses contract weighting and looks at raw OVR only.
-    if offer_player_ids:
-        best_offered_ovr = 0
-        for pid in offer_player_ids:
-            offered_p = await player_repo.get_by_id(pool, pid)
-            if offered_p and offered_p.overall > best_offered_ovr:
-                best_offered_ovr = offered_p.overall
-        target_ovr = target_player.overall
-        if secondary_target:
-            target_ovr = max(target_ovr, secondary_target.overall)
-        if best_offered_ovr >= target_ovr + 10:
-            log.info(
-                f"CPU trade aborted (OVR sanity): team {team_a.id} would give OVR "
-                f"{best_offered_ovr} for OVR {target_ovr} — gap ≥ 10"
-            )
-            return 0
-
-    # Sanity check: only propose if the return package value is reasonably close
-    # to the target value.  A package worth less than 50% or more than 200% of
-    # the target is too lopsided to submit — this prevents absurd offers like
-    # SGA for Zubac from ever reaching trade_service.propose.
     log.info(
         f"Trade check: target={target_value:.1f} package={package_value:.1f} "
         f"ratio={package_value / max(target_value, 1):.2f} "
         f"(team {team_a.id} → player {target_player.id} OVR {target_player.overall})"
     )
-    if target_value > 0 and (
-        package_value < target_value * 0.50 or package_value > target_value * 2.0
-    ):
-        log.info(
-            f"CPU trade aborted (lopsided): team {team_a.id} package value "
-            f"{package_value:.1f} vs target value {target_value:.1f}"
-        )
-        if _HEADLESS:
-            try:
-                _ratio = package_value / max(target_value, 1)
-                _target_name = f"{target_player.first_name} {target_player.last_name}"
-                print(
-                    f"CPU [{team_a.nba_team_code}] — trade REJECT (lopsided)\n"
-                    f"   wanted: {_target_name} (OVR {target_player.overall}) value={target_value:.1f}\n"
-                    f"   pkg value={package_value:.1f} ratio={_ratio:.2f} → outside [0.50, 2.00] → REJECT"
-                )
-            except Exception:
-                pass
-        return 0
-
-    counterparty_player_ids = [target_player.id]
-    if secondary_target:
-        counterparty_player_ids.append(secondary_target.id)
-    counterparty_pick_ids: list[int] = []
 
     log.info(
         f"CPU trade: team {team_a.id} ({posture_a.get('mode', team_a.cpu_mode)}/urgency={posture_a.get('urgency')}) "
@@ -2869,6 +2832,242 @@ def _score_outgoing_pair(
     return base_value * need_multiplier * _plan_bias * _arch_penalty
 
 
+async def _apply_final_trade_gates(
+    pool,
+    league,
+    team_a,
+    team_b,
+    outgoing_pids_a: list[int],
+    incoming_pids_a: list[int],
+    outgoing_picks_a: list[int],
+    incoming_picks_a: list[int],
+    package_value: float,
+    target_value: float,
+    plan_a: dict,
+    plan_b: dict,
+    posture_a: str,
+    posture_b: str,
+    cp_contexts: dict,
+    cp_r1_counts: dict,
+    roster_a: list,
+    postures: dict,
+) -> tuple[bool, str]:
+    """Run the final proposer-side safety gates before submitting a trade proposal.
+
+    Returns (approved, reason).  If not approved, reason names the gate that failed.
+
+    Gates applied (in order):
+      1. Sanity floor — package_value/target_value must meet mode-specific floor.
+      2. OVR sanity   — proposer must not give an OVR 10+ above best received.
+      3. Lopsided     — ratio must be inside [0.50, 2.00].
+      4. B1 posture   — each incoming player must match team A's posture.
+      5. B5 asymmetric rejection — cpu_should_accept called from team A's POV.
+      6. B6 archetype redundancy — reject if incoming player duplicates an existing
+                                   archetype at 2+ on team A's post-trade roster.
+
+    posture_a/posture_b: string mode value (e.g. "contending", "developing").
+    postures: full posture-dict map (team_id -> posture dict) for B1 gate.
+
+    This helper is called by both _run_incoming_first_for_team (post-pass-2) and
+    _attempt_outgoing_first_offer (after scoring picks the best candidate).
+    Behavior on the incoming-first path must match the prior inline checks bit-for-bit.
+    """
+    _mode_a = posture_a
+
+    # ── Gate 1: Sanity floor ────────────────────────────────────────────────
+    _sanity_floor = (
+        0.85 if _mode_a == "contending"
+        else 0.87 if _mode_a == "play_in_fringe"
+        else 0.90
+    )
+    _final_ratio = package_value / max(target_value, 1)
+    if _final_ratio < _sanity_floor:
+        return False, (
+            f"sanity_floor: ratio {_final_ratio:.2f} below {_sanity_floor:.2f} "
+            f"({_mode_a} mode)"
+        )
+
+    # ── Gate 2: OVR sanity — don't give away a player 10+ OVR above best received ──
+    if outgoing_pids_a:
+        _best_offered_ovr = 0
+        for _pid in outgoing_pids_a:
+            _op = await player_repo.get_by_id(pool, _pid)
+            if _op and _op.overall > _best_offered_ovr:
+                _best_offered_ovr = _op.overall
+        _best_incoming_ovr = 0
+        for _pid in incoming_pids_a:
+            _ip = await player_repo.get_by_id(pool, _pid)
+            if _ip and _ip.overall > _best_incoming_ovr:
+                _best_incoming_ovr = _ip.overall
+        if _best_offered_ovr >= _best_incoming_ovr + 10:
+            return False, (
+                f"ovr_sanity: giving OVR {_best_offered_ovr} for OVR {_best_incoming_ovr} — gap >= 10"
+            )
+
+    # ── Gate 3: Lopsided check ──────────────────────────────────────────────
+    if target_value > 0 and (
+        package_value < target_value * 0.50 or package_value > target_value * 2.0
+    ):
+        return False, (
+            f"lopsided: pkg {package_value:.1f} vs target {target_value:.1f} "
+            f"(ratio {_final_ratio:.2f}) outside [0.50, 2.00]"
+        )
+
+    # ── Gate 4: B1 posture — each incoming player must match team A's posture ──
+    _posture_a_full = postures.get(team_a.id, {}) if postures else {}
+    for _pid in incoming_pids_a:
+        _ip = await player_repo.get_by_id(pool, _pid)
+        if _ip and not _team_a_wants_player(_posture_a_full, _ip):
+            return False, (
+                f"B1_posture: {_mode_a} team A does not want incoming player "
+                f"{_ip.first_name} {_ip.last_name} OVR {_ip.overall}"
+            )
+
+    # ── Gate 5: B5 asymmetric rejection (cpu_should_accept from team A's POV) ──
+    # Build minimal asset dicts compatible with cpu_should_accept's interface.
+    # This is a proposer-side self-check: team A is the CPU evaluating its own deal.
+    _assets_giving_a: list[dict] = []
+    for _pid in outgoing_pids_a:
+        _op = await player_repo.get_by_id(pool, _pid)
+        _oc = await player_repo.get_active_contract(pool, _pid)
+        if _op:
+            _assets_giving_a.append({
+                "asset_type": "player",
+                "player": {
+                    "id": _op.id,
+                    "overall": _op.overall,
+                    "age": _player_age(_op) or 27,
+                    "first_name": _op.first_name,
+                    "last_name": _op.last_name,
+                },
+                "contract": {
+                    "salary": getattr(_oc, "salary", 0) or 0,
+                    "years_remaining": getattr(_oc, "years_remaining", 1) or 1,
+                },
+            })
+    for _pkid in outgoing_picks_a:
+        _pk = await pool.fetchrow("SELECT season, round FROM draft_picks WHERE id = $1", _pkid)
+        if _pk:
+            _assets_giving_a.append({
+                "asset_type": "pick",
+                "round": _pk["round"],
+                "season": _pk["season"],
+                "pick": {"round": _pk["round"], "season": _pk["season"]},
+            })
+
+    _assets_receiving_a: list[dict] = []
+    for _pid in incoming_pids_a:
+        _ip = await player_repo.get_by_id(pool, _pid)
+        _ic = await player_repo.get_active_contract(pool, _pid)
+        if _ip:
+            _assets_receiving_a.append({
+                "asset_type": "player",
+                "player": {
+                    "id": _ip.id,
+                    "overall": _ip.overall,
+                    "age": _player_age(_ip) or 27,
+                    "first_name": _ip.first_name,
+                    "last_name": _ip.last_name,
+                },
+                "contract": {
+                    "salary": getattr(_ic, "salary", 0) or 0,
+                    "years_remaining": getattr(_ic, "years_remaining", 1) or 1,
+                },
+            })
+    for _pkid in incoming_picks_a:
+        _pk = await pool.fetchrow("SELECT season, round FROM draft_picks WHERE id = $1", _pkid)
+        if _pk:
+            _assets_receiving_a.append({
+                "asset_type": "pick",
+                "round": _pk["round"],
+                "season": _pk["season"],
+                "pick": {"round": _pk["round"], "season": _pk["season"]},
+            })
+
+    if _assets_giving_a or _assets_receiving_a:
+        _b5_score_a = sum(
+            trade_evaluator.player_trade_value(
+                a["player"],
+                a.get("contract", {}),
+                league.salary_cap,
+            )
+            for a in _assets_receiving_a if a.get("asset_type") == "player"
+        )
+        _b5_score_b = sum(
+            trade_evaluator.player_trade_value(
+                a["player"],
+                a.get("contract", {}),
+                league.salary_cap,
+            )
+            for a in _assets_giving_a if a.get("asset_type") == "player"
+        )
+        _b5_differential = abs(_b5_score_a - _b5_score_b)
+        _b5_max_side = max(_b5_score_a, _b5_score_b, 1.0)
+        _b5_eval = {
+            "score_a": _b5_score_a,
+            "score_b": _b5_score_b,
+            "differential": _b5_differential,
+            "is_fair": _b5_differential < _b5_max_side * 0.20,
+            "rationale": "pre-propose gate",
+        }
+        _b5_ctx = cp_contexts.get(team_a.id, {}) if cp_contexts else {}
+        _b5_cap_used = _b5_ctx.get("current_payroll", 0) or 0
+        try:
+            _b5_ok, _b5_reason = await trade_evaluator.cpu_should_accept(
+                cpu_team_mode=_mode_a,
+                assets_receiving=_assets_receiving_a,
+                assets_giving=_assets_giving_a,
+                evaluation=_b5_eval,
+                salary_cap=league.salary_cap,
+                current_cap_used=_b5_cap_used,
+            )
+            if not _b5_ok:
+                log.debug(
+                    "[gates] B5 reject for team %s (%s): %s",
+                    team_a.nba_team_code, _mode_a, _b5_reason,
+                )
+                return False, f"B5: {_b5_reason}"
+        except Exception as _b5_exc:
+            log.debug("[gates] B5 cpu_should_accept error: %s", _b5_exc)
+
+    # ── Gate 6: B6 archetype redundancy on RECEIVING side ──────────────────
+    # Reject if incoming player duplicates an archetype already at 2+ on team A's
+    # post-trade roster (current roster minus outgoing players).
+    _outgoing_set = set(outgoing_pids_a)
+    _post_trade_roster = [p for p in roster_a if p.id not in _outgoing_set]
+    _arch_counts = _team_archetype_counts(_post_trade_roster)
+
+    for _pid in incoming_pids_a:
+        _ip = await player_repo.get_by_id(pool, _pid)
+        if not _ip:
+            continue
+        _incoming_arch = trade_evaluator._player_archetype({
+            "position": _ip.position,
+            "tendency_3pt": getattr(_ip, "tendency_3pt", 50) or 50,
+            "tendency_drive": getattr(_ip, "tendency_drive", 50) or 50,
+            "tendency_pass": getattr(_ip, "tendency_pass", 50) or 50,
+            "ast_tendency": getattr(_ip, "ast_tendency", 50) or 50,
+            "reb_tendency": getattr(_ip, "reb_tendency", 50) or 50,
+            "blk_tendency": getattr(_ip, "blk_tendency", 50) or 50,
+            "stl_tendency": getattr(_ip, "stl_tendency", 50) or 50,
+        })
+        if _incoming_arch and _arch_counts.get(_incoming_arch, 0) >= 2:
+            log.debug(
+                "[gates] B6 arch reject for team %s: incoming %s %s has arch %s, "
+                "already %d on roster",
+                team_a.nba_team_code,
+                _ip.first_name, _ip.last_name,
+                _incoming_arch, _arch_counts[_incoming_arch],
+            )
+            return False, (
+                f"B6_arch: incoming {_ip.first_name} {_ip.last_name} "
+                f"archetype '{_incoming_arch}' already has {_arch_counts[_incoming_arch]} "
+                f"on team A's post-trade roster"
+            )
+
+    return True, ""
+
+
 async def _attempt_outgoing_first_offer(
     pool,
     league,
@@ -3098,29 +3297,43 @@ async def _attempt_outgoing_first_offer(
     pair_key = (min(team_a.id, target_team.id), max(team_a.id, target_team.id))
     used_pairs.add(pair_key)
 
-    # Sanity checks (mirrors _attempt_one_offer).
+    # ── Final gates: B1/B5/B6 + sanity floor + lopsided ─────────────────────
+    # Run the same gate battery that incoming-first applies post-pass-2.
+    # Replaces the prior inline sanity-floor + lopsided checks and adds the
+    # contender-specific posture, asymmetric-rejection, and archetype guards.
     _posture_a_dict = postures.get(team_a.id, {})
     _mode_a = _posture_a_dict.get("mode", "developing") if isinstance(_posture_a_dict, dict) else "developing"
-    _sanity_floor = (
-        0.85 if _mode_a == "contending"
-        else 0.87 if _mode_a == "play_in_fringe"
-        else 0.90
+    _posture_b_str_for_gates = _posture_b_final.get("mode", "developing") if isinstance(_posture_b_final, dict) else "developing"
+    _plan_b_for_gates = cp_plans.get(target_team.id) or {}
+    _gates_ok, _gates_reason = await _apply_final_trade_gates(
+        pool=pool,
+        league=league,
+        team_a=team_a,
+        team_b=target_team,
+        outgoing_pids_a=offer_player_ids,
+        incoming_pids_a=list(counterparty_player_ids),
+        outgoing_picks_a=offer_pick_ids,
+        incoming_picks_a=list(counterparty_pick_ids),
+        package_value=package_value,
+        target_value=target_value,
+        plan_a=_plan_a or {},
+        plan_b=_plan_b_for_gates,
+        posture_a=_mode_a,
+        posture_b=_posture_b_str_for_gates,
+        cp_contexts=cp_contexts,
+        cp_r1_counts=cp_r1_counts,
+        roster_a=_roster_a,
+        postures=postures,
     )
+    if not _gates_ok:
+        log.debug(
+            "[CPU outgoing-first] %s → %s: gate rejected: %s",
+            team_a.nba_team_code, target_team.nba_team_code, _gates_reason,
+        )
+        return 0
+    # ── End final gates ───────────────────────────────────────────────────────
+
     _final_ratio = package_value / max(target_value, 1)
-    if _final_ratio < _sanity_floor:
-        log.info(
-            "[CPU outgoing-first] %s abandoning: ratio %.2f below %.2f floor (%s mode)",
-            team_a.nba_team_code, _final_ratio, _sanity_floor, _mode_a,
-        )
-        return 0
-
-    if target_value > 0 and (package_value < target_value * 0.50 or package_value > target_value * 2.0):
-        log.info(
-            "[CPU outgoing-first] %s abandoning: lopsided ratio %.2f",
-            team_a.nba_team_code, _final_ratio,
-        )
-        return 0
-
     log.info(
         "[CPU outgoing-first] %s → %s: shipping player %d (OVR %d) value=%.1f "
         "| return value=%.1f ratio=%.2f",
