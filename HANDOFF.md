@@ -1,77 +1,119 @@
 # HANDOFF — dba
 
-B8 gate parity + B5 contender sub-rules (two commits, run 4 regressions).
+B7 root-cause + B8/B5 BLOCKER fixes (3 commits, run 5 prep).
 
 ```yaml
 session: 2026-05-22
 agent: backend-dev (claude-sonnet-4-6)
-commits: 762a950 (B8), 7f96c2b (B5 retune)
+commits: 087a249 (gates/B6/B3/NIT6+7), 4be6242 (B5-sub1/NIT5), 803e24d (B7)
 branch: master
 ```
 
 ## did
 
-### B8 — Gate parity on outgoing-first path
+### BLOCKER 1 — Outgoing-first iterates all candidates on gate failure
 
-Extracted `_apply_final_trade_gates()` from the inline pre-propose checks in
-`_run_incoming_first_for_team`. The helper runs six gates:
-1. Sanity floor (mode-specific ratio threshold)
-2. OVR sanity (no 10+ OVR giveaway)
-3. Lopsided check (ratio outside [0.50, 2.00])
-4. B1 posture gate (each incoming player must match team A's mode)
-5. B5 asymmetric rejection (`cpu_should_accept` from proposer's POV)
-6. B6 archetype redundancy on receiving side (2+ existing → reject)
+`_attempt_outgoing_first_offer` previously took only `all_candidates[0]`, the
+highest-scored pair. If `_apply_final_trade_gates` rejected it, the function
+returned 0 — even though 14+ (surplus × counterparty) combinations remained.
 
-`_run_incoming_first_for_team` now calls the helper instead of inline checks.
-`_attempt_outgoing_first_offer` calls the helper after `_score_outgoing_pair`
-picks the winner, before `trade_service.propose`.
+Fix: iterate `all_candidates` in score order; on gate rejection, log at
+`log.info` + `_HEADLESS` print (NIT 7) and continue to the next candidate.
+`used_pairs.add(pair_key)` deferred until a proposal actually fires (previously
+poisoned the pair before gate even ran).
 
-### B5 retune — Contender pick-parity and 2-for-1 upgrade rules
+### BLOCKER 2 — B5 sub-rule 1 now exempts equal-or-better incoming pick tier
 
-Added `_CONTENDER_TIER_MODES` constant and two sub-rules to `cpu_should_accept`
-after the existing 15% differential block:
+Spec: "if you SEND a pick you must RECEIVE either a pick of equal-or-better
+tier OR an OVR upgrade ≥2."  Prior code only checked net_OVR_change <= 0 and
+ignored incoming picks entirely.
 
-**Sub-rule 1 (pick parity):** contender-tier team sending any pick with
-net OVR change <= 0 → reject. Catches DEN/HOU (Gordon + 2nd → Brooks)
-and LAC/TOR (depth + pick → Poeltl downgrade) from run 4.
+Fix: compute `outgoing_best_tier` and `incoming_best_tier` (R1=1, R2=2).
+Only reject when `incoming_best > outgoing_best` (i.e., worse or absent).
+Receiving R1 when sending R2 is equal-or-better → allow.
 
-**Sub-rule 2 (2-for-1 upgrade):** contender-tier team shipping 2+ starters
-(OVR >= 75) must receive 1 player with OVR strictly greater than each
-outgoing starter. Only fires when receiving <= 1 player (2-for-2 unaffected).
-Catches NYK/GSW (Bridges + Anunoby → Kuminga) from run 4.
+### BLOCKER 3 — Remove catch-and-ignore around cpu_should_accept
+
+`_apply_final_trade_gates` wrapped the `cpu_should_accept` call in
+`except Exception: log.debug(...)` — a real bug in B5 logic would silently
+pass every gate. Removed the catch-all; exceptions now propagate.
+
+### BLOCKER 4 — B6 is soft-penalty in incoming-first; hard-reject in outgoing-first
+
+Pre-B8, incoming-first applied B6 as a scoring penalty in pass-2 (×0.65/×0.85).
+After B8 introduced `_apply_final_trade_gates`, B6 was hard-rejected from BOTH
+paths via the helper — overriding the soft penalty intent.
+
+Fix (Option B): removed B6 from `_apply_final_trade_gates` entirely.
+- Incoming-first: B6 soft penalty remains in pass-2 (unchanged).
+- Outgoing-first: B6 hard-reject applied inline before calling the helper.
+
+`_apply_final_trade_gates` signature also cleaned up: removed unused params
+`plan_a`, `plan_b`, `posture_b` (NIT 6). Both call sites updated.
+
+### NIT 5 — Removed dead "win_now" from _CONTENDER_TIER_MODES
+
+`cpu_team_mode` is always a posture string (`contending`, `play_in_fringe`, etc.),
+never a plan goal. `"win_now"` was dead in that set.
+
+### B7 part 1 — Floor preseason play_in_fringe + star at win_now
+
+`_derive_goal_and_horizon` early-season block (games_played < 10) routed
+`soft_rebuild/rebuilding → rebuild` and `contending → win_now` but had no
+branch for `play_in_fringe + has_any_star`. NYK shape (avg_age ≈ 28-29, KAT
+OVR 89) fell through to `("transition", 2)`.
+
+`last_derived_game_index` stays at 0 preseason, so the plan never re-derived.
+Downstream: `cpu_trade_proposals` reads the plan goal as "transition" →
+Bridges + Anunoby classified as flex/tradeable.
+
+Fix: added `if mode == "play_in_fringe" and has_any_star: return "win_now", 2`
+before the fall-through. Mirrors the identical post-record check.
+
+### B7 part 2 — Fix swapped SQL args in cpu_trade_posture plan_goal lookup
+
+`franchise_plans` WHERE clause: `$1=league_id, $2=team_id, $3=season`.
+Args were passed as `(league.id, league.current_season, team_id)` — season and
+team_id transposed. Query always returned None; `plan_goal` was always None.
+
+Fix: reorder to `(league.id, team_id, league.current_season)`, matching
+`trade_service.py:246` and `team_intel.py:167`.
 
 ## found
 
-- `_team_a_wants_player` for "contending" mode requires OVR >= 79 (comfortable urgency).
-  B8 tests that use OVR 76 for incoming players will be blocked by B1 before B5.
-  This is correct behavior — tests updated to use OVR 80+ to reach B5.
-- The fleecing floor in `cpu_should_accept` fires before the new sub-rules if score
-  ratios are below 0.85. B5 test fixtures calibrated to pass the floor.
-- `test_progression.py::test_high_potential_grows_more` is a pre-existing flaky test
-  (fails occasionally in full suite, passes in isolation). Not a regression.
+- BLOCKER 4 resolution chosen as Option B (remove B6 from helper, inline it
+  in outgoing-first) because Option A would require returning a score from the
+  helper — changing its contract for all callers.
+- The soft-penalty for B6 already fires in pass-2 for incoming-first; the gate
+  helper no longer touches B6 at all. Existing pass-2 code is unchanged.
+- NIT 7 (outgoing-first gate rejection visibility): logs now fire at `log.info`
+  plus a `_HEADLESS` print per rejected candidate, matching incoming-first.
 
 ## files-touched
 
-- `services/cpu_trade_proposals.py` — `_apply_final_trade_gates` (new), refactored
-  `_run_incoming_first_for_team` pre-propose block, wired into `_attempt_outgoing_first_offer`
-- `services/trade_evaluator.py` — `_CONTENDER_TIER_MODES`, `_STARTING_QUALITY_OVR` constants;
-  B5 sub-rules 1 and 2 in `cpu_should_accept`
-- `tests/test_apply_final_trade_gates.py` — 4 new tests (B8)
-- `tests/test_cpu_should_accept_contender_rules.py` — 9 new tests (B5 sub-rules)
+- `services/cpu_trade_proposals.py` — outgoing-first iteration loop, B6 inline
+  hard-reject, B3 catch removal, `_apply_final_trade_gates` signature (NIT 6),
+  both call sites updated, NIT 7 log level
+- `services/trade_evaluator.py` — B5-sub1 pick-tier exemption, NIT 5 dead entry
+- `services/franchise_plan_service.py` — early-season `play_in_fringe + star` floor
+- `services/cpu_trade_posture.py` — SQL arg order fix
+- `tests/test_apply_final_trade_gates.py` — updated 3 existing calls (removed
+  plan_a/plan_b/posture_b), added test 5 (next-candidate iteration), test 6 (B6 soft penalty)
+- `tests/test_cpu_should_accept_contender_rules.py` — 3 new BLOCKER 2 tests
+- `tests/test_franchise_plan_early_season.py` — NEW (5 tests, B7-part1)
+- `tests/test_cpu_trade_posture_sql_args.py` — NEW (1 test, B7-part2)
 
 ## contract changes callers need to know
 
-- `_apply_final_trade_gates` is a new module-level async function in
-  `cpu_trade_proposals`. Signature: see docstring. Takes `postures` dict
-  as final kwarg so both callers thread the live posture map.
-- `cpu_should_accept` now rejects more aggressively for contender-tier modes.
-  Callers that simulate `cpu_should_accept` in tests should expect False when
-  a contender sends picks on laterals or does non-upgrade 2-for-1 consolidations.
-- `_CONTENDER_TIER_MODES` is exported at module level in `trade_evaluator` for
-  any future callers that need the same posture set.
+- `_apply_final_trade_gates` signature changed: `plan_a`, `plan_b`, `posture_b`
+  removed. Any caller outside the two existing call sites must be updated.
+- `_apply_final_trade_gates` no longer hard-rejects B6. If a new caller needs
+  B6 enforcement it must apply it inline (as outgoing-first now does).
+- `_CONTENDER_TIER_MODES` no longer contains `"win_now"` — check plan_goal
+  separately if you need plan-goal gating.
 
 ## test counts
 
 Pre-existing failures: 10 (test_setup_cog × 8, test_trade_evaluator × 2)
-New tests: 13 (4 B8, 9 B5)
-All pass: yes. No new failures introduced.
+New tests added: 11 (2 gates, 3 B5-sub1, 5 franchise_plan, 1 posture SQL)
+Total passing: 231. No new failures introduced.
