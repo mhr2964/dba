@@ -510,6 +510,120 @@ async def _maybe_post_ledger(
         log.warning(f"_maybe_post_ledger failed: {exc}", exc_info=True)
 
 
+# fires every ~280 games (monthly)
+_race_game_counter: dict[int, int] = {}
+
+
+async def _maybe_post_the_race(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Race award-race column every ~280 games (approx. monthly)."""
+    _race_game_counter[league_id] = _race_game_counter.get(league_id, 0) + len(batch_results)
+    if _race_game_counter[league_id] < 280:
+        return
+    _race_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("the_race")
+    if not persona:
+        log.warning("_maybe_post_the_race: the_race persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+
+        # Fetch top-5 per award race with player names and stat averages.
+        race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=5)
+        if not race_leaders:
+            log.info("_maybe_post_the_race: no award race data — skipping")
+            return
+        # Skip when all award race lists are empty — no real candidates means
+        # the LLM will produce TBD / editor's note placeholders instead of a column.
+        has_real_candidates = any(candidates for candidates in race_leaders.values())
+        if not has_real_candidates:
+            log.info("_maybe_post_the_race: all award races empty — skipping to avoid TBD post")
+            return
+
+        # Enrich with player names and per-game averages.
+        all_pids = [p["player_id"] for candidates in race_leaders.values() for p in candidates]
+        if all_pids:
+            name_rows = await pool.fetch(
+                """
+                SELECT p.id, p.first_name || ' ' || p.last_name AS name,
+                       t.nba_team_code AS team,
+                       ROUND(AVG(b.points)::numeric, 1) AS ppg,
+                       ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
+                       ROUND(AVG(b.assists)::numeric, 1) AS apg,
+                       COUNT(b.id) AS gp
+                FROM players p
+                JOIN teams t ON t.id = p.team_id
+                LEFT JOIN game_box_scores b ON b.player_id = p.id
+                LEFT JOIN games g ON g.id = b.game_id AND g.season = $2
+                WHERE p.id = ANY($1)
+                GROUP BY p.id, t.nba_team_code
+                """,
+                all_pids, season,
+            )
+            player_info = {r["id"]: dict(r) for r in name_rows}
+        else:
+            player_info = {}
+
+        enriched_races: dict[str, list[dict]] = {}
+        for award, candidates in race_leaders.items():
+            enriched = []
+            for c in candidates:
+                pid = c["player_id"]
+                info = player_info.get(pid, {})
+                enriched.append({
+                    "player": info.get("name", f"Player #{pid}"),
+                    "team": info.get("team", "???"),
+                    "ppg": info.get("ppg"),
+                    "rpg": info.get("rpg"),
+                    "apg": info.get("apg"),
+                    "gp": info.get("gp"),
+                    "score": c.get("score"),
+                })
+            enriched_races[award] = enriched
+
+        context["award_races"] = enriched_races
+
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="the_race",
+                category="award_race",
+                context=context,
+            ),
+            timeout=20.0,
+        )
+        if article:
+            embed_data = EmbedData(
+                title=f"🏅 {article['headline']}",
+                description=article["body"][:2000],
+                color=_rgb_to_int((200, 160, 40)),
+                footer=f"by {persona.display_name} · {persona.byline}",
+            )
+            _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                "analysis", embed_data
+            )
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="the_race", category="award_race",
+                headline=article["headline"], body=article["body"],
+            )
+    except Exception as exc:
+        log.warning(f"_maybe_post_the_race failed: {exc}", exc_info=True)
+
+
 # Tracks the last simulated "YYYY-MM" POTM was checked for, per league_id, so
 # batches within the same simulated month short-circuit without a DB round-trip.
 _potm_last_checked_month: dict[int, str] = {}
