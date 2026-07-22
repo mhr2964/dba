@@ -20,6 +20,7 @@ from services.sim_content_pipeline import (
     _maybe_post_coach_beat,
     _maybe_post_potm,
     _maybe_post_power_list,
+    _maybe_post_rookie_watch,
 )
 from services.player_style_service import context_summary as _player_style_context
 from services.sim_channel_announcer import (
@@ -101,7 +102,6 @@ _COLUMNIST_FORCE_MIN_GAP: int = 70
 
 # New specialty persona game counters.  Each fires on its own cadence, independent
 # of the main columnist rotation.  70 games ≈ weekly; 280 games ≈ monthly.
-_rookie_watch_game_counter: dict[int, int] = {}    # fires every ~70 games (weekly)
 _big_picture_game_counter: dict[int, int] = {}     # fires every ~70 games (weekly)
 _ledger_game_counter: dict[int, int] = {}          # fires every ~280 games (monthly)
 _ledger_first_post_done: dict[tuple[int, int], bool] = {}  # True after first post per (league_id, season)
@@ -310,86 +310,6 @@ async def _maybe_snapshot_teams(
     except Exception as exc:
         log.warning(f"_maybe_snapshot_teams failed silently: {exc}")
 
-
-
-async def _maybe_post_rookie_watch(
-    pool,
-    league_id: int,
-    season: int,
-    batch_results: list[dict],
-    guild: discord.Guild,
-) -> None:
-    """Post Rookie Watch development tracker every ~70 games (approx. one game-week)."""
-    _rookie_watch_game_counter[league_id] = _rookie_watch_game_counter.get(league_id, 0) + len(batch_results)
-    if _rookie_watch_game_counter[league_id] < 70:
-        return
-    _rookie_watch_game_counter[league_id] = 0
-
-    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
-    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
-    if not analysis_channel:
-        return
-
-    persona = _PERSONAS.get("rookie_watch")
-    if not persona:
-        log.warning("_maybe_post_rookie_watch: rookie_watch persona not registered — skipping")
-        return
-
-    try:
-        context = await _build_batch_game_context(batch_results)
-
-        # Fetch rookie players and their recent stat averages.
-        rookie_rows = await pool.fetch(
-            """
-            SELECT p.id, p.first_name || ' ' || p.last_name AS name,
-                   t.nba_team_code AS team,
-                   ROUND(AVG(b.points)::numeric, 1) AS ppg,
-                   ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
-                   ROUND(AVG(b.assists)::numeric, 1) AS apg,
-                   COUNT(b.id) AS gp
-            FROM players p
-            JOIN teams t ON t.id = p.team_id
-            LEFT JOIN game_box_scores b ON b.player_id = p.id
-            LEFT JOIN games g ON g.id = b.game_id AND g.season = $2
-            WHERE p.league_id = $1 AND p.is_rookie = true
-            GROUP BY p.id, t.nba_team_code
-            ORDER BY AVG(b.points) DESC NULLS LAST
-            LIMIT 10
-            """,
-            league_id, season,
-        )
-        rookies = [dict(r) for r in rookie_rows]
-        if not rookies:
-            log.info("_maybe_post_rookie_watch: no rookies found — skipping")
-            return
-        context["rookies"] = rookies
-
-        article = await asyncio.wait_for(
-            columnist_service.generate(
-                pool, league_id, season,
-                persona_id="rookie_watch",
-                category="rookie_watch",
-                context=context,
-            ),
-            timeout=20.0,
-        )
-        if article:
-            embed = discord.Embed(
-                title=f"🌟 {article['headline']}",
-                description=article["body"][:2000],
-                color=discord.Color.from_rgb(100, 200, 120),
-            )
-            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            _sent = await analysis_channel.send(embed=embed)
-            await _feedback_log.register_columnist_post(
-                pool, _sent,
-                league_id=league_id, season=season,
-                persona_id="rookie_watch", category="rookie_watch",
-                headline=article["headline"], body=article["body"],
-                subject_player_ids=[r["id"] for r in rookies if r.get("id")],
-            )
-    except Exception as exc:
-        log.warning(f"_maybe_post_rookie_watch failed: {exc}", exc_info=True)
 
 
 async def _maybe_post_big_picture(
