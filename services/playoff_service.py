@@ -383,7 +383,7 @@ async def sim_series_game(
     is_clincher = updated_series.status == "complete"
     if is_clincher or random.random() < 0.3:
         try:
-            from services import batch_sim_runner as _bsr
+            from services import sim_content_pipeline as _scp
 
             high_team_code = high_team.nba_team_code if hasattr(high_team, "nba_team_code") else str(high_team.id)
             low_team_code = low_team.nba_team_code if hasattr(low_team, "nba_team_code") else str(low_team.id)
@@ -421,7 +421,7 @@ async def sim_series_game(
                 "top_performer": top_performer_dict,
                 "game_index_range": {"season_pct": 100},
             }
-            await _bsr._maybe_post_playoff_columnist(pool, league_id, season, playoff_context, guild)
+            await _scp._maybe_post_playoff_columnist(pool, league_id, season, playoff_context, guild)
         except Exception as exc:
             log.warning(f"Playoff columnist failed: {exc}")
 

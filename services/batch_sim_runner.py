@@ -88,11 +88,6 @@ _columnist_rotation_index: dict[int, int] = {}
 # their multi-episode storylines alive.  Keyed by league_id so multi-league bots work.
 _HTH_NARRATIVES: dict[int, dict] = {}
 
-# Playoff columnist rotation — cycles through recap-capable personas for post-game coverage.
-_PLAYOFF_COLUMNIST_ROTATION = ["jordan_rivera", "keisha_williams", "carla_knox"]
-# Keyed by league_id.
-_playoff_rotation_index: dict[int, int] = {}
-
 # POTM month-gate: keyed by league_id, stores the last "YYYY-MM" for which
 # _maybe_post_potm was allowed to call through to potm_service.  Batches within
 # the same simulated calendar month are skipped without touching the DB.
@@ -1131,69 +1126,6 @@ async def _maybe_post_columnist(
                         + mb_article.get("body", "")[:400]
                     ),
                 })
-
-
-async def _maybe_post_playoff_columnist(
-    pool,
-    league_id: int,
-    season: int,
-    context: dict,
-    guild: discord.Guild,
-) -> None:
-    """
-    Post a playoff recap article to #analysis, rotating through the three
-    recap-capable personas (maya_chen, jordan_rivera, keisha_williams).
-
-    Called from playoff_service.sim_series_game — always for clinching/elimination
-    games, ~30% of the time for regular playoff games.
-    """
-    _playoff_rotation_index[league_id] = _playoff_rotation_index.get(league_id, 0)
-    persona_id = _PLAYOFF_COLUMNIST_ROTATION[_playoff_rotation_index[league_id] % len(_PLAYOFF_COLUMNIST_ROTATION)]
-    _playoff_rotation_index[league_id] += 1
-
-    persona = _PERSONAS.get(persona_id)
-    if not persona:
-        return
-
-    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
-    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
-    if not analysis_channel:
-        return
-
-    article = await columnist_service.generate(
-        pool, league_id, season,
-        persona_id=persona_id,
-        category="playoff_recap",
-        context=context,
-    )
-    if not article:
-        return
-
-    rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
-    embed = discord.Embed(
-        title=article["headline"],
-        description=article["body"][:2000],
-        color=discord.Color.from_rgb(*rgb),
-    )
-    embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-    try:
-        _sent = await analysis_channel.send(embed=embed)
-    except Exception as exc:
-        log.warning(f"Playoff columnist post failed: {exc}")
-    else:
-        _series_team_ids = [
-            tid for tid in (
-                context.get("high_seed_team_id"),
-                context.get("low_seed_team_id"),
-            ) if tid
-        ]
-        await _feedback_log.register_columnist_post(
-            pool, _sent,
-            league_id=league_id, season=season,
-            persona_id=persona_id, category="playoff_recap",
-            headline=article["headline"], body=article["body"],
-            subject_team_ids=_series_team_ids or None,
-        )
 
 
 async def _maybe_advance_trade_deadline(

@@ -765,6 +765,75 @@ async def _maybe_post_prelude(
         log.warning(f"_maybe_post_prelude failed: {exc}", exc_info=True)
 
 
+_PLAYOFF_COLUMNIST_ROTATION = ["jordan_rivera", "keisha_williams", "carla_knox"]
+_playoff_rotation_index: dict[int, int] = {}
+
+
+async def _maybe_post_playoff_columnist(
+    pool,
+    league_id: int,
+    season: int,
+    context: dict,
+    guild: discord.Guild,
+) -> None:
+    """
+    Post a playoff recap article to #analysis, rotating through the three
+    recap-capable personas (maya_chen, jordan_rivera, keisha_williams).
+
+    Called from playoff_service.sim_series_game — always for clinching/elimination
+    games, ~30% of the time for regular playoff games.
+    """
+    _playoff_rotation_index[league_id] = _playoff_rotation_index.get(league_id, 0)
+    persona_id = _PLAYOFF_COLUMNIST_ROTATION[_playoff_rotation_index[league_id] % len(_PLAYOFF_COLUMNIST_ROTATION)]
+    _playoff_rotation_index[league_id] += 1
+
+    persona = _PERSONAS.get(persona_id)
+    if not persona:
+        return
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    article = await columnist_service.generate(
+        pool, league_id, season,
+        persona_id=persona_id,
+        category="playoff_recap",
+        context=context,
+    )
+    if not article:
+        return
+
+    rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
+    embed_data = EmbedData(
+        title=article["headline"],
+        description=article["body"][:2000],
+        color=_rgb_to_int(rgb),
+        footer=f"by {persona.display_name} · {persona.byline}",
+    )
+    try:
+        _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+            "analysis", embed_data
+        )
+    except Exception as exc:
+        log.warning(f"Playoff columnist post failed: {exc}")
+    else:
+        _series_team_ids = [
+            tid for tid in (
+                context.get("high_seed_team_id"),
+                context.get("low_seed_team_id"),
+            ) if tid
+        ]
+        await _feedback_log.register_columnist_post(
+            pool, _sent,
+            league_id=league_id, season=season,
+            persona_id=persona_id, category="playoff_recap",
+            headline=article["headline"], body=article["body"],
+            subject_team_ids=_series_team_ids or None,
+        )
+
+
 # Tracks the last simulated "YYYY-MM" POTM was checked for, per league_id, so
 # batches within the same simulated month short-circuit without a DB round-trip.
 _potm_last_checked_month: dict[int, str] = {}
