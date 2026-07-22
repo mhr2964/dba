@@ -23,6 +23,23 @@ from services.announcer_protocol import EmbedData
 log = get_logger(__name__)
 
 
+def _build_embed(embed_data: EmbedData) -> discord.Embed:
+    embed = discord.Embed(
+        title=embed_data.title,
+        description=embed_data.description,
+        color=embed_data.color,
+    )
+    for field in embed_data.fields:
+        embed.add_field(name=field.name, value=field.value, inline=field.inline)
+    if embed_data.footer:
+        embed.set_footer(text=embed_data.footer)
+    if embed_data.thumbnail_url:
+        embed.set_thumbnail(url=embed_data.thumbnail_url)
+    if embed_data.image_url:
+        embed.set_image(url=embed_data.image_url)
+    return embed
+
+
 class _BoundChannelAnnouncer:
     def __init__(self, channel: discord.abc.Messageable | None):
         self._channel = channel
@@ -30,25 +47,28 @@ class _BoundChannelAnnouncer:
     async def post_embed(self, channel_key: str, embed_data: EmbedData) -> None:
         if not self._channel:
             return
-        embed = discord.Embed(
-            title=embed_data.title,
-            description=embed_data.description,
-            color=embed_data.color,
-        )
-        for field in embed_data.fields:
-            embed.add_field(name=field.name, value=field.value, inline=field.inline)
-        if embed_data.footer:
-            embed.set_footer(text=embed_data.footer)
-        if embed_data.thumbnail_url:
-            embed.set_thumbnail(url=embed_data.thumbnail_url)
-        if embed_data.image_url:
-            embed.set_image(url=embed_data.image_url)
-        await self._channel.send(embed=embed)
+        await self._channel.send(embed=_build_embed(embed_data))
 
     async def post_text(self, channel_key: str, content: str) -> None:
         if not self._channel:
             return
         await self._channel.send(content)
+
+    async def post_embed_get_ref(self, channel_key: str, embed_data: EmbedData):
+        """Like post_embed, but returns the sent message (or None) so the caller
+        can pass it to feedback_log or create_thread without importing discord
+        itself -- the returned object is opaque from the caller's perspective."""
+        if not self._channel:
+            return None
+        return await self._channel.send(embed=_build_embed(embed_data))
+
+    async def create_thread_and_send(self, message_ref, name: str, content: str) -> None:
+        """Create a thread on a message returned by post_embed_get_ref and post
+        one text message into it. No-ops if message_ref is falsy."""
+        if not message_ref:
+            return
+        thread = await message_ref.create_thread(name=name, auto_archive_duration=1440)
+        await thread.send(content)
 
 
 async def _get_box_scores_channel(guild: discord.Guild, pool, league_id: int) -> "discord.TextChannel | None":
