@@ -17,7 +17,7 @@ from typing import Optional
 import asyncpg
 
 from data.repositories import trade_block_repo, team_repo, player_repo
-from services.trade_evaluator import player_trade_value
+from services.trade_value_math import player_trade_value
 
 log = logging.getLogger(__name__)
 

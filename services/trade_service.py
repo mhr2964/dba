@@ -6,7 +6,16 @@ from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
-from services import franchise_plan_service, ra_helpers, ra_reasoning, ride_along, trade_evaluator
+from services import (
+    cpu_trade_acceptance,
+    franchise_plan_service,
+    ra_helpers,
+    ra_reasoning,
+    ride_along,
+    trade_context_builder,
+    trade_grading,
+    trade_value_math,
+)
 
 # Used when persisting context signals — imported at module level so the timestamp
 # helper is available without a deferred import inside the hot path.
@@ -170,7 +179,7 @@ async def _compute_live_mode(pool, league: league_repo.League, team_id: int) -> 
     Compute a CPU team's trade posture mode from current season data.
 
     Mirrors the DB queries in cpu_trade_service._compute_team_posture and delegates
-    mode derivation to trade_evaluator.compute_team_mode — the single source of truth.
+    mode derivation to trade_context_builder.compute_team_mode — the single source of truth.
     This avoids reading the static cpu_mode column on the teams table, which caused
     propose-side and accept-side to see different modes for the same team.
 
@@ -247,7 +256,7 @@ async def _compute_live_mode(pool, league: league_repo.League, team_id: int) -> 
         )
         plan_goal = plan_goal_row["goal"] if plan_goal_row else None
 
-        return trade_evaluator.compute_team_mode(
+        return trade_context_builder.compute_team_mode(
             projected_wins, avg_age, conf_rank,
             star_count=star_count, plan_goal=plan_goal,
         )
@@ -284,7 +293,7 @@ async def _cpu_evaluate(
     _form_ovr_map = {p.id: p.overall for p in all_trade_players}
     _form_pos_map = {p.id: p.position for p in all_trade_players}
     try:
-        _form_map = await trade_evaluator.compute_form_map(
+        _form_map = await trade_context_builder.compute_form_map(
             pool, _form_player_ids, _form_ovr_map, _form_pos_map,
             league.id, league.current_season,
         )
@@ -344,10 +353,10 @@ async def _cpu_evaluate(
     # Build team-specific contexts for both sides so evaluate_trade can apply
     # cap-fit, roster-fit, and window-match modifiers from each team's perspective.
     # Falls back silently — build_team_context returns a neutral context on error.
-    _ctx_proposer = await trade_evaluator.build_team_context(
+    _ctx_proposer = await trade_context_builder.build_team_context(
         pool, league.id, proposer_team.id, league.current_season
     )
-    _ctx_counterparty = await trade_evaluator.build_team_context(
+    _ctx_counterparty = await trade_context_builder.build_team_context(
         pool, league.id, counterparty_team.id, league.current_season
     )
 
@@ -356,7 +365,7 @@ async def _cpu_evaluate(
     # (base × age × contract × form × experience_premium), which drives the fleecing floor.
     # receiving_team_context_a = counterparty context (they receive side_b assets)
     # receiving_team_context_b = proposer context (they receive side_a assets)
-    evaluation = trade_evaluator.evaluate_trade(
+    evaluation = trade_grading.evaluate_trade(
         side_a_players=[
             {
                 "player": d["player"],
@@ -434,7 +443,7 @@ async def _cpu_evaluate(
     except Exception:
         pass
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode=_cpu_live_mode,
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -796,7 +805,7 @@ async def _attempt_counter_offer(
         scored_cpu_players: list[tuple[float, int]] = []
         for p in counterparty_players:
             contract = await player_repo.get_active_contract(pool, p.id)
-            v = trade_evaluator.player_trade_value(
+            v = trade_value_math.player_trade_value(
                 {"overall": p.overall, "age": _player_age(p)},
                 {
                     "salary": contract.salary if contract else 0,
@@ -821,7 +830,7 @@ async def _attempt_counter_offer(
             # if so, demand a 1st-round pick.  Otherwise fall back to a 2nd-round pick.
             _role_map = giving_role_map or {}
             _giving_lead_or_starter = any(
-                (p.overall >= 78) or (_role_map.get(p.id) in trade_evaluator.LEAD_ROLES)
+                (p.overall >= 78) or (_role_map.get(p.id) in cpu_trade_acceptance.LEAD_ROLES)
                 for p in counterparty_players
             )
             available_picks = await trade_repo.get_team_picks(pool, league.id, proposer_team.id)
@@ -845,7 +854,7 @@ async def _attempt_counter_offer(
                     pk_row = _candidate
                     _lead_player = next(
                         (p for p in counterparty_players if
-                         p.overall >= 78 or _role_map.get(p.id) in trade_evaluator.LEAD_ROLES),
+                         p.overall >= 78 or _role_map.get(p.id) in cpu_trade_acceptance.LEAD_ROLES),
                         counterparty_players[0],
                     )
                     log.info(
@@ -1152,7 +1161,7 @@ async def approve(
                 else:
                     counterparty_pick_dicts.append(pick_d)
 
-    evaluation = trade_evaluator.evaluate_trade(
+    evaluation = trade_grading.evaluate_trade(
         side_a_players=[{"player": d["player"], "contract": d["contract"]} for d in proposer_player_dicts],
         side_a_picks=proposer_pick_dicts,
         side_b_players=[{"player": d["player"], "contract": d["contract"]} for d in counterparty_player_dicts],
@@ -1161,7 +1170,7 @@ async def approve(
         current_season=current_season,
     )
 
-    grade_a, grade_b = trade_evaluator.grade_trade(evaluation["score_a"], evaluation["score_b"])
+    grade_a, grade_b = trade_grading.grade_trade(evaluation["score_a"], evaluation["score_b"])
     grade_info = {
         "grade_a": grade_a,
         "grade_b": grade_b,

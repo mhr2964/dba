@@ -41,7 +41,7 @@ from typing import Optional
 
 from core.logging import get_logger
 from data.repositories import franchise_plan_repo, player_repo, team_repo
-from services import trade_evaluator as _trade_eval
+from services import trade_context_builder
 
 log = get_logger(__name__)
 
@@ -1071,7 +1071,7 @@ async def derive_plan(
     # the derive step — the goal doesn't exist yet.  B7 posture floor still fires via
     # star_count; the plan_goal floor only applies when re-evaluating an existing plan.
     _derive_star_count = sum(1 for r in roster if r["overall"] >= 85)
-    team_mode = _trade_eval.compute_team_mode(
+    team_mode = trade_context_builder.compute_team_mode(
         projected_wins if games_played >= 10 else None,
         avg_age,
         conf_rank,

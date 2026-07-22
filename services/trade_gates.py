@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from core.logging import get_logger
 from data.repositories import player_repo
-from services import trade_evaluator
+from services import cpu_trade_acceptance, trade_value_math
 from services.cpu_trade_posture import _player_age
 from services.trade_proposal_scoring import _team_a_wants_player
 
@@ -163,7 +163,7 @@ async def _apply_final_trade_gates(
 
     if _assets_giving_a or _assets_receiving_a:
         _b5_score_a = sum(
-            trade_evaluator.player_trade_value(
+            trade_value_math.player_trade_value(
                 a["player"],
                 a.get("contract", {}),
                 league.salary_cap,
@@ -171,7 +171,7 @@ async def _apply_final_trade_gates(
             for a in _assets_receiving_a if a.get("asset_type") == "player"
         )
         _b5_score_b = sum(
-            trade_evaluator.player_trade_value(
+            trade_value_math.player_trade_value(
                 a["player"],
                 a.get("contract", {}),
                 league.salary_cap,
@@ -189,7 +189,7 @@ async def _apply_final_trade_gates(
         }
         _b5_ctx = cp_contexts.get(team_a.id, {}) if cp_contexts else {}
         _b5_cap_used = _b5_ctx.get("current_payroll", 0) or 0
-        _b5_ok, _b5_reason = await trade_evaluator.cpu_should_accept(
+        _b5_ok, _b5_reason = await cpu_trade_acceptance.cpu_should_accept(
             cpu_team_mode=_mode_a,
             assets_receiving=_assets_receiving_a,
             assets_giving=_assets_giving_a,

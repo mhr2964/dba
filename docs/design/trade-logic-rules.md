@@ -1,6 +1,6 @@
 # Trade Logic Rules — CPU Trade Evaluator & Proposal Generator
 
-Durable rule specs for `services/trade_evaluator.py` and `services/cpu_trade_proposals.py`. Each rule (B1-B8) records the observed problem, the evidence that justified it, and the proposed/actual fix — so a future change to trade logic can be checked against *why* the rule exists, not just *that* it exists.
+Durable rule specs for the CPU trade evaluator (split 2026-07-22 into `services/trade_value_math.py`, `services/trade_context_builder.py`, `services/trade_grading.py`, `services/cpu_trade_acceptance.py`, and `services/trade_ai_reasoning.py` — see `docs/design/architecture.md`'s Split status for the breakdown) and `services/cpu_trade_proposals.py`. Each rule (B1-B8) records the observed problem, the evidence that justified it, and the proposed/actual fix — so a future change to trade logic can be checked against *why* the rule exists, not just *that* it exists.
 
 **Current implementation status (as of 2026-07-22):** B1, B3, B6, B7 partially shipped via the trade-proposal restructure (`762a950`, `087a249`, `4be6242`, `803e24d`). B8 (gate parity on the outgoing-first path) is the highest-leverage unshipped item — ride-along run 4 showed all three surfaced problem trades (LAC, NYK, DEN) share the same root cause: `_attempt_outgoing_first_offer` doesn't call the same final-pass gates `_run_incoming_first_for_team` does. B2, B4 remain single-case / deferred. See `Brain/Note Pad/dba/marcus-cole-feedback-eval.md` for the columnist-side (Marcus Cole prompt) companion themes and ongoing ride-along evidence tracking.
 
@@ -51,7 +51,7 @@ Durable rule specs for `services/trade_evaluator.py` and `services/cpu_trade_pro
 
 **Status:** READY (10+ cases across 4 runs)
 
-**Evidence:** GSW/NYK and DEN/TOR both went through despite one side getting a worse-than-fair return with no compensating strategic reason (cap relief, future picks). Run 4 added three more contender-overpays-or-downgrades cases (LAC/TOR Poeltl, GSW/NYK Kuminga, DEN/HOU Brooks) that the existing 15% raw-value differential threshold (`trade_evaluator.py:347`) doesn't catch, because it's calibrated for value parity, not for "gave away a pick on a lateral swap" or "gave up two starters for one same-OVR youth piece."
+**Evidence:** GSW/NYK and DEN/TOR both went through despite one side getting a worse-than-fair return with no compensating strategic reason (cap relief, future picks). Run 4 added three more contender-overpays-or-downgrades cases (LAC/TOR Poeltl, GSW/NYK Kuminga, DEN/HOU Brooks) that the existing 15% raw-value differential threshold (now `services/cpu_trade_acceptance.py`, `_b5_threshold`) doesn't catch, because it's calibrated for value parity, not for "gave away a pick on a lateral swap" or "gave up two starters for one same-OVR youth piece."
 
 **Rule:**
 - Reject a trade where the accepting team's incoming value (after B3 modifiers) is materially below their outgoing value, with no compensating strategic gain (cap relief above a threshold, future R1s, posture-aligned reset).

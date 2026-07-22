@@ -7,7 +7,7 @@ from bot.embeds.sim_embeds import _championship_odds
 from core.errors import PhaseError
 from phase.helpers import PHASE_SUGGESTIONS
 from phase.states import Phase
-from services.trade_evaluator import grade_trade
+from services.trade_grading import grade_trade
 
 
 # ---------------------------------------------------------------------------

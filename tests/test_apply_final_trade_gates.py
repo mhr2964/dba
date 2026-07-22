@@ -638,7 +638,7 @@ async def test_outgoing_first_tries_next_candidate_when_first_rejected():
         patch("services.cpu_trade_proposal_runner._score_outgoing_pair", _fake_score),
         patch("services.cpu_trade_proposal_runner._apply_final_trade_gates", _fake_gates),
         patch("services.cpu_trade_proposal_runner._team_archetype_counts", return_value={}),
-        patch("services.cpu_trade_proposal_runner.trade_evaluator._player_archetype", return_value=None),
+        patch("services.cpu_trade_proposal_runner.trade_grading._player_archetype", return_value=None),
         patch.object(_mod.trade_service, "propose", _fake_propose),
         patch("services.cpu_trade_proposal_runner._maybe_auto_approve", _fake_auto_approve),
     ):

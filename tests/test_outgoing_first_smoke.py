@@ -137,7 +137,7 @@ def test_score_outgoing_pair_empty_return_yields_zero():
 
 def test_score_outgoing_pair_arch_penalty_applied():
     """Receiving a player whose archetype already has 2+ on the roster gets penalised."""
-    from services import trade_evaluator
+    from services import trade_grading
 
     team_a = _FakeTeam(1)
     team_b = _FakeTeam(2)
@@ -151,7 +151,7 @@ def test_score_outgoing_pair_arch_penalty_applied():
     roster_a = other_players + [existing_arch_player_1, existing_arch_player_2]
 
     # Verify the arch detection works as expected (used for test documentation only).
-    assert trade_evaluator._player_archetype({
+    assert trade_grading._player_archetype({
         "position": "SF",
         "tendency_3pt": 85,
         "tendency_drive": 20,
@@ -299,7 +299,7 @@ def test_incoming_first_two_pass_archetype_check():
     and the penalty logic) directly to assert the same math fires correctly.
     """
     from services.trade_proposal_scoring import _team_archetype_counts
-    from services import trade_evaluator
+    from services import trade_grading
 
     # Build 3 ball-needs PGs with identical tendencies (high pass/ast, high drive).
     ball_needs_attrs = {
@@ -312,7 +312,7 @@ def test_incoming_first_two_pass_archetype_check():
         "blk_tendency": 20,
         "stl_tendency": 30,
     }
-    arch = trade_evaluator._player_archetype(ball_needs_attrs)
+    arch = trade_grading._player_archetype(ball_needs_attrs)
     assert arch is not None, "Expected ball-needs archetype to be non-None"
 
     pg1 = _FakePlayer(1, position="PG", tendency_pass=80, tendency_drive=75,
@@ -352,7 +352,7 @@ def test_incoming_first_two_pass_archetype_check():
         "stl_tendency": 65,
         "defense_tendency": 70,
     }
-    wing_arch = trade_evaluator._player_archetype(wing_attrs)
+    wing_arch = trade_grading._player_archetype(wing_attrs)
     wing_incoming = _FakePlayer(100, position="SF",
                                  tendency_3pt=50, tendency_drive=50,
                                  tendency_pass=40, ast_tendency=40,
@@ -436,7 +436,7 @@ async def test_pass2_uses_form_adjusted_target_value():
     """
     import services.cpu_trade_proposal_runner as _mod
     from data.repositories import league_repo, player_repo, team_repo
-    from services import trade_evaluator
+    from services import trade_value_math
 
     SALARY_CAP = 140_000_000
     LEAGUE_ID = 1
@@ -501,13 +501,13 @@ async def test_pass2_uses_form_adjusted_target_value():
     # the pass-1 raw _tv (computed without position/season_stats) instead.
     # Use _player_age directly so the age computation matches production exactly.
     from services.cpu_trade_posture import _player_age
-    p2_raw = trade_evaluator.player_trade_value(
+    p2_raw = trade_value_math.player_trade_value(
         {"overall": cand_player.overall, "age": _player_age(cand_player), "position": cand_player.position},
         {"salary": CAND_SALARY, "years_remaining": CAND_YEARS},
         SALARY_CAP,
         season_stats=None,
     )
-    expected_adj_tv = trade_evaluator.apply_form(p2_raw, HOT_FORM_MOD)
+    expected_adj_tv = trade_value_math.apply_form(p2_raw, HOT_FORM_MOD)
 
     # Pool mock: returns just enough for the function to reach pass-2.
     pool = MagicMock()
@@ -568,7 +568,7 @@ async def test_pass2_uses_form_adjusted_target_value():
             AsyncMock(return_value=cand_contract),
         ),
         patch.object(
-            _mod.trade_evaluator, "compute_form_map",
+            _mod.trade_context_builder, "compute_form_map",
             AsyncMock(return_value={CAND_PID: (HOT_FORM_MOD, {})}),
         ),
         patch("services.cpu_trade_proposal_runner._build_return_package", _fake_build_return_package),
@@ -624,7 +624,7 @@ async def test_pass2_includes_secondary_target_in_sizing():
     """
     import services.cpu_trade_proposal_runner as _mod
     from data.repositories import league_repo, player_repo, team_repo
-    from services import trade_evaluator
+    from services import trade_value_math
 
     SALARY_CAP = 140_000_000
     LEAGUE_ID = 1
@@ -703,19 +703,19 @@ async def test_pass2_includes_secondary_target_in_sizing():
     # Compute expected combined target value: form(primary) + form(secondary).
     # Use _player_age so age matches production exactly (birth_date → today diff).
     from services.cpu_trade_posture import _player_age
-    p2_primary_raw = trade_evaluator.player_trade_value(
+    p2_primary_raw = trade_value_math.player_trade_value(
         {"overall": PRIMARY_OVERALL, "age": _player_age(primary_player), "position": "SF"},
         {"salary": PRIMARY_SALARY, "years_remaining": PRIMARY_YEARS},
         SALARY_CAP, season_stats=None,
     )
-    p2_secondary_raw = trade_evaluator.player_trade_value(
+    p2_secondary_raw = trade_value_math.player_trade_value(
         {"overall": SECONDARY_OVERALL, "age": _player_age(secondary_player), "position": "PG"},
         {"salary": SECONDARY_SALARY, "years_remaining": SECONDARY_YEARS},
         SALARY_CAP, season_stats=None,
     )
     expected_combined = (
-        trade_evaluator.apply_form(p2_primary_raw, PRIMARY_FORM)
-        + trade_evaluator.apply_form(p2_secondary_raw, SECONDARY_FORM)
+        trade_value_math.apply_form(p2_primary_raw, PRIMARY_FORM)
+        + trade_value_math.apply_form(p2_secondary_raw, SECONDARY_FORM)
     )
 
     pool = MagicMock()
@@ -795,7 +795,7 @@ async def test_pass2_includes_secondary_target_in_sizing():
     with (
         patch.object(_mod.player_repo, "get_by_id", _get_by_id),
         patch.object(_mod.player_repo, "get_active_contract", _get_active_contract),
-        patch.object(_mod.trade_evaluator, "compute_form_map", _compute_form_map),
+        patch.object(_mod.trade_context_builder, "compute_form_map", _compute_form_map),
         patch("services.cpu_trade_proposal_runner._build_return_package", _fake_build_return_package),
         # Force random.random() < 0.3 so the secondary branch always fires for
         # a player with overall >= 75 (PRIMARY_OVERALL = 82 qualifies).

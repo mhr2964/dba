@@ -12,7 +12,7 @@ Test scenarios map directly to the four run-4 regression trades named in the spe
 from __future__ import annotations
 
 
-from services import trade_evaluator
+from services import cpu_trade_acceptance
 
 SALARY_CAP = 140_000_000
 
@@ -90,7 +90,7 @@ async def test_contender_rejects_lateral_swap_with_lost_pick():
     # Evaluation roughly even on value (lateral swap).
     evaluation = _build_evaluation(score_a=35.0, score_b=38.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -127,7 +127,7 @@ async def test_contender_rejects_downgrade_with_lost_pick():
     # but sub-rule 1 catches that we gave a pick on a downgrade.
     evaluation = _build_evaluation(score_a=50.0, score_b=50.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -161,7 +161,7 @@ async def test_contender_accepts_pick_with_upgrade():
     # Balanced value — sub-rule 1 should not block this.
     evaluation = _build_evaluation(score_a=48.0, score_b=45.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -199,7 +199,7 @@ async def test_contender_rejects_2for1_without_upgrade():
     # Even score so the differential gates pass; sub-rule 2 must still fire.
     evaluation = _build_evaluation(score_a=55.0, score_b=55.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -233,7 +233,7 @@ async def test_contender_rejects_2for1_lateral():
     # Balanced by value score but still a bad deal.
     evaluation = _build_evaluation(score_a=36.0, score_b=40.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -266,7 +266,7 @@ async def test_contender_accepts_consolidation_upgrade():
     # Contender gets more value than it gives (upgrade scenario).
     evaluation = _build_evaluation(score_a=55.0, score_b=40.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -302,7 +302,7 @@ async def test_contender_2for2_not_gated():
 
     evaluation = _build_evaluation(score_a=40.0, score_b=40.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -339,7 +339,7 @@ async def test_non_contender_unaffected_by_pick_parity():
     # Rebuild team gets youth + picks back; value slightly lower.
     evaluation = _build_evaluation(score_a=18.0, score_b=38.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="rebuilding",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -372,7 +372,7 @@ async def test_play_in_fringe_also_gated_by_sub_rules():
 
     evaluation = _build_evaluation(score_a=35.0, score_b=38.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="play_in_fringe",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -413,7 +413,7 @@ async def test_contender_accepts_2nd_for_1st_pick_swap_on_lateral_player():
     # Balanced value (lateral player swap + pick upgrade).
     evaluation = _build_evaluation(score_a=50.0, score_b=48.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -445,7 +445,7 @@ async def test_contender_rejects_r2_for_no_pick_on_lateral_player():
 
     evaluation = _build_evaluation(score_a=38.0, score_b=42.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,
@@ -479,7 +479,7 @@ async def test_contender_rejects_r1_for_r2_on_lateral_player():
 
     evaluation = _build_evaluation(score_a=45.0, score_b=50.0)
 
-    accept, reason = await trade_evaluator.cpu_should_accept(
+    accept, reason = await cpu_trade_acceptance.cpu_should_accept(
         cpu_team_mode="contending",
         assets_receiving=assets_receiving,
         assets_giving=assets_giving,

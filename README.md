@@ -111,7 +111,7 @@ pip install -r requirements-dev.txt
 pytest -v
 ```
 
-253 collected: 242 passing, 10 `xfail` (pre-existing, tracked issues — see markers in `tests/test_setup_cog.py` and `tests/test_trade_evaluator.py`), 1 integration-marked skip. Requires Postgres running (`docker compose up -d`) and migrations applied.
+See `HANDOFF.md` for the current passing/xfailed/skipped count (it moves fast during active development — pre-existing tracked issues are marked `xfail` in `tests/test_setup_cog.py` and `tests/test_cpu_trade_acceptance.py`). Requires Postgres running (`docker compose up -d`) and migrations applied.
 
 Manual dual-account Discord testing protocol: [docs/testing.md](docs/testing.md).
 

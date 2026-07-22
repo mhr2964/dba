@@ -234,12 +234,12 @@ async def _fetch_roster_median_ovr(pool, league_id: int, team_id: int) -> float:
 async def _fetch_player_form(pool, league_id: int, season: int, player_id: int, ovr: int) -> tuple[float, dict]:
     """Fetch form modifier + season stats for a single player.
 
-    Delegates to trade_evaluator.compute_form_map (cached per league/season).
+    Delegates to trade_context_builder.compute_form_map (cached per league/season).
     Returns (form_modifier, stats_dict). Safe fallback on any error.
     """
     try:
-        from services import trade_evaluator
-        form_map = await trade_evaluator.compute_form_map(
+        from services import trade_context_builder
+        form_map = await trade_context_builder.compute_form_map(
             pool,
             player_ids=[player_id],
             ovr_map={player_id: ovr},

@@ -84,8 +84,8 @@ async def test_plan_goal_query_uses_correct_arg_order():
     pool.fetchval = _fetchval
     pool.fetch = _fetch
 
-    # Patch trade_evaluator.compute_team_mode to avoid needing full logic.
-    with patch.object(posture_mod.trade_evaluator, "compute_team_mode", return_value="contending"):
+    # Patch trade_context_builder.compute_team_mode to avoid needing full logic.
+    with patch.object(posture_mod.trade_context_builder, "compute_team_mode", return_value="contending"):
         await posture_mod._compute_team_posture(pool, league, TEAM_ID)
 
     # Find the franchise_plans fetchrow call.

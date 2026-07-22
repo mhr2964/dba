@@ -10,7 +10,7 @@ from __future__ import annotations
 import random
 
 from data.repositories import player_repo
-from services import trade_evaluator
+from services import trade_grading, trade_value_math
 from services.cpu_trade_posture import _player_age
 
 
@@ -225,7 +225,7 @@ def _score_outgoing_pair(
             # No contracts provided (e.g. from unit tests) — use neutral defaults.
             _salary = 0
             _years = 1
-        raw_v = trade_evaluator.player_trade_value(
+        raw_v = trade_value_math.player_trade_value(
             {"overall": p.overall, "age": _age_p, "position": p.position},
             {"salary": _salary, "years_remaining": _years},
             _ctx_a.get("salary_cap", 140_000_000),
@@ -291,7 +291,7 @@ def _score_outgoing_pair(
 
     _arch_penalty = 1.0
     for p in speculative_return_players:
-        _incoming_arch = trade_evaluator._player_archetype({
+        _incoming_arch = trade_grading._player_archetype({
             "position": getattr(p, "position", ""),
             "tendency_3pt": getattr(p, "tendency_3pt", 50) or 50,
             "tendency_drive": getattr(p, "tendency_drive", 50) or 50,
@@ -380,7 +380,7 @@ def _fill_to_value(
 
         orig_tid = pick.get("original_team_id")
         win_pct = orig_win_pct.get(orig_tid) if orig_tid else None
-        pv = trade_evaluator.pick_trade_value(
+        pv = trade_value_math.pick_trade_value(
             pick["season"], pick["round"], current_season,
             team_win_pct=win_pct,
         )
@@ -462,7 +462,7 @@ def _asset_upside_modifier(
 ) -> float:
     """B3: Return an upside multiplier for young/pedigree/award-race players.
 
-    Layers on top of trade_evaluator.player_trade_value's existing age curve.
+    Layers on top of trade_value_math.player_trade_value's existing age curve.
     The intent is to make the PROPOSAL GENERATOR value these players more so
     they don't get offered as filler or accepted as headline return on vet swaps.
 
@@ -516,7 +516,6 @@ def _team_archetype_counts(
     roster_players: list of player_repo.Player objects (or dicts with tendency fields).
     Returns dict[archetype_str -> count].
     """
-    from services import trade_evaluator as _te
     counts: dict[str, int] = {}
     for p in roster_players:
         if hasattr(p, "__dict__"):
@@ -532,7 +531,7 @@ def _team_archetype_counts(
             }
         else:
             p_dict = p
-        arch = _te._player_archetype(p_dict)
+        arch = trade_grading._player_archetype(p_dict)
         if arch:
             counts[arch] = counts.get(arch, 0) + 1
     return counts

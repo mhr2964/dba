@@ -17,7 +17,7 @@ from phase.helpers import require_commissioner, require_phase
 import os
 
 from services import feedback_log, league_service, trade_service
-from services.trade_evaluator import get_ai_reasoning
+from services.trade_ai_reasoning import get_ai_reasoning
 
 log = get_logger(__name__)
 

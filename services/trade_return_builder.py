@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from core.logging import get_logger
 from data.repositories import league_repo, player_repo, team_repo, trade_repo
-from services import trade_evaluator
+from services import trade_value_math
 from services.cpu_trade_posture import _player_age, is_cornerstone
 from services.trade_proposal_scoring import _fill_to_value
 
@@ -59,7 +59,7 @@ async def _score_counterparty_for_target(
     }
 
     # Base: what the player is worth to the receiving team specifically.
-    base = trade_evaluator.player_team_specific_value(
+    base = trade_value_math.player_team_specific_value(
         player_dict,
         contract_dict,
         counterparty_context,
@@ -184,7 +184,7 @@ async def _derive_return_from_b(
         "team_id": team_b.id, "mode": "developing",
         "current_payroll": 0, "position_counts": {},
     })
-    target_value = trade_evaluator.player_team_specific_value(
+    target_value = trade_value_math.player_team_specific_value(
         {
             "overall": outgoing_player.overall,
             "age": _player_age(outgoing_player) or 27,
@@ -228,7 +228,7 @@ async def _derive_return_from_b(
 
         contract = await player_repo.get_active_contract(pool, p.id)
         _contracts_by_id[p.id] = contract
-        v = trade_evaluator.player_trade_value(
+        v = trade_value_math.player_trade_value(
             {"overall": p.overall, "age": _player_age(p)},
             {
                 "salary": contract.salary if contract else 0,
@@ -412,7 +412,7 @@ async def _build_return_package(
             continue
 
         contract = await player_repo.get_active_contract(pool, p.id)
-        v = trade_evaluator.player_trade_value(
+        v = trade_value_math.player_trade_value(
             {"overall": p.overall, "age": _player_age(p)},
             {
                 "salary": contract.salary if contract else 0,

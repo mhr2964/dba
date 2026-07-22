@@ -97,7 +97,7 @@ async def compute_posture(
         {mode, urgency, projected_wins, conf_rank, avg_age,
          games_remaining, wins, losses}
     """
-    from services import trade_evaluator  # local: avoids circular import chain
+    from services import trade_context_builder  # local: avoids circular import chain
 
     row = await pool.fetchrow(
         """
@@ -168,7 +168,7 @@ async def compute_posture(
     )
     plan_goal = plan_goal_row["goal"] if plan_goal_row else None
 
-    mode = trade_evaluator.compute_team_mode(
+    mode = trade_context_builder.compute_team_mode(
         projected_wins, avg_age, conf_rank,
         star_count=star_count, plan_goal=plan_goal,
     )
@@ -406,7 +406,7 @@ async def build_team_intel(
     # Rank is computed via a window function so we don't loop.
     # ------------------------------------------------------------------
     if "posture" in include:
-        from services import trade_evaluator  # local: avoids circular import
+        from services import trade_context_builder  # local: avoids circular import
 
         sc_rows = await pool.fetch(
             """
@@ -507,7 +507,7 @@ async def build_team_intel(
             avg_age: float = avg_age_by_team.get(tid, 27.0) or 27.0
             star_count: int = star_count_by_team.get(tid, 0)
             plan_goal: str | None = plan_goal_by_team.get(tid)
-            mode = trade_evaluator.compute_team_mode(
+            mode = trade_context_builder.compute_team_mode(
                 projected_wins, avg_age, conf_rank,
                 star_count=star_count, plan_goal=plan_goal,
             )

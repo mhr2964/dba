@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Optional
 
 from core.logging import get_logger
 from data.repositories import league_repo, player_repo, team_repo, trade_repo
-from services import ra_reasoning, ride_along, trade_evaluator, trade_service
+from services import ra_reasoning, ride_along, trade_context_builder, trade_grading, trade_service, trade_value_math
 from services.cpu_trade_announcer import _post_trade_block_ads
 from services.cpu_trade_posture import (
     _default_posture,
@@ -116,7 +116,7 @@ async def _attempt_three_team_deal(
                     continue
 
                 target_contract = await player_repo.get_active_contract(pool, p.id)
-                target_value = trade_evaluator.player_trade_value(
+                target_value = trade_value_math.player_trade_value(
                     {"overall": p.overall, "age": _player_age(p)},
                     {
                         "salary": target_contract.salary if target_contract else 0,
@@ -213,7 +213,7 @@ async def _attempt_three_team_deal(
         # (not the secondary player sent to C) count toward what B receives.
 
         _sec_contract = await player_repo.get_active_contract(pool, secondary_pid)
-        _sec_value_c = trade_evaluator.player_trade_value(
+        _sec_value_c = trade_value_math.player_trade_value(
             {"overall": sec_p.overall, "age": _player_age(sec_p)},
             {
                 "salary": _sec_contract.salary if _sec_contract else 0,
@@ -221,7 +221,7 @@ async def _attempt_three_team_deal(
             },
             league.salary_cap,
         )
-        _filler_pick_value_c = trade_evaluator.pick_trade_value(
+        _filler_pick_value_c = trade_value_math.pick_trade_value(
             filler_pick["season"], filler_pick["round"], season
         )
 
@@ -402,7 +402,7 @@ async def _attempt_three_team_deal(
 
         # --- Execute leg 2: A sends filler_pick to B; B sends target_player to A ---
         target_contract = await player_repo.get_active_contract(pool, target_player.id)
-        target_value = trade_evaluator.player_trade_value(
+        target_value = trade_value_math.player_trade_value(
             {"overall": target_player.overall, "age": _player_age(target_player)},
             {
                 "salary": target_contract.salary if target_contract else 0,
@@ -498,7 +498,7 @@ async def _attempt_one_offer(
         cp_plans[t.id] = result if not isinstance(result, Exception) else None
 
     _cp_ctx_list = await asyncio.gather(
-        *[trade_evaluator.build_team_context(pool, league.id, t.id, season) for t in cpu_teams],
+        *[trade_context_builder.build_team_context(pool, league.id, t.id, season) for t in cpu_teams],
         return_exceptions=True,
     )
     cp_contexts: dict[int, dict] = {}
@@ -729,7 +729,7 @@ async def _run_incoming_first_for_team(
             if not _sp:
                 continue
             _sc = await player_repo.get_active_contract(pool, _sid)
-            _sv = trade_evaluator.player_trade_value(
+            _sv = trade_value_math.player_trade_value(
                 {"overall": _sp.overall, "age": _player_age(_sp) or 27},
                 {"salary": getattr(_sc, "salary", 0) or 0,
                  "years_remaining": getattr(_sc, "years_remaining", 1) or 1},
@@ -873,7 +873,7 @@ async def _run_incoming_first_for_team(
 
             # Compute a rough target value for the threshold check.
             _tc = await player_repo.get_active_contract(pool, p.id)
-            _tv = trade_evaluator.player_trade_value(
+            _tv = trade_value_math.player_trade_value(
                 {"overall": p.overall, "age": _player_age(p)},
                 {
                     "salary": _tc.salary if _tc else 0,
@@ -1053,7 +1053,7 @@ async def _run_incoming_first_for_team(
             # that _build_return_package was given.  Using the raw _cand_tv here
             # would cause the ratio to drift by ±15% for hot/cold players and miss
             # the secondary's value entirely — both triggering spurious aborts.
-            _p2_cand_form_map = await trade_evaluator.compute_form_map(
+            _p2_cand_form_map = await trade_context_builder.compute_form_map(
                 pool,
                 [_cand_p.id],
                 {_cand_p.id: _cand_p.overall},
@@ -1064,7 +1064,7 @@ async def _run_incoming_first_for_team(
             _p2_target_fm, _p2_target_stats = _p2_cand_form_map.get(
                 _cand_p.id, (1.0, {})
             )
-            _p2_target_value_raw = trade_evaluator.player_trade_value(
+            _p2_target_value_raw = trade_value_math.player_trade_value(
                 {
                     "overall": _cand_p.overall,
                     "age": _player_age(_cand_p),
@@ -1077,7 +1077,7 @@ async def _run_incoming_first_for_team(
                 league.salary_cap,
                 season_stats=_p2_target_stats or None,
             )
-            _p2_adj_tv = trade_evaluator.apply_form(_p2_target_value_raw, _p2_target_fm)
+            _p2_adj_tv = trade_value_math.apply_form(_p2_target_value_raw, _p2_target_fm)
 
             # Secondary target: same 30%-dice / OVR≥75 gate as the legacy path.
             _p2_secondary: Optional[player_repo.Player] = None
@@ -1095,7 +1095,7 @@ async def _run_incoming_first_for_team(
                         _p2_secondary = _sec_cand
                         break
             if _p2_secondary is not None:
-                _sec_form_map = await trade_evaluator.compute_form_map(
+                _sec_form_map = await trade_context_builder.compute_form_map(
                     pool,
                     [_p2_secondary.id],
                     {_p2_secondary.id: _p2_secondary.overall},
@@ -1107,7 +1107,7 @@ async def _run_incoming_first_for_team(
                     _p2_secondary.id, (1.0, {})
                 )
                 _sec_tc = await player_repo.get_active_contract(pool, _p2_secondary.id)
-                _sec_raw = trade_evaluator.player_trade_value(
+                _sec_raw = trade_value_math.player_trade_value(
                     {
                         "overall": _p2_secondary.overall,
                         "age": _player_age(_p2_secondary),
@@ -1120,7 +1120,7 @@ async def _run_incoming_first_for_team(
                     league.salary_cap,
                     season_stats=_p2_sec_stats or None,
                 )
-                _p2_adj_tv += trade_evaluator.apply_form(_sec_raw, _p2_sec_fm)
+                _p2_adj_tv += trade_value_math.apply_form(_sec_raw, _p2_sec_fm)
             # ── End form-adjust + secondary fold ──────────────────────────────
 
             # Build the actual return package sized to the form-adjusted target.
@@ -1145,7 +1145,7 @@ async def _run_incoming_first_for_team(
             _post_arch_counts = _team_archetype_counts(_post_trade_roster)
 
             # Exact arch penalty for this candidate.
-            _incoming_arch = trade_evaluator._player_archetype({
+            _incoming_arch = trade_grading._player_archetype({
                 "position": _cand_p.position,
                 "tendency_3pt": getattr(_cand_p, "tendency_3pt", 50) or 50,
                 "tendency_drive": getattr(_cand_p, "tendency_drive", 50) or 50,
@@ -1255,7 +1255,7 @@ async def _run_incoming_first_for_team(
         _form_ovr_map[secondary_target.id] = secondary_target.overall
         _form_pos_map[secondary_target.id] = secondary_target.position
 
-    form_map: dict[int, tuple[float, dict]] = await trade_evaluator.compute_form_map(
+    form_map: dict[int, tuple[float, dict]] = await trade_context_builder.compute_form_map(
         pool, _form_all_ids, _form_ovr_map, _form_pos_map, league.id, season,
     )
     # Seed the winner's already-computed form entries into form_map so display
@@ -1313,7 +1313,7 @@ async def _run_incoming_first_for_team(
             if _sw_pid not in form_map:
                 _sw_ovr = _sw_p.overall if _sw_p else 80
                 _sw_pos = _sw_p.position if _sw_p else ""
-                _sw_form = await trade_evaluator.compute_form_map(
+                _sw_form = await trade_context_builder.compute_form_map(
                     pool, [_sw_pid], {_sw_pid: _sw_ovr}, {_sw_pid: _sw_pos}, league.id, season,
                 )
                 form_map = {**form_map, **_sw_form}
@@ -2171,7 +2171,7 @@ async def _attempt_outgoing_first_offer(
         if not _p:
             continue
         _c = await player_repo.get_active_contract(pool, pid)
-        _v = trade_evaluator.player_trade_value(
+        _v = trade_value_math.player_trade_value(
             {"overall": _p.overall, "age": _player_age(_p) or 27},
             {"salary": getattr(_c, "salary", 0) or 0, "years_remaining": getattr(_c, "years_remaining", 1) or 1},
             league.salary_cap,
@@ -2331,7 +2331,7 @@ async def _attempt_outgoing_first_offer(
 
         # Value computation for sanity checks.
         _cand_outgoing_contract = await player_repo.get_active_contract(pool, _cand_pid)
-        _cand_target_value = trade_evaluator.player_trade_value(
+        _cand_target_value = trade_value_math.player_trade_value(
             {"overall": _cand_player.overall, "age": _player_age(_cand_player) or 27, "position": _cand_player.position},
             {"salary": _cand_outgoing_contract.salary if _cand_outgoing_contract else 0, "years_remaining": _cand_outgoing_contract.years_remaining if _cand_outgoing_contract else 1},
             league.salary_cap,
@@ -2352,7 +2352,7 @@ async def _attempt_outgoing_first_offer(
             _rp_b6 = await player_repo.get_by_id(pool, _rpid)
             if not _rp_b6:
                 continue
-            _rp_arch = trade_evaluator._player_archetype({
+            _rp_arch = trade_grading._player_archetype({
                 "position": _rp_b6.position,
                 "tendency_3pt": getattr(_rp_b6, "tendency_3pt", 50) or 50,
                 "tendency_drive": getattr(_rp_b6, "tendency_drive", 50) or 50,
@@ -2548,7 +2548,7 @@ async def _maybe_auto_approve(
             )
             if p_row:
                 age = _player_age_from_row(p_row)
-                v = trade_evaluator.player_trade_value(
+                v = trade_value_math.player_trade_value(
                     {"overall": p_row["overall"], "age": age},
                     {
                         "salary": c_row["salary"] if c_row else 0,
@@ -2576,7 +2576,7 @@ async def _maybe_auto_approve(
                 league.current_season,
             )
             if pk_row:
-                v = trade_evaluator.pick_trade_value(
+                v = trade_value_math.pick_trade_value(
                     pk_row["season"], pk_row["round"], league.current_season,
                     team_win_pct=pk_row["win_pct"],
                 )
@@ -2850,7 +2850,7 @@ async def _pick_sweetener(
 
         orig_tid = pick.get("original_team_id")
         win_pct = orig_win_pct.get(orig_tid) if orig_tid else None
-        pv = trade_evaluator.pick_trade_value(
+        pv = trade_value_math.pick_trade_value(
             pick["season"], pick["round"], league.current_season,
             team_win_pct=win_pct,
         )
@@ -2873,7 +2873,7 @@ async def _pick_sweetener(
     scored: list[tuple[float, player_repo.Player]] = []
     for p in expendable:
         contract = await player_repo.get_active_contract(pool, p.id)
-        v = trade_evaluator.player_trade_value(
+        v = trade_value_math.player_trade_value(
             {"overall": p.overall, "age": _player_age(p)},
             {
                 "salary": contract.salary if contract else 0,
