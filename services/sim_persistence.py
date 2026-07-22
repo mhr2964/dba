@@ -1,22 +1,54 @@
-"""Roster/lineup persistence and the 60s role-assignment cache used by batch sim.
+"""Roster/lineup/game-result persistence used by batch sim.
 
-Pure DB-read/write helpers with no discord dependency -- extracted from
-batch_sim_runner.py. `_persist_game_result` and `_persist_injuries` stayed
-behind (still in batch_sim_runner.py) because they interleave real DB writes
-with inline discord.Embed announcements and have zero test coverage today;
-splitting those needs the same characterization-test treatment as the
-_maybe_post_* content functions, not a plain relocation.
+DB-read/write helpers extracted from batch_sim_runner.py. `_persist_injuries`
+and `_persist_game_result` also post announcements (injury alerts, win-streak,
+all-time-record embeds) -- they build `EmbedData` and hand it to a
+`_BoundChannelAnnouncer` (services/sim_channel_announcer.py) rather than
+constructing discord.Embed directly, so this module never imports discord.
+Both had zero test coverage before this split; see
+tests/test_persist_injuries.py and tests/test_persist_game_result.py for the
+characterization tests written before the discord.Embed -> EmbedData
+conversion (they pin exact embed title/description/field/footer text).
 """
 from __future__ import annotations
 
+import datetime
 import os
+import random
 import time as _time
 from typing import List
 
-from data.repositories import player_repo, team_repo
+from core.logging import get_logger
+from data.repositories import game_repo, player_repo, team_repo
+from services import records_service
+from services.announcer_protocol import EmbedData, EmbedField
 from services.role_service import ROLE_REGISTRY, get_or_derive_roles
+from services.sim_channel_announcer import _BoundChannelAnnouncer
+
+log = get_logger(__name__)
 
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
+
+_SEVERITY_LABELS: dict[str, str] = {
+    "day_to_day":    "day-to-day",
+    "week_2_4":      "2-4 weeks",
+    "week_4_8":      "4-8 weeks",
+    "season_ending": "season-ending",
+}
+
+_INJURY_GAMES_MISSED: dict[str, tuple[int, int]] = {
+    "day_to_day":    (1, 3),
+    "week_2_4":      (7, 14),
+    "week_4_8":      (20, 35),
+    "season_ending": (999, 999),
+}
+
+_ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
+
+# Matches discord.Color.red().value / discord.Color.gold().value -- hardcoded
+# so this module never needs `import discord`.
+_COLOR_RED = 0xE74C3C
+_COLOR_GOLD = 0xF1C40F
 
 _ROLE_CACHE: dict[tuple[int, int, int], list[dict]] = {}
 _ROLE_CACHE_TS: dict[tuple[int, int, int], float] = {}
@@ -285,3 +317,227 @@ async def _compute_team_ovr(pool, league_id: int, team_id: int) -> int:
         team_id,
     )
     return int(result) if result is not None else 75
+
+
+async def _persist_injuries(
+    pool,
+    game: dict,
+    game_id: int,
+    season: int,
+    result: dict,
+    injury_channel,
+    guild=None,
+) -> None:
+    raw_injuries = result.get("injuries", [])
+    if not raw_injuries:
+        return
+
+    rng = random.Random(game_id)
+    announcer = _BoundChannelAnnouncer(injury_channel)
+
+    game_date: datetime.date = game.get("scheduled_date") or datetime.date.today()
+    rows: list[dict] = []
+    # Dedupe within this game: a player can only appear once per injury pass.
+    # Without this, the same player_id can fire two announcements when the
+    # sim engine emits duplicate injury entries for the same player.
+    _announced_player_ids: set[int] = set()
+    for inj in raw_injuries:
+        severity = inj["severity"]
+        lo, hi = _INJURY_GAMES_MISSED[severity]
+        games_missed = lo if lo == hi else rng.randint(lo, hi)
+        start_date = game_date
+        return_date = start_date + datetime.timedelta(days=games_missed)
+        affects_prog = severity in {"week_4_8", "season_ending"}
+
+        rows.append({
+            "league_id": game["league_id"],
+            "season": season,
+            "player_id": inj["player_id"],
+            "team_id": inj["team_id"],
+            "severity": severity,
+            "games_missed": games_missed,
+            "incurred_in_game_id": game_id,
+            "start_date": start_date,
+            "return_date": return_date,
+            "affects_progression": affects_prog,
+        })
+
+        if severity in _ANNOUNCE_SEVERITIES and injury_channel:
+            # Skip duplicate announcement for same player in this game pass.
+            _pid = inj["player_id"]
+            if _pid in _announced_player_ids:
+                log.debug(
+                    "_persist_injuries: skipping duplicate injury announcement for player_id=%d in game_id=%d",
+                    _pid, game_id,
+                )
+                continue
+            _announced_player_ids.add(_pid)
+
+            player_row = await pool.fetchrow(
+                "SELECT first_name, last_name, team_id, overall FROM players WHERE id = $1",
+                inj["player_id"],
+            )
+            if player_row:
+                player_name = f"{player_row['first_name']} {player_row['last_name']}"
+                player_overall = player_row["overall"] or 0
+                team_code_row = await pool.fetchrow(
+                    "SELECT nba_team_code FROM teams WHERE id = $1", player_row["team_id"]
+                )
+                team_code = team_code_row["nba_team_code"] if team_code_row else "???"
+            else:
+                player_name = f"Player #{inj['player_id']}"
+                player_overall = 0
+                team_code = "???"
+
+            human_severity = _SEVERITY_LABELS.get(severity, severity)
+            gms_label = "Season" if games_missed >= 82 else str(games_missed)
+            embed_data = EmbedData(
+                title="\U0001F3E5 Injury Report",
+                description=f"**{player_name}** ({team_code}) — {human_severity}",
+                color=_COLOR_RED,
+                fields=[
+                    EmbedField(name="Games Missed", value=gms_label, inline=True),
+                    EmbedField(name="Status", value=human_severity, inline=True),
+                ],
+                footer=f"Game #{game.get('game_index', game_id)}",
+            )
+            await announcer.post_embed("injuries", embed_data)
+
+            # Ping the team manager if this is a managed team.
+            _mgr_row = await pool.fetchrow(
+                "SELECT manager_user_id FROM teams WHERE id = $1", inj["team_id"]
+            )
+            if _mgr_row and _mgr_row["manager_user_id"]:
+                await announcer.post_text(
+                    "injuries", f"<@{_mgr_row['manager_user_id']}> — **{player_name}** just went down."
+                )
+
+            # Fire triage_report columnist article only for star-level injuries
+            # (overall >= 84) so role-player injuries don't flood #analysis.
+            # Local import: batch_sim_runner imports this module, so this must
+            # be deferred to call time to avoid a circular import.
+            _TRIAGE_OVR_THRESHOLD = 84
+            if guild is not None and player_overall >= _TRIAGE_OVR_THRESHOLD:
+                try:
+                    from services.batch_sim_runner import _maybe_post_triage_report
+                    await _maybe_post_triage_report(
+                        pool,
+                        league_id=game["league_id"],
+                        season=season,
+                        guild=guild,
+                        injury_info={
+                            "player_name": player_name,
+                            "team_code": team_code,
+                            "severity": severity,
+                            "human_severity": human_severity,
+                            "games_missed": games_missed,
+                            "season": season,
+                        },
+                    )
+                except Exception as _triage_exc:
+                    log.warning(f"_persist_injuries: triage_report failed: {_triage_exc}")
+            elif guild is not None:
+                log.debug(
+                    "_persist_injuries: skipping triage_report for %s (OVR %d < %d threshold)",
+                    player_name, player_overall, _TRIAGE_OVR_THRESHOLD,
+                )
+
+    await game_repo.insert_injuries(pool, rows)
+
+
+async def _persist_game_result(
+    pool,
+    game: dict,
+    result: dict,
+    home_team: team_repo.Team,
+    away_team: team_repo.Team,
+    season: int,
+    news_channel,
+    injury_channel=None,
+    records_channel=None,
+    guild=None,
+) -> dict:
+    game_id = game["id"]
+    _quarter_keys = ("q1_home", "q1_away", "q2_home", "q2_away",
+                     "q3_home", "q3_away", "q4_home", "q4_away", "ot_home", "ot_away")
+    quarters = {k: result.get(k) for k in _quarter_keys}
+    await game_repo.mark_simmed(
+        pool,
+        game_id,
+        result["home_score"],
+        result["away_score"],
+        result["winner_team_id"],
+        game.get("rng_seed") or 0,
+        quarters=quarters,
+    )
+
+    all_box = result["home_box"] + result["away_box"]
+    if all_box:
+        await game_repo.insert_box_scores(pool, game_id, all_box)
+
+    def _sum_stats(box: List[dict]) -> dict:
+        keys = ["points", "rebounds_off", "rebounds_def", "assists", "steals",
+                "blocks", "turnovers", "fouls", "fga", "fgm", "tpa", "tpm", "fta", "ftm"]
+        out: dict = {k: sum(line.get(k, 0) for line in box) for k in keys}
+        out["minutes"] = 240.0
+        out["plus_minus"] = result["home_score"] - result["away_score"]
+        return out
+
+    if result["home_box"]:
+        await game_repo.insert_team_game_stats(pool, game_id, home_team.id, _sum_stats(result["home_box"]))
+    if result["away_box"]:
+        away_stats = _sum_stats(result["away_box"])
+        away_stats["plus_minus"] = result["away_score"] - result["home_score"]
+        await game_repo.insert_team_game_stats(pool, game_id, away_team.id, away_stats)
+
+    game_result = {
+        "game_id": game_id,
+        "home_team_id": home_team.id,
+        "away_team_id": away_team.id,
+        "winner_team_id": result["winner_team_id"],
+        "home_conference": home_team.conference,
+        "away_conference": away_team.conference,
+        "home_division": home_team.division,
+        "away_division": away_team.division,
+        "home_score": result["home_score"],
+        "away_score": result["away_score"],
+    }
+    standings_update = await game_repo.update_standings(pool, game["league_id"], season, game_result)
+
+    notable_streak = standings_update.get("notable_streak")
+    if notable_streak and (records_channel or news_channel):
+        streak_team_id, streak_len = notable_streak
+        streak_team = await team_repo.get_by_id(pool, streak_team_id)
+        streak_name = streak_team.full_name if streak_team else f"Team {streak_team_id}"
+        embed_data = EmbedData(
+            title="\U0001F525 Win Streak",
+            description=f"**{streak_name}** has won **{streak_len}** straight!",
+            color=_COLOR_GOLD,
+        )
+        # Win streaks are a records milestone — post to #records, not #league-news.
+        _streak_ch = records_channel or news_channel
+        await _BoundChannelAnnouncer(_streak_ch).post_embed("records", embed_data)
+
+    await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel, guild=guild)
+
+    # Inject team IDs that records_service needs to resolve team names.
+    # sim_engine result has winner_team_id but not home_team_id/away_team_id.
+    result["home_team_id"] = home_team.id
+    result["away_team_id"] = away_team.id
+
+    # Season-scope records are still written to DB for /team records queries, but we
+    # suppress their announcements entirely — they triggered on ordinary numbers every
+    # game and were the primary spam source. Only all-time records post to #records.
+    _record_announcements, at_announcements = await records_service.check_and_update_records(
+        pool, game["league_id"], season, game_id, result
+    )
+    for at_announcement in at_announcements:
+        _rec_ch = records_channel or news_channel
+        if _rec_ch:
+            # sim_embeds.season_record_embed returns an already-built discord.Embed
+            # (an existing bot/embeds/ builder) -- sent directly rather than through
+            # the announcer, consistent with how other bot/embeds/ builders are used.
+            from bot.embeds import sim_embeds
+            await _rec_ch.send(embed=sim_embeds.season_record_embed(at_announcement))
+
+    return standings_update

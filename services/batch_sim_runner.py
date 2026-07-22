@@ -14,15 +14,24 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import article_repo, game_repo, gameplan_repo, league_repo, strategy_repo, team_repo, trade_repo
 from phase.states import Phase
-from services import awards_service, columnist_service, cpu_coach_service, cpu_trade_service, franchise_plan_service, league_service, notifier_service, potm_service, records_service, sim_engine, strategy_service, team_intel
+from services import awards_service, columnist_service, cpu_coach_service, cpu_trade_service, franchise_plan_service, league_service, notifier_service, potm_service, sim_engine, strategy_service, team_intel
 from services.personas import PERSONAS as _PERSONAS
 from services.player_style_service import context_summary as _player_style_context
+from services.sim_channel_announcer import (
+    _ensure_records_channel,
+    _get_box_scores_channel,
+    _get_injury_channel,
+    _get_news_channel,
+    _get_standings_channel,
+    _get_transactions_channel,
+)
 from services.sim_persistence import (
     _apply_cpu_directives,
     _apply_directives,
     _compute_team_ovr,
     _ensure_lineup,
     _load_lineup_for_team,
+    _persist_game_result,
     _stamp_role_data,
     _team_to_sim_dict,
 )
@@ -98,220 +107,6 @@ _big_picture_game_counter: dict[int, int] = {}     # fires every ~70 games (week
 _ledger_game_counter: dict[int, int] = {}          # fires every ~280 games (monthly)
 _ledger_first_post_done: dict[tuple[int, int], bool] = {}  # True after first post per (league_id, season)
 _race_game_counter: dict[int, int] = {}            # fires every ~280 games (monthly)
-
-async def _persist_injuries(
-    pool,
-    game: dict,
-    game_id: int,
-    season: int,
-    result: dict,
-    injury_channel: Optional[discord.TextChannel],
-    guild: Optional[discord.Guild] = None,
-) -> None:
-    raw_injuries = result.get("injuries", [])
-    if not raw_injuries:
-        return
-
-    rng = random.Random(game_id)
-
-    game_date: datetime.date = game.get("scheduled_date") or datetime.date.today()
-    rows: list[dict] = []
-    # Dedupe within this game: a player can only appear once per injury pass.
-    # Without this, the same player_id can fire two announcements when the
-    # sim engine emits duplicate injury entries for the same player.
-    _announced_player_ids: set[int] = set()
-    for inj in raw_injuries:
-        severity = inj["severity"]
-        lo, hi = _INJURY_GAMES_MISSED[severity]
-        games_missed = lo if lo == hi else rng.randint(lo, hi)
-        start_date = game_date
-        return_date = start_date + datetime.timedelta(days=games_missed)
-        affects_prog = severity in {"week_4_8", "season_ending"}
-
-        rows.append({
-            "league_id": game["league_id"],
-            "season": season,
-            "player_id": inj["player_id"],
-            "team_id": inj["team_id"],
-            "severity": severity,
-            "games_missed": games_missed,
-            "incurred_in_game_id": game_id,
-            "start_date": start_date,
-            "return_date": return_date,
-            "affects_progression": affects_prog,
-        })
-
-        if severity in _ANNOUNCE_SEVERITIES and injury_channel:
-            # Skip duplicate announcement for same player in this game pass.
-            _pid = inj["player_id"]
-            if _pid in _announced_player_ids:
-                log.debug(
-                    "_persist_injuries: skipping duplicate injury announcement for player_id=%d in game_id=%d",
-                    _pid, game_id,
-                )
-                continue
-            _announced_player_ids.add(_pid)
-
-            player_row = await pool.fetchrow(
-                "SELECT first_name, last_name, team_id, overall FROM players WHERE id = $1",
-                inj["player_id"],
-            )
-            if player_row:
-                player_name = f"{player_row['first_name']} {player_row['last_name']}"
-                player_overall = player_row["overall"] or 0
-                team_code_row = await pool.fetchrow(
-                    "SELECT nba_team_code FROM teams WHERE id = $1", player_row["team_id"]
-                )
-                team_code = team_code_row["nba_team_code"] if team_code_row else "???"
-            else:
-                player_name = f"Player #{inj['player_id']}"
-                player_overall = 0
-                team_code = "???"
-
-            human_severity = _SEVERITY_LABELS.get(severity, severity)
-            embed = discord.Embed(
-                title="🏥 Injury Report",
-                color=discord.Color.red(),
-                description=f"**{player_name}** ({team_code}) — {human_severity}",
-            )
-            gms_label = "Season" if games_missed >= 82 else str(games_missed)
-            embed.add_field(name="Games Missed", value=gms_label, inline=True)
-            embed.add_field(name="Status", value=human_severity, inline=True)
-            embed.set_footer(text=f"Game #{game.get('game_index', game_id)}")
-            await injury_channel.send(embed=embed)
-
-            # Ping the team manager if this is a managed team.
-            _mgr_row = await pool.fetchrow(
-                "SELECT manager_user_id FROM teams WHERE id = $1", inj["team_id"]
-            )
-            if _mgr_row and _mgr_row["manager_user_id"]:
-                await injury_channel.send(
-                    f"<@{_mgr_row['manager_user_id']}> — **{player_name}** just went down."
-                )
-
-            # Fire triage_report columnist article only for star-level injuries
-            # (overall >= 84) so role-player injuries don't flood #analysis.
-            _TRIAGE_OVR_THRESHOLD = 84
-            if guild is not None and player_overall >= _TRIAGE_OVR_THRESHOLD:
-                try:
-                    await _maybe_post_triage_report(
-                        pool,
-                        league_id=game["league_id"],
-                        season=season,
-                        guild=guild,
-                        injury_info={
-                            "player_name": player_name,
-                            "team_code": team_code,
-                            "severity": severity,
-                            "human_severity": human_severity,
-                            "games_missed": games_missed,
-                            "season": season,
-                        },
-                    )
-                except Exception as _triage_exc:
-                    log.warning(f"_persist_injuries: triage_report failed: {_triage_exc}")
-            elif guild is not None:
-                log.debug(
-                    "_persist_injuries: skipping triage_report for %s (OVR %d < %d threshold)",
-                    player_name, player_overall, _TRIAGE_OVR_THRESHOLD,
-                )
-
-    await game_repo.insert_injuries(pool, rows)
-
-
-async def _persist_game_result(
-    pool,
-    game: dict,
-    result: dict,
-    home_team: team_repo.Team,
-    away_team: team_repo.Team,
-    season: int,
-    news_channel: Optional[discord.TextChannel],
-    injury_channel: Optional[discord.TextChannel] = None,
-    records_channel: Optional[discord.TextChannel] = None,
-    guild: Optional[discord.Guild] = None,
-) -> dict:
-    game_id = game["id"]
-    _quarter_keys = ("q1_home", "q1_away", "q2_home", "q2_away",
-                     "q3_home", "q3_away", "q4_home", "q4_away", "ot_home", "ot_away")
-    quarters = {k: result.get(k) for k in _quarter_keys}
-    await game_repo.mark_simmed(
-        pool,
-        game_id,
-        result["home_score"],
-        result["away_score"],
-        result["winner_team_id"],
-        game.get("rng_seed") or 0,
-        quarters=quarters,
-    )
-
-    all_box = result["home_box"] + result["away_box"]
-    if all_box:
-        await game_repo.insert_box_scores(pool, game_id, all_box)
-
-    def _sum_stats(box: List[dict]) -> dict:
-        keys = ["points", "rebounds_off", "rebounds_def", "assists", "steals",
-                "blocks", "turnovers", "fouls", "fga", "fgm", "tpa", "tpm", "fta", "ftm"]
-        out: dict = {k: sum(line.get(k, 0) for line in box) for k in keys}
-        out["minutes"] = 240.0
-        out["plus_minus"] = result["home_score"] - result["away_score"]
-        return out
-
-    if result["home_box"]:
-        await game_repo.insert_team_game_stats(pool, game_id, home_team.id, _sum_stats(result["home_box"]))
-    if result["away_box"]:
-        away_stats = _sum_stats(result["away_box"])
-        away_stats["plus_minus"] = result["away_score"] - result["home_score"]
-        await game_repo.insert_team_game_stats(pool, game_id, away_team.id, away_stats)
-
-    game_result = {
-        "game_id": game_id,
-        "home_team_id": home_team.id,
-        "away_team_id": away_team.id,
-        "winner_team_id": result["winner_team_id"],
-        "home_conference": home_team.conference,
-        "away_conference": away_team.conference,
-        "home_division": home_team.division,
-        "away_division": away_team.division,
-        "home_score": result["home_score"],
-        "away_score": result["away_score"],
-    }
-    standings_update = await game_repo.update_standings(pool, game["league_id"], season, game_result)
-
-    notable_streak = standings_update.get("notable_streak")
-    if notable_streak and (records_channel or news_channel):
-        streak_team_id, streak_len = notable_streak
-        streak_team = await team_repo.get_by_id(pool, streak_team_id)
-        streak_name = streak_team.full_name if streak_team else f"Team {streak_team_id}"
-        embed = discord.Embed(
-            title="🔥 Win Streak",
-            color=discord.Color.gold(),
-            description=f"**{streak_name}** has won **{streak_len}** straight!",
-        )
-        # Win streaks are a records milestone — post to #records, not #league-news.
-        _streak_ch = records_channel or news_channel
-        await _streak_ch.send(embed=embed)
-
-    await _persist_injuries(pool, game, game_id, season, result, injury_channel or news_channel, guild=guild)
-
-    # Inject team IDs that records_service needs to resolve team names.
-    # sim_engine result has winner_team_id but not home_team_id/away_team_id.
-    result["home_team_id"] = home_team.id
-    result["away_team_id"] = away_team.id
-
-    # Season-scope records are still written to DB for /team records queries, but we
-    # suppress their announcements entirely — they triggered on ordinary numbers every
-    # game and were the primary spam source. Only all-time records post to #records.
-    _record_announcements, at_announcements = await records_service.check_and_update_records(
-        pool, game["league_id"], season, game_id, result
-    )
-    for at_announcement in at_announcements:
-        _rec_ch = records_channel or news_channel
-        if _rec_ch:
-            await _rec_ch.send(embed=sim_embeds.season_record_embed(at_announcement))
-
-    return standings_update
-
 
 async def _sim_single_game(
     pool,
@@ -460,79 +255,6 @@ async def _notify_user_matchup_result(
         )
 
 
-async def _get_box_scores_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
-    channel_id = await league_repo.get_channel(pool, league_id, "box-scores")
-    if not channel_id:
-        return None
-    return guild.get_channel(channel_id)
-
-
-async def _get_standings_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
-    channel_id = await league_repo.get_channel(pool, league_id, "standings")
-    if not channel_id:
-        return None
-    return guild.get_channel(channel_id)
-
-
-async def _get_news_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
-    channel_id = await league_repo.get_channel(pool, league_id, "league-news")
-    if not channel_id:
-        return None
-    return guild.get_channel(channel_id)
-
-
-async def _get_injury_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
-    channel_id = await league_repo.get_channel(pool, league_id, "injuries")
-    if not channel_id:
-        return None
-    return guild.get_channel(channel_id) or await _get_news_channel(guild, pool, league_id)
-
-
-async def _get_transactions_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
-    channel_id = await league_repo.get_channel(pool, league_id, "transactions")
-    if not channel_id:
-        return None
-    return guild.get_channel(channel_id)
-
-
-async def _ensure_records_channel(guild: discord.Guild, pool, league_id: int) -> Optional[discord.TextChannel]:
-    """Return the #records channel, creating it lazily if it doesn't exist yet.
-
-    Existing leagues created before the records channel was added to CHANNEL_ROLES
-    won't have a row in league_channels.  On first use we create the Discord channel
-    under the same category as #league-news and store its ID — subsequent calls are
-    a cheap DB lookup.  Falls back to #league-news if creation fails so records are
-    never silently dropped.
-    """
-    channel_id = await league_repo.get_channel(pool, league_id, "records")
-    if channel_id:
-        ch = guild.get_channel(channel_id)
-        if ch:
-            return ch
-
-    # Lazy-create: find the DBA category by looking at where #league-news lives.
-    news_id = await league_repo.get_channel(pool, league_id, "league-news")
-    category: Optional[discord.CategoryChannel] = None
-    if news_id:
-        news_ch = guild.get_channel(news_id)
-        if news_ch and news_ch.category:
-            category = news_ch.category
-
-    try:
-        new_ch = await guild.create_text_channel("records", category=category)
-        await league_repo.add_channel(pool, league_id, "records", new_ch.id)
-        log.info(
-            "batch_sim_runner: lazily created #records channel (id=%d) for league %d",
-            new_ch.id, league_id,
-        )
-        return new_ch
-    except Exception as exc:
-        log.warning(
-            "batch_sim_runner: could not create #records channel for league %d: %s — falling back to #league-news",
-            league_id, exc,
-        )
-        # Fall back to league-news so the post isn't silently lost.
-        return await _get_news_channel(guild, pool, league_id)
 
 
 async def _maybe_run_cpu_trades(
