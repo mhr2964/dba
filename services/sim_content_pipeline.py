@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from bot.embeds import awards_embeds
 from core.logging import get_logger
 from data.repositories import article_repo, game_repo, league_repo
+from phase.states import Phase
 from services import awards_service, columnist_service, potm_service, team_intel
 from services import feedback_log as _feedback_log
 from services.announcer_protocol import EmbedData
@@ -358,6 +359,155 @@ async def _maybe_post_big_picture(
             )
     except Exception as exc:
         log.warning(f"_maybe_post_big_picture failed: {exc}", exc_info=True)
+
+
+# fires every ~280 games (monthly), forced on first post-deadline batch of a season
+_ledger_game_counter: dict[int, int] = {}
+_ledger_first_post_done: dict[tuple[int, int], bool] = {}
+
+
+async def _maybe_post_ledger(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Ledger front-office grades, gated to post-deadline phases only.
+
+    First post fires when the league transitions to TRADE_DEADLINE_OPEN or later,
+    regardless of counter. Subsequent posts fire every ~280 games (approx. monthly).
+    Before the trade deadline: no Ledger columns.
+    """
+    # Phase gate: whitelist of phases where Ledger is allowed to fire.
+    # Spec: "phase-aware gating; bails entirely pre-deadline; first post forced on
+    # TRADE_DEADLINE_OPEN phase transition." Playoffs, draft, and offseason phases
+    # are intentionally excluded — Ledger is a trade-era column only.
+    _LEDGER_ALLOWED_PHASES = {
+        Phase.TRADE_DEADLINE_OPEN.value,
+        Phase.REGULAR_SEASON_POSTDEADLINE.value,
+        Phase.REGULAR_SEASON_COMPLETE.value,
+    }
+    phase_row = await pool.fetchrow("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    current_phase = phase_row["current_phase"] if phase_row else ""
+    if current_phase not in _LEDGER_ALLOWED_PHASES:
+        log.debug(f"_maybe_post_ledger: league={league_id} phase={current_phase!r} — not a Ledger phase, skipping")
+        return
+
+    _ledger_game_counter[league_id] = _ledger_game_counter.get(league_id, 0) + len(batch_results)
+    _season_key = (league_id, season)
+    _ledger_first_post_done.setdefault(_season_key, False)
+
+    # Force-fire on the first post-deadline batch of this season (regardless of counter).
+    force_fire = not _ledger_first_post_done[_season_key]
+    if not force_fire and _ledger_game_counter[league_id] < 280:
+        return
+    if not force_fire:
+        _ledger_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("the_ledger")
+    if not persona:
+        log.warning("_maybe_post_ledger: the_ledger persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+
+        # Fetch recent approved trades with asset summaries.
+        trade_rows = await pool.fetch(
+            """
+            SELECT tr.id, t1.nba_team_code AS proposer, t2.nba_team_code AS counterparty,
+                   tr.proposed_at
+            FROM trades tr
+            JOIN teams t1 ON t1.id = tr.proposer_team_id
+            JOIN teams t2 ON t2.id = tr.counterparty_team_id
+            WHERE tr.league_id = $1 AND tr.status = 'approved'
+            ORDER BY tr.id DESC LIMIT 5
+            """,
+            league_id,
+        )
+        recent_trades: list[dict] = []
+        for tr in trade_rows:
+            asset_rows = await pool.fetch(
+                """
+                SELECT ta.from_team_id, ta.asset_type,
+                       p.first_name || ' ' || p.last_name AS player_name, p.overall
+                FROM trade_assets ta
+                LEFT JOIN players p ON p.id = ta.player_id
+                WHERE ta.trade_id = $1
+                """,
+                tr["id"],
+            )
+            recent_trades.append({
+                "teams": f"{tr['proposer']} / {tr['counterparty']}",
+                "assets": [
+                    {"from": a["from_team_id"], "type": a["asset_type"],
+                     "name": a["player_name"], "ovr": a["overall"]}
+                    for a in asset_rows
+                ],
+            })
+
+        # Fetch team cpu_mode / win-loss records for mode changes.
+        team_mode_rows = await pool.fetch(
+            """
+            SELECT t.nba_team_code, t.cpu_mode,
+                   sc.wins, sc.losses
+            FROM teams t
+            LEFT JOIN standings_cache sc ON sc.team_id = t.id
+                AND sc.league_id = $1 AND sc.season = $2
+            WHERE t.league_id = $1
+            ORDER BY (sc.wins + sc.losses) DESC NULLS LAST
+            """,
+            league_id, season,
+        )
+        team_modes = [
+            {"team": r["nba_team_code"], "mode": r["cpu_mode"] or "default",
+             "record": f"{r['wins'] or 0}-{r['losses'] or 0}"}
+            for r in team_mode_rows
+        ]
+
+        if not recent_trades and not team_modes:
+            log.info("_maybe_post_ledger: no trade/mode data — skipping")
+            return
+
+        context["recent_trades"] = recent_trades
+        context["team_modes"] = team_modes
+
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="the_ledger",
+                category="front_office_grade",
+                context=context,
+            ),
+            timeout=20.0,
+        )
+        if article:
+            embed_data = EmbedData(
+                title=f"📒 {article['headline']}",
+                description=article["body"][:2000],
+                color=_rgb_to_int((120, 120, 120)),
+                footer=f"by {persona.display_name} · {persona.byline}",
+            )
+            _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                "analysis", embed_data
+            )
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="the_ledger", category="front_office_grade",
+                headline=article["headline"], body=article["body"],
+            )
+            # Mark first post done and reset counter after successful send.
+            _ledger_first_post_done[_season_key] = True
+            _ledger_game_counter[league_id] = 0
+    except Exception as exc:
+        log.warning(f"_maybe_post_ledger failed: {exc}", exc_info=True)
 
 
 # Tracks the last simulated "YYYY-MM" POTM was checked for, per league_id, so
