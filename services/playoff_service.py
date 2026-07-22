@@ -707,11 +707,11 @@ async def advance_playoff_round(
         )
         if guild:
             try:
-                from services import batch_sim_runner as _bsr
+                from services import sim_content_pipeline as _scp
                 _east_t = await team_repo.get_by_id(pool, east_winner)
                 _west_t = await team_repo.get_by_id(pool, west_winner)
                 if _east_t and _west_t:
-                    await _bsr._maybe_post_prelude(pool, league_id, season, guild, {
+                    await _scp._maybe_post_prelude(pool, league_id, season, guild, {
                         "high_seed_team": getattr(_east_t, "nba_team_code", str(east_winner)),
                         "low_seed_team": getattr(_west_t, "nba_team_code", str(west_winner)),
                         "round": "DBA Finals",
@@ -733,12 +733,12 @@ async def advance_playoff_round(
                     )
                     if guild:
                         try:
-                            from services import batch_sim_runner as _bsr
+                            from services import sim_content_pipeline as _scp
                             _ht = await team_repo.get_by_id(pool, winners[0])
                             _lt = await team_repo.get_by_id(pool, winners[1])
                             if _ht and _lt:
                                 _conf = "Eastern" if "east" in cf_round else "Western"
-                                await _bsr._maybe_post_prelude(pool, league_id, season, guild, {
+                                await _scp._maybe_post_prelude(pool, league_id, season, guild, {
                                     "high_seed_team": getattr(_ht, "nba_team_code", str(winners[0])),
                                     "low_seed_team": getattr(_lt, "nba_team_code", str(winners[1])),
                                     "round": f"{_conf} Conference Finals",
@@ -785,7 +785,7 @@ async def advance_playoff_round(
                     )
                     if guild:
                         try:
-                            from services import batch_sim_runner as _bsr
+                            from services import sim_content_pipeline as _scp
                             _conf = "Eastern" if "east" in r2_round else "Western"
                             for _hs_id, _ls_id in [
                                 (s_1v8.winner_team_id, s_4v5.winner_team_id),
@@ -794,7 +794,7 @@ async def advance_playoff_round(
                                 _ht = await team_repo.get_by_id(pool, _hs_id)
                                 _lt = await team_repo.get_by_id(pool, _ls_id)
                                 if _ht and _lt:
-                                    await _bsr._maybe_post_prelude(pool, league_id, season, guild, {
+                                    await _scp._maybe_post_prelude(pool, league_id, season, guild, {
                                         "high_seed_team": getattr(_ht, "nba_team_code", str(_hs_id)),
                                         "low_seed_team": getattr(_lt, "nba_team_code", str(_ls_id)),
                                         "round": f"{_conf} Conference Semifinals",
@@ -952,7 +952,7 @@ async def sim_play_in(
 
     # Post Prelude previews for every R1 series now that all matchups are set.
     try:
-        from services import batch_sim_runner as _bsr
+        from services import sim_content_pipeline as _scp
         all_r1 = await series_repo.get_bracket(pool, league_id, season)
         r1_series = [s for s in all_r1 if s.round in ("r1_east", "r1_west")]
         for _s in r1_series:
@@ -965,7 +965,7 @@ async def sim_play_in(
                     "low_seed_team": getattr(_lt, "nba_team_code", str(_s.low_seed_team_id)),
                     "round": _round_label,
                 }
-                await _bsr._maybe_post_prelude(pool, league_id, season, guild, _preview_ctx)
+                await _scp._maybe_post_prelude(pool, league_id, season, guild, _preview_ctx)
     except Exception as _prelude_exc:
         log.warning(f"sim_play_in: Prelude preview failed: {_prelude_exc}")
 

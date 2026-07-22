@@ -308,62 +308,6 @@ async def _maybe_snapshot_teams(
 
 
 
-async def _maybe_post_prelude(
-    pool,
-    league_id: int,
-    season: int,
-    guild: discord.Guild,
-    series_context: dict,
-) -> None:
-    """Post The Prelude series preview when a new playoff matchup is set.
-
-    series_context must contain: high_seed_team, low_seed_team, round.
-    Called from playoff_service after series_repo.create_series for R1+.
-    """
-    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
-    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
-    if not analysis_channel:
-        return
-
-    persona = _PERSONAS.get("the_prelude")
-    if not persona:
-        return
-
-    try:
-        article = await asyncio.wait_for(
-            columnist_service.generate(
-                pool, league_id, season,
-                persona_id="the_prelude",
-                category="series_preview",
-                context=series_context,
-            ),
-            timeout=20.0,
-        )
-        if article:
-            embed = discord.Embed(
-                title=f"🎬 {article['headline']}",
-                description=article["body"][:2000],
-                color=discord.Color.from_rgb(80, 40, 120),
-            )
-            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            _sent = await analysis_channel.send(embed=embed)
-            _series_team_ids = [
-                tid for tid in (
-                    series_context.get("high_seed_team_id"),
-                    series_context.get("low_seed_team_id"),
-                ) if tid
-            ]
-            await _feedback_log.register_columnist_post(
-                pool, _sent,
-                league_id=league_id, season=season,
-                persona_id="the_prelude", category="series_preview",
-                headline=article["headline"], body=article["body"],
-                subject_team_ids=_series_team_ids or None,
-            )
-    except Exception as exc:
-        log.warning(f"_maybe_post_prelude failed: {exc}", exc_info=True)
-
-
 async def _maybe_post_columnist(
     pool,
     league_id: int,
