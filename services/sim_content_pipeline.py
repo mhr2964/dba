@@ -624,6 +624,89 @@ async def _maybe_post_the_race(
         log.warning(f"_maybe_post_the_race failed: {exc}", exc_info=True)
 
 
+async def _maybe_post_triage_report(
+    pool,
+    league_id: int,
+    season: int,
+    guild: discord.Guild,
+    injury_info: dict,
+) -> None:
+    """Post The Triage Report when a significant injury is recorded.
+
+    injury_info must contain: player_name, team_code, severity, games_missed.
+    Called from _persist_injuries for ANNOUNCE_SEVERITIES injuries.
+    """
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("triage_report")
+    if not persona:
+        return
+
+    try:
+        # Enrich injury_info with the team's other players so the LLM can name
+        # a plausible replacement rather than writing "role to be determined."
+        triage_context = dict(injury_info)
+        try:
+            _team_rows = await pool.fetch(
+                """
+                SELECT p.first_name || ' ' || p.last_name AS name,
+                       p.position, p.overall,
+                       COALESCE(pr.role, 'rotation') AS role
+                FROM players p
+                LEFT JOIN player_roles pr ON pr.player_id = p.id AND pr.league_id = $1
+                WHERE p.league_id = $1 AND p.team_id = (
+                    SELECT team_id FROM players
+                    JOIN teams t ON t.id = players.team_id
+                    WHERE t.league_id = $1 AND t.nba_team_code = $2
+                    LIMIT 1
+                )
+                ORDER BY p.overall DESC
+                LIMIT 12
+                """,
+                league_id, injury_info.get("team_code", ""),
+            )
+            triage_context["team_roster"] = [
+                {"name": r["name"], "position": r["position"],
+                 "ovr": r["overall"], "role": r["role"]}
+                for r in _team_rows
+            ]
+        except Exception as _roster_exc:
+            log.debug(f"_maybe_post_triage_report: roster enrichment failed (non-fatal): {_roster_exc}")
+
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, injury_info.get("season", 1),
+                persona_id="triage_report",
+                category="injury_report",
+                context=triage_context,
+            ),
+            timeout=20.0,
+        )
+        if article and article.get("body"):
+            embed_data = EmbedData(
+                title=f"🩺 {article['headline']}",
+                description=article["body"][:2000],
+                color=_rgb_to_int((231, 76, 60)),
+                footer=f"by {persona.display_name} · {persona.byline}",
+            )
+            _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                "analysis", embed_data
+            )
+            _injured_pid = injury_info.get("player_id")
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=injury_info.get("season", season),
+                persona_id="triage_report", category="injury_report",
+                headline=article["headline"], body=article["body"],
+                subject_player_ids=[_injured_pid] if _injured_pid else None,
+            )
+    except Exception as exc:
+        log.warning(f"_maybe_post_triage_report failed: {exc}", exc_info=True)
+
+
 # Tracks the last simulated "YYYY-MM" POTM was checked for, per league_id, so
 # batches within the same simulated month short-circuit without a DB round-trip.
 _potm_last_checked_month: dict[int, str] = {}

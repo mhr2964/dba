@@ -23,6 +23,7 @@ from data.repositories import game_repo, player_repo, team_repo
 from services import records_service
 from services.announcer_protocol import EmbedData, EmbedField
 from services.role_service import ROLE_REGISTRY, get_or_derive_roles
+from services.sim_content_pipeline import _maybe_post_triage_report
 from services.sim_channel_announcer import _BoundChannelAnnouncer
 
 log = get_logger(__name__)
@@ -414,12 +415,9 @@ async def _persist_injuries(
 
             # Fire triage_report columnist article only for star-level injuries
             # (overall >= 84) so role-player injuries don't flood #analysis.
-            # Local import: batch_sim_runner imports this module, so this must
-            # be deferred to call time to avoid a circular import.
             _TRIAGE_OVR_THRESHOLD = 84
             if guild is not None and player_overall >= _TRIAGE_OVR_THRESHOLD:
                 try:
-                    from services.batch_sim_runner import _maybe_post_triage_report
                     await _maybe_post_triage_report(
                         pool,
                         league_id=game["league_id"],

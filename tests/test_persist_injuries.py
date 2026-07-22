@@ -152,7 +152,7 @@ async def test_star_injury_with_guild_triggers_triage_report():
 
     with (
         patch("services.sim_persistence.game_repo.insert_injuries", _fake_insert_injuries),
-        patch("services.batch_sim_runner._maybe_post_triage_report", _fake_triage),
+        patch("services.sim_persistence._maybe_post_triage_report", _fake_triage),
     ):
         await _persist_injuries(
             pool, game, game_id=103, season=2025, result=result,
@@ -186,7 +186,7 @@ async def test_below_threshold_star_with_guild_skips_triage_report():
 
     with (
         patch("services.sim_persistence.game_repo.insert_injuries", _fake_insert_injuries),
-        patch("services.batch_sim_runner._maybe_post_triage_report", _fake_triage),
+        patch("services.sim_persistence._maybe_post_triage_report", _fake_triage),
     ):
         await _persist_injuries(
             pool, game, game_id=104, season=2025, result=result,
