@@ -26,13 +26,15 @@ feedback has accumulated.
 | 2026-05-22T00:11:12Z    | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_20260521_201112.jsonl`                       | 5      |
 | 2026-05-22T02:00:00Z*   | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_<run2>.jsonl`                                | 4      |
 | 2026-05-22T~03:00Z*     | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_<run3>.jsonl`                                | 3      |
+| 2026-05-22T~22:00Z*     | marcus_cole  | `headless_logs/columnist_ride_along_marcus_cole_<run4>.jsonl` (post-PR-1/2/3 restructure)    | 7      |
 
 \* approx; resolve from filename timestamp.
 
 **Cross-run patterns worth noting separately:**
-- **Kel'el Ware appeared in all 3 runs** as the systematically undervalued young-big going for an older / smaller return. He's the canonical asset-upside test case. The bot has a consistent bug, not bad luck.
-- DEN repeatedly lands a wing/scorer (Barrett, Braun, Anunoby) across all runs. Pattern: the bot likes adding wings to DEN regardless of archetype fit with Jokić/Murray.
-- NYK repeatedly makes trades user flags as "doesn't match where this team is." Suggests NYK's posture-mode assignment in `team_intel` may itself be wrong, upstream of any evaluator fix (see new theme A7/B7).
+- **Kel'el Ware appeared in all 4 runs** as the systematically undervalued young-big going for an older / smaller return. He's the canonical asset-upside test case. The bot has a consistent bug, not bad luck. **Run 4 confirms B3 not fully fixed by the restructure.**
+- DEN repeatedly lands a wing/scorer (Barrett, Braun, Anunoby, Brooks) across all 4 runs. Pattern: the bot likes adding wings to DEN regardless of archetype fit with Jokić/Murray. **Run 4 pause #6 is a textbook DEN-as-contender-lateral-move with lost pick.**
+- NYK repeatedly makes trades user flags as "doesn't match where this team is." **Run 4 pause #5 user emphasis: "nyk STILL dont understand that they are contending" — confirms B7 posture-mode fix NOT applied to NYK in the live league.**
+- **Run 4 is the first post-restructure run.** 4/7 pauses neutral or positive (a real improvement vs runs 1-3). All 3 problem pauses (#2 LAC, #5 NYK, #6 DEN) share one root: contender accepting/proposing a poor trade. Triangulates on the meta-issue captured in new B8 theme.
 
 ---
 
@@ -228,15 +230,45 @@ feedback has accumulated.
 - This is the hardest of the trade-logic changes. Build phase may want to ship B1-B3 first and revisit B4 separately.
 
 ## B5. Don't accept trades where one side is materially worse for no reason
-**Status:** READY (7+ cases across 3 runs — see A1 evidence; run-3 NYK/DEN gave the cleanest "loser side gave up better player AND a pick" case)
+**Status:** READY (10+ cases across 4 runs — see A1 evidence; run-3 NYK/DEN gave the cleanest "loser side gave up better player AND a pick" case; run-4 adds 3 more contender-overpays-or-downgrades cases)
 
 **Evidence:** GSW/NYK and DEN/TOR both look like cases where the trade went through despite one side getting a worse-than-fair return, with no compensating strategic reason (cap relief, future picks, etc.).
+
+Run 4 reinforcement:
+- Pause #2 (LAC/TOR Poeltl): LAC gave up 3 role players + 2nd-round pick to acquire Poeltl (79 OVR) while already starting Zubac (~84 OVR). User: "just kinda of confused why the clippers needed to give up so much in addition to zubac who is 5 ovr better than peoltl." Contender + center downgrade + lost depth + lost pick = no compensating strategic gain.
+- Pause #5 (GSW/NYK Bridges+Anunoby for Kuminga): NYK shipped 2 starters (Bridges 76 + Anunoby 82) for one developmental wing (Kuminga 76). User: "brunson and karl anthony towns are both in their prime why are you trading starters for youth?" Run-4 evidence that the asymmetric rejection floor is still too loose for contender→youth swaps.
+- Pause #6 (DEN/HOU Gordon-Brooks): Lateral wing swap + DEN gave a 2nd-round pick. User: "cant see a championship contender making such a nothing burger lateral move that doesnt get anything better while shipping our a pick."
+
+**Status update post-restructure:** The B5 threshold change in PR 1 (15% differential for contending/fringe per `trade_evaluator.py:347`) is verifiably not catching the cases above. The threshold is calibrated for raw value parity; it doesn't reject "you gave away a pick on a lateral swap" or "you gave away two starters for one same-OVR youth piece" because the raw-value math comes close to even.
 
 **Proposed evaluator rules:**
 - The accepting team's evaluator should reject a trade where:
   - Their incoming asset value (after B3 upside modifiers) is materially below their outgoing value, AND
   - There's no compensating strategic gain (cap relief above some threshold, future R1s, posture-aligned reset).
 - Today the evaluator may be too willing to take the deal because it scores narrowly positive on raw production swap. The rejection threshold for asymmetric deals should be tighter.
+- **NEW (from run 4):** for contenders specifically, add a "pick parity" check — if you SEND a pick (any pick) you must RECEIVE either a pick of equal-or-better tier OR an OVR upgrade of ≥2 at the position of need. No more "give away your 2nd to get a same-OVR or worse player." This catches DEN/HOU and LAC/TOR.
+- **NEW (from run 4):** for contenders, "2-for-1 with no consolidation upgrade" should hard-reject. If a contender ships 2 starters (OVR ≥ 75) and receives 1 player whose OVR is not strictly greater than EACH outgoing player, reject. This catches NYK/GSW.
+
+## B8. Safety gates (B1, B5, B6, B7) must fire on the outgoing-first path too
+**Status:** READY (new theme; run 4 surfaced 3 cases that point at the same root)
+
+**Evidence (run 4):**
+- Pause #2 LAC Poeltl: if LAC was outgoing-first shedding depth (3 role players going OUT, Poeltl coming back), the trade was approved without B5 (asymmetric reject), B6 (Poeltl-Zubac archetype redundancy), or B1 (contender shedding depth for downgrade) firing.
+- Pause #5 NYK Kuminga: NYK plausibly outgoing-first shedding salary; B7 floor (2+ OVR-85 → win_now) didn't apply to the proposer-side or accept-side scoring; B1 contender-gate didn't fire on receiving developmental player.
+- Pause #6 DEN Brooks: DEN plausibly outgoing-first or incoming-first; either way B5 lateral + lost-pick check didn't fire; B6 archetype-redundancy (Brooks same 3&D as Gordon) didn't fire.
+
+**Root cause (per PR 1 critic NIT 14/15 and backend-dev handoff):** `_attempt_outgoing_first_offer` does NOT call the same gates the incoming-first pipeline calls. Backend-dev explicitly noted: "no sweetener / ride-along / B5 / B6 of the existing pipeline." This was deferred as "intentional minimal-viable" but run 4 evidence shows the cost: outgoing-first produces poor trades because the existing safety nets don't apply.
+
+**Proposed fix:**
+- After `_score_outgoing_pair` picks the winning (counterparty, return) pair in `_attempt_outgoing_first_offer`, run the same final-pass gates that incoming-first applies before `trade_service.propose`:
+  - B1 posture gate (does the proposing team's posture allow this trade type?)
+  - B5 asymmetric rejection (is one side materially worse with no comp?)
+  - B6 archetype redundancy on the RECEIVING side (does the incoming player duplicate an existing archetype the team isn't trading away?)
+  - The sanity-floor + lopsided check (`pkg/target_value` ratio) is presumably already applied; verify.
+- These should be EXTRACTED helpers callable from both code paths, not duplicated logic. Refactor the gate block out of `_run_incoming_first_for_team` (~lines that handle abort-or-propose post-pass-2) into a `_apply_final_trade_gates(team_a, team_b, outgoing, incoming, ...)` function.
+- Confirm B7 posture floor (`compute_team_mode` with star_count kwarg) is read by BOTH `_score_outgoing_pair` and the accept-side path that `cpu_should_accept` uses. The PR-1 backend-dev fix to `franchise_plan_service.derive_plan` set `plan_goal=None` correctly on derive — verify this hasn't quietly nullified the floor on subsequent reads.
+
+**Sequencing note:** B8 should land BEFORE any tuning of B5 thresholds, because today B5 only runs in incoming-first; tightening the threshold won't help outgoing-first cases until B8 plumbing is done.
 
 ---
 
@@ -253,15 +285,17 @@ feedback has accumulated.
 
 When themes are sufficiently corroborated to dispatch builders:
 
-**B7 must land first** — gating on a wrong posture is worse than no gate. The investigation step (read `team_intel.build_team_intel`) is cheap and unblocks everything else.
+**Post-PR-1/2/3 status:** B1, B3, B6, B7 partially shipped via the trade-proposal restructure. Run 4 evidence shows the gates fire on incoming-first but NOT on outgoing-first — see new B8. Sequence below revised.
 
-1. **B7 (posture-mode derivation fix)** — investigate `team_intel.build_team_intel` + `franchise_plan_service.py`; fix derivation so a roster with 2+ stars at OVR ≥ 85 isn't labeled `transition`/`soft_rebuild`. Single file likely. **Blocking dependency for B1.**
-2. **Marcus Cole prompt update** — A1-A4, A6, A7, A8 rules added to voice_notes. Single file. Quick win; reversible. A1, A2, A3, A4, A6, A7 are READY; A5, A8 single-case but worth including. Can run in parallel with B7.
-3. **Trade evaluator B1 (posture gating)** — highest-impact trade-logic change. READY. Land after B7.
-4. **Trade evaluator B3 (asset upside modifiers)** — READY. Touches valuation function. Age curve has known shape (premium ≤22, fading 23-25, gone ~26+). May need new plumbing for ROY-race / draft-year fields.
-5. **Trade evaluator B6 (archetype/role-distribution check)** — READY. Touches proposal generator + valuation. Role data already in `team_intel.recent_role_changes`; needs new aggregation pass to count archetype distribution per team.
-6. **Trade evaluator B5 (asymmetric rejection threshold)** — READY. Tune after B1+B3+B6 are live; otherwise tuning is against a moving target.
+**B8 + B7 spot-verify must land first** — outgoing-first is producing the visible regressions; tightening any other rule is wasted work until those gates actually fire on the new path.
+
+1. **B8 (gate parity on outgoing-first path)** — extract `_apply_final_trade_gates` helper from `_run_incoming_first_for_team`; call it from `_attempt_outgoing_first_offer` before `trade_service.propose`. Covers B1, B5, B6, sanity-floor. Single file + 1-2 tests. **Highest-leverage single change post-restructure.**
+2. **B7 spot-verify (does the floor still fire?)** — run-4 pause #5 says NYK STILL labeled wrong. Quick investigation: print NYK's posture mode + star count from the live league. If star_count is 0 when Brunson+KAT exist on roster, the count source is buggy (roster vs lineup, threshold mismatch, etc.). If star_count is 2+ but mode still isn't `win_now`, the floor isn't being read. Cheap to diagnose, may be a one-line fix.
+3. **Marcus Cole prompt update** — A1-A4, A6, A7, A8 rules added to voice_notes. Single file. Quick win; reversible. A1, A2, A3, A4, A6, A7 are READY; A5, A8 single-case but worth including. Can run in parallel with B8/B7 spot-verify.
+4. **Trade evaluator B5 retune (with B8 in place)** — add the contender-specific "pick parity" + "2-for-1 needs consolidation upgrade" sub-rules from the run-4 update. Land after B8 so both code paths see the tighter threshold.
+5. **Trade evaluator B3 (asset upside modifiers)** — READY. Touches valuation function. Age curve has known shape (premium ≤22, fading 23-25, gone ~26+). May need new plumbing for ROY-race / draft-year fields. Ware is the run-1-through-4 canonical regression case.
+6. **Trade evaluator B6 multipliers** — the architectural exact-check landed in PR 2. The MULTIPLIERS (0.65 / 0.85 / 1.0) may still be too lenient — pause #6 DEN/HOU was a clean archetype-duplicate that went through. Run a tuning pass once B8 is in place.
 7. **Trade evaluator B2 (draft pick continuity)** — still single-case. Defer to gather more signal.
-8. **Trade evaluator B4 (multi-step)** — READY but complex. Ship as a separate workstream after B1+B3+B5+B6 are stable.
+8. **Trade evaluator B4 (multi-step)** — partial unlock from shop_intent + outgoing-first; pending full proof in ride-along that flip_asset cases actually fire.
 
-Marcus Cole work (step 2) and trade-logic work (steps 1, 3-8) can run in parallel; they don't share files. B7 is the highest-leverage single change — it may visibly reduce dumb trades on its own before any other rule lands.
+Marcus Cole work (step 3) and trade-logic work (steps 1-2, 4-8) can run in parallel; they don't share files. B8 is the highest-leverage single change post-restructure — it may fix all three problem trades from run 4 (LAC, NYK, DEN) on its own.

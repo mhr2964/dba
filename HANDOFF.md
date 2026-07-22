@@ -1,119 +1,33 @@
 # HANDOFF — dba
 
-B7 root-cause + B8/B5 BLOCKER fixes (3 commits, run 5 prep).
+Feedback-capture feature shipped; ride-along run 5 is the verification flow for both this and the prior session's trade restructure (LAC/NYK/DEN problem-trade fixes from 2026-05-23).
 
 ```yaml
-session: 2026-05-22
-agent: backend-dev (claude-sonnet-4-6)
-commits: 087a249 (gates/B6/B3/NIT6+7), 4be6242 (B5-sub1/NIT5), 803e24d (B7)
-branch: master
+last-model: claude-opus-4.7
+last-session: 2026-05-24
+state: yellow
 ```
 
-## did
+## Next action
 
-### BLOCKER 1 — Outgoing-first iterates all candidates on gate failure
+User must toggle **Message Content Intent** in the Discord Developer Portal (Application → Bot → Privileged Gateway Intents) and restart the bot — the bot will fail to connect otherwise because `bot/client.py:73` now requests `intents.message_content = True`. Then run ride-along 5 using `>>` replies on Marcus Cole / trade announcement posts to capture richer feedback than the manual paste-and-annotate workflow of runs 1-4; verify the LAC center-downgrade / NYK 2-for-1 / DEN lateral-wing trades from 2026-05-23 are gone.
 
-`_attempt_outgoing_first_offer` previously took only `all_candidates[0]`, the
-highest-scored pair. If `_apply_final_trade_gates` rejected it, the function
-returned 0 — even though 14+ (surplus × counterparty) combinations remained.
+## Traps
 
-Fix: iterate `all_candidates` in score order; on gate rejection, log at
-`log.info` + `_HEADLESS` print (NIT 7) and continue to the next candidate.
-`used_pairs.add(pair_key)` deferred until a proposal actually fires (previously
-poisoned the pair before gate even ran).
+- **Bot will fail to connect** without the Developer Portal intent toggle. That's the single hard prereq; nothing else in this PR works without it.
+- **The IPC sidecar (`scripts/columnist_feedback.ps1`) still works and pauses the sim**; the Discord-reply flow is a separate, after-the-fact mechanism. Don't rip the sidecar out — they coexist by design.
+- **`current_game_date` / `sim_date` is not threaded to most columnist register calls** — only `game_index` lands on most rows. `sim_date` is nullable in `bot_message_log`, so this isn't blocking, but feedback log lines anchored only by `game_index` need a games-table lookup to resolve the calendar date.
+- **POTM site uses `current_game_index` from the function param** — if anyone refactors `_maybe_post_potm`'s signature, the feedback registration breaks silently (the kwarg disappears).
+- **Pre-existing test failures**: 10 tests fail unrelated to this work (`test_setup_cog.py` × 8 from `safe_defer` age-mock issue introduced in `bfe5ada`; `test_trade_evaluator.py` × 2 from prior B5 drift). Do not "fix" these as part of feedback-feature follow-up — they predate it.
+- **Run-5 verification trades**: from 2026-05-23 ride-along run 4 — LAC shouldn't ship 3 players + 2nd for Poeltl (center downgrade); NYK shouldn't ship Bridges + Anunoby for Kuminga (no-upgrade 2-for-1); DEN shouldn't ship Gordon + 2nd for Brooks (lateral wing swap). These are the acceptance bar for the B7/B8/B5 fixes.
 
-### BLOCKER 2 — B5 sub-rule 1 now exempts equal-or-better incoming pick tier
+## Do not touch
 
-Spec: "if you SEND a pick you must RECEIVE either a pick of equal-or-better
-tier OR an OVR upgrade ≥2."  Prior code only checked net_OVR_change <= 0 and
-ignored incoming picks entirely.
+- None. The feedback-capture feature is fully committed (`ae7cd97`); the trade restructure work from yesterday is also committed (`087a249`, `4be6242`, `803e24d`). No mid-refactor files.
 
-Fix: compute `outgoing_best_tier` and `incoming_best_tier` (R1=1, R2=2).
-Only reject when `incoming_best > outgoing_best` (i.e., worse or absent).
-Receiving R1 when sending R2 is equal-or-better → allow.
+## Recent context
 
-### BLOCKER 3 — Remove catch-and-ignore around cpu_should_accept
-
-`_apply_final_trade_gates` wrapped the `cpu_should_accept` call in
-`except Exception: log.debug(...)` — a real bug in B5 logic would silently
-pass every gate. Removed the catch-all; exceptions now propagate.
-
-### BLOCKER 4 — B6 is soft-penalty in incoming-first; hard-reject in outgoing-first
-
-Pre-B8, incoming-first applied B6 as a scoring penalty in pass-2 (×0.65/×0.85).
-After B8 introduced `_apply_final_trade_gates`, B6 was hard-rejected from BOTH
-paths via the helper — overriding the soft penalty intent.
-
-Fix (Option B): removed B6 from `_apply_final_trade_gates` entirely.
-- Incoming-first: B6 soft penalty remains in pass-2 (unchanged).
-- Outgoing-first: B6 hard-reject applied inline before calling the helper.
-
-`_apply_final_trade_gates` signature also cleaned up: removed unused params
-`plan_a`, `plan_b`, `posture_b` (NIT 6). Both call sites updated.
-
-### NIT 5 — Removed dead "win_now" from _CONTENDER_TIER_MODES
-
-`cpu_team_mode` is always a posture string (`contending`, `play_in_fringe`, etc.),
-never a plan goal. `"win_now"` was dead in that set.
-
-### B7 part 1 — Floor preseason play_in_fringe + star at win_now
-
-`_derive_goal_and_horizon` early-season block (games_played < 10) routed
-`soft_rebuild/rebuilding → rebuild` and `contending → win_now` but had no
-branch for `play_in_fringe + has_any_star`. NYK shape (avg_age ≈ 28-29, KAT
-OVR 89) fell through to `("transition", 2)`.
-
-`last_derived_game_index` stays at 0 preseason, so the plan never re-derived.
-Downstream: `cpu_trade_proposals` reads the plan goal as "transition" →
-Bridges + Anunoby classified as flex/tradeable.
-
-Fix: added `if mode == "play_in_fringe" and has_any_star: return "win_now", 2`
-before the fall-through. Mirrors the identical post-record check.
-
-### B7 part 2 — Fix swapped SQL args in cpu_trade_posture plan_goal lookup
-
-`franchise_plans` WHERE clause: `$1=league_id, $2=team_id, $3=season`.
-Args were passed as `(league.id, league.current_season, team_id)` — season and
-team_id transposed. Query always returned None; `plan_goal` was always None.
-
-Fix: reorder to `(league.id, team_id, league.current_season)`, matching
-`trade_service.py:246` and `team_intel.py:167`.
-
-## found
-
-- BLOCKER 4 resolution chosen as Option B (remove B6 from helper, inline it
-  in outgoing-first) because Option A would require returning a score from the
-  helper — changing its contract for all callers.
-- The soft-penalty for B6 already fires in pass-2 for incoming-first; the gate
-  helper no longer touches B6 at all. Existing pass-2 code is unchanged.
-- NIT 7 (outgoing-first gate rejection visibility): logs now fire at `log.info`
-  plus a `_HEADLESS` print per rejected candidate, matching incoming-first.
-
-## files-touched
-
-- `services/cpu_trade_proposals.py` — outgoing-first iteration loop, B6 inline
-  hard-reject, B3 catch removal, `_apply_final_trade_gates` signature (NIT 6),
-  both call sites updated, NIT 7 log level
-- `services/trade_evaluator.py` — B5-sub1 pick-tier exemption, NIT 5 dead entry
-- `services/franchise_plan_service.py` — early-season `play_in_fringe + star` floor
-- `services/cpu_trade_posture.py` — SQL arg order fix
-- `tests/test_apply_final_trade_gates.py` — updated 3 existing calls (removed
-  plan_a/plan_b/posture_b), added test 5 (next-candidate iteration), test 6 (B6 soft penalty)
-- `tests/test_cpu_should_accept_contender_rules.py` — 3 new BLOCKER 2 tests
-- `tests/test_franchise_plan_early_season.py` — NEW (5 tests, B7-part1)
-- `tests/test_cpu_trade_posture_sql_args.py` — NEW (1 test, B7-part2)
-
-## contract changes callers need to know
-
-- `_apply_final_trade_gates` signature changed: `plan_a`, `plan_b`, `posture_b`
-  removed. Any caller outside the two existing call sites must be updated.
-- `_apply_final_trade_gates` no longer hard-rejects B6. If a new caller needs
-  B6 enforcement it must apply it inline (as outgoing-first now does).
-- `_CONTENDER_TIER_MODES` no longer contains `"win_now"` — check plan_goal
-  separately if you need plan-goal gating.
-
-## test counts
-
-Pre-existing failures: 10 (test_setup_cog × 8, test_trade_evaluator × 2)
-New tests added: 11 (2 gates, 3 B5-sub1, 5 franchise_plan, 1 posture SQL)
-Total passing: 231. No new failures introduced.
+- 2026-05-24 commit `ae7cd97` ships the feedback-capture feature: `bot_message_log` + `feedback_replies` tables (migration 045), `services/feedback_log.py`, `bot/cogs/feedback_cog.py`, opt-in `feedback_context` kwarg on `safe_respond` + `post_to_channel_or_respond`, wired 15 columnist + trade-announcement sites in `services/batch_sim_runner.py` and 5 sites in `bot/cogs/trade_cog.py`. 11 new tests pass; alembic 045 round-trip clean.
+- 2026-05-23 work (3 commits by `[claude-sonnet-4-6]`): bidirectional CPU trade proposals (`outgoing_first` mode added behind `pick_proposal_modes` dispatcher), B7 root cause (`_derive_goal_and_horizon` early-season fall-through + SQL arg order bug in `cpu_trade_posture`), B8 gate parity via `_apply_final_trade_gates` helper, B5 sub-rule retune with R1>R2 tier exemption. See session note `Brain/General Session Notes/2026-05-23 - DBA Trade Restructure - Bidirectional Proposals, B7 Fix, Marcus Prompt.md`.
+- The work-streams are now coupled: ride-along 5 simultaneously verifies the trade-logic fixes AND exercises the new feedback-capture flow. The feedback JSONL produced by run 5 will be the input artifact for any further trade-logic iteration.
+- Open follow-up (parked, not blocking): `sim_date` enrichment for columnist register calls, Pat Chen build (user said "let pat chen's notes just sit there for a bit"), and `services/columnist_service.generate` doesn't surface `article_id` to callers — so `context_blob.article_id` is absent from registered rows. Anchor by `persona_id + headline + league_id + game_index` if cross-referencing `league_articles`.
