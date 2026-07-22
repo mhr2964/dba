@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import List, Optional
 
 import discord
@@ -13,10 +13,10 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import article_repo, game_repo, gameplan_repo, league_repo, strategy_repo, team_repo
 from phase.states import Phase
-from services import awards_service, columnist_service, cpu_coach_service, franchise_plan_service, league_service, notifier_service, potm_service, sim_engine, strategy_service, team_intel
+from services import awards_service, columnist_service, cpu_coach_service, franchise_plan_service, league_service, notifier_service, sim_engine, strategy_service, team_intel
 from services.cpu_trade_round_trigger import _maybe_run_cpu_trades
 from services.personas import PERSONAS as _PERSONAS
-from services.sim_content_pipeline import _maybe_post_awards_races
+from services.sim_content_pipeline import _maybe_post_potm
 from services.player_style_service import context_summary as _player_style_context
 from services.sim_channel_announcer import (
     _ensure_records_channel,
@@ -281,115 +281,6 @@ async def _fetch_race_leaders_once(pool, league_id: int, season: int) -> dict:
         log.warning(f"_fetch_race_leaders_once: failed for league={league_id}: {exc}")
         return {}
 
-
-async def _maybe_post_potm(
-    pool,
-    guild: discord.Guild,
-    league_id: int,
-    season: int,
-    current_game_date: Optional[str],
-    current_game_index: int = 0,
-    prefetched_race_leaders: dict | None = None,
-) -> None:
-    """Post Player of the Month awards if a new month has elapsed since the last award.
-
-    When a new month is detected, also posts a visual month separator to #analysis
-    and fires the award race odds (once per simulated month, tied to this cycle).
-
-    Month-gate: batches within the same simulated calendar month are short-circuited
-    in the runner without touching the DB, avoiding repeated potm_service round-trips
-    that always return None mid-month.
-    """
-    if not current_game_date:
-        log.debug("_maybe_post_potm: no current_game_date, skipping")
-        return
-
-    current_month = current_game_date[:7]  # "YYYY-MM"
-    if _potm_last_checked_month.get(league_id) == current_month:
-        log.debug(
-            f"_maybe_post_potm: same month {current_month} as last check for league {league_id}, skipping"
-        )
-        return
-    _potm_last_checked_month[league_id] = current_month
-
-    log.info(
-        f"_maybe_post_potm called: league={league_id} season={season} "
-        f"current_game_date={current_game_date!r}"
-    )
-    if not current_game_date:
-        return
-    try:
-        log.info(f"_maybe_post_potm: calling check_and_get_potm_awards for league={league_id}")
-        awards = await potm_service.check_and_get_potm_awards(
-            pool, league_id, season, current_game_date
-        )
-        log.info(f"_maybe_post_potm: check_and_get_potm_awards returned {awards!r}")
-        if not awards:
-            log.info("_maybe_post_potm: no awards to post (None=already awarded, []=no eligible players)")
-            return
-        pat = _PERSONAS.get("pat_chen")
-        if not pat:
-            log.warning("_maybe_post_potm: pat_chen persona not found in _PERSONAS")
-            return
-        news_channel = await _get_news_channel(guild, pool, league_id)
-        if not news_channel:
-            log.warning(f"_maybe_post_potm: no league-news channel configured for league {league_id}")
-            return
-
-        # Post month separator to #analysis before columnist articles.
-        analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
-        analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
-        if analysis_channel:
-            # Derive month label from first award (all awards share same month block).
-            _sep_label = awards[0]["month_label"] if awards else current_game_date[:7]
-            _sep_text = "━" * 22 + f"\n\U0001f4c5  {_sep_label}\n" + "━" * 22
-            try:
-                await analysis_channel.send(_sep_text)
-            except Exception as exc:
-                log.warning(f"Month separator post failed: {exc}")
-
-        # Group awards by month so we generate one article per month (East+West together).
-        by_month: dict[str, list[dict]] = defaultdict(list)
-        for award in awards:
-            by_month[award["month_label"]].append(award)
-        for month_awards in by_month.values():
-            context = potm_service.get_potm_context(month_awards)
-            article = await columnist_service.generate(
-                pool, league_id, season,
-                persona_id="pat_chen",
-                category="player_of_the_month",
-                context=context,
-            )
-            if article:
-                rgb = _PERSONA_COLORS.get("pat_chen", (100, 100, 100))
-                embed = discord.Embed(
-                    title=f"🏆 {article['headline']}",
-                    description=article["body"][:2000],
-                    color=discord.Color.from_rgb(*rgb),
-                )
-                embed.set_footer(text=f"by {pat.display_name} · {pat.byline}")
-                try:
-                    _sent = await news_channel.send(embed=embed)
-                except Exception as exc:
-                    log.warning(f"POTM post failed: {exc}")
-                else:
-                    await _feedback_log.register_columnist_post(
-                        pool, _sent,
-                        league_id=league_id, season=season,
-                        persona_id="pat_chen", category="player_of_the_month",
-                        headline=article["headline"], body=article["body"],
-                        game_index=current_game_index,
-                        subject_player_ids=[a["player_id"] for a in month_awards if a.get("player_id")],
-                    )
-
-        # Award races fire once per month, right after POTM announcements.
-        await _maybe_post_awards_races(
-            pool, league_id, season, news_channel,
-            current_game_index=current_game_index,
-            prefetched_leaders=prefetched_race_leaders,
-        )
-    except Exception as exc:
-        log.warning(f"_maybe_post_potm failed: {exc}", exc_info=True)
 
 
 _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
