@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import random
 from collections import Counter
 from typing import List, Optional
 
@@ -16,7 +15,7 @@ from phase.states import Phase
 from services import awards_service, columnist_service, cpu_coach_service, franchise_plan_service, league_service, notifier_service, sim_engine, strategy_service, team_intel
 from services.cpu_trade_round_trigger import _maybe_run_cpu_trades
 from services.personas import PERSONAS as _PERSONAS
-from services.sim_content_pipeline import _maybe_post_potm
+from services.sim_content_pipeline import _maybe_post_coach_beat, _maybe_post_potm
 from services.player_style_service import context_summary as _player_style_context
 from services.sim_channel_announcer import (
     _ensure_records_channel,
@@ -66,10 +65,6 @@ _marcus_game_counter: dict[int, int] = {}
 
 # Tracks games processed so Darius Cole fires every ~50 games.
 _darius_game_counter: dict[int, int] = {}
-
-# Tracks games processed so Quinn Park (coach_beat) fires every ~50 games (offset from Marcus).
-# Keyed by league_id so multi-league bots don't bleed counters across leagues.
-_coach_beat_game_counter: dict[int, int] = {}
 
 # Tracks the game index of the last columnist article so the 50-game fallback works.
 # Keyed by league_id.
@@ -311,141 +306,6 @@ async def _maybe_snapshot_teams(
     except Exception as exc:
         log.warning(f"_maybe_snapshot_teams failed silently: {exc}")
 
-
-async def _maybe_post_coach_beat(
-    pool,
-    league_id: int,
-    season: int,
-    batch_results: list[dict],
-    guild: discord.Guild,
-) -> None:
-    """Post a Quinn Park (coach_beat) article every ~50 games.
-
-    Focuses on the team with the most extreme philosophy-vs-outcome mismatch in
-    the current batch.  Swallows exceptions so article failures never abort the sim.
-    """
-    _coach_beat_game_counter[league_id] = _coach_beat_game_counter.get(league_id, 0) + len(batch_results)
-    if _coach_beat_game_counter[league_id] < 50:
-        return
-    # Counter is NOT reset here — it resets only after a successful post below.
-    # This lets the column fire on the next batch that has actual content to say.
-
-    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
-    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
-    if not analysis_channel:
-        return
-
-    cb_persona = _PERSONAS.get("coach_beat")
-    if not cb_persona:
-        log.warning("_maybe_post_coach_beat: coach_beat persona not registered — skipping")
-        return
-
-    try:
-        # Identify the most "interesting" coaching team from the recent batch by
-        # finding the team with the most extreme philosophy (chaos or vet_overrater)
-        # among teams in this batch.  Fall back to any team if none qualify.
-        batch_team_ids: list[int] = []
-        for br in batch_results:
-            ht = br.get("home_team")
-            at = br.get("away_team")
-            if ht:
-                batch_team_ids.append(ht.id)
-            if at:
-                batch_team_ids.append(at.id)
-        batch_team_ids = list(dict.fromkeys(batch_team_ids))  # deduplicate
-
-        raw = await pool.fetchrow(
-            "SELECT * FROM leagues WHERE id = $1", league_id
-        )
-        if not raw:
-            return
-        from data.repositories import league_repo as _lr
-        league = _lr._league_from_record(raw)
-
-        intel = await team_intel.build_team_intel(
-            pool, league, season, batch_team_ids,
-            include=("posture", "plan", "philosophy", "recent_role_changes"),
-        )
-
-        # Prioritise chaos, vet_overrater, and youth_developer teams.
-        # Use random.choice among ALL matching teams rather than iterating in
-        # tuple order — previously "chaos" always won because it came first,
-        # causing every Coach Beat post to be about a chaos team.
-        _PRIORITY_PHILOSOPHIES = {"chaos", "vet_overrater", "youth_developer"}
-        priority_candidates = [
-            tid for tid, data in intel.items()
-            if data.get("philosophy") in _PRIORITY_PHILOSOPHIES
-        ]
-        subject_team_id: int | None = None
-        if priority_candidates:
-            subject_team_id = random.choice(priority_candidates)
-        elif batch_team_ids:
-            subject_team_id = random.choice(batch_team_ids)
-        if subject_team_id is None:
-            return
-
-        subject_intel = intel.get(subject_team_id, {})
-
-        # Content gate: skip the post (but don't reset the counter) when the selected
-        # team has nothing interesting to say.
-        # Require non-empty recent_role_changes — philosophy alone is too permissive
-        # and was causing firings on vet_overrater teams with no actual story.
-        # The counter stays at ≥50 so the next batch with real content fires
-        # the column immediately rather than waiting another 50 games.
-        recent_role_changes = subject_intel.get("recent_role_changes", [])
-        subject_philosophy = subject_intel.get("philosophy", "tendency_respecter")
-        if not recent_role_changes:
-            log.debug(
-                f"_maybe_post_coach_beat: league={league_id} team={subject_team_id} "
-                f"philosophy={subject_philosophy!r} but no recent_role_changes — "
-                "skipping, counter retained at ≥50 for next batch"
-            )
-            return
-
-        # Fetch team code for context.
-        team_row = await pool.fetchrow(
-            "SELECT nba_team_code FROM teams WHERE id = $1", subject_team_id
-        )
-        team_code = team_row["nba_team_code"] if team_row else "???"
-
-        cb_context = {
-            "posture":             subject_intel.get("posture"),
-            "plan":                subject_intel.get("plan"),
-            "philosophy":          subject_philosophy,
-            "recent_role_changes": recent_role_changes,
-            "subject_team_code":   team_code,
-        }
-
-        cb_article = await asyncio.wait_for(
-            columnist_service.generate(
-                pool, league_id, season,
-                persona_id="coach_beat",
-                category="coaching_beat",
-                context=cb_context,
-                subject_team_ids=[subject_team_id],
-            ),
-            timeout=15.0,
-        )
-        if cb_article:
-            embed = discord.Embed(
-                title=f"🎤 {cb_article['headline']}",
-                description=cb_article["body"][:2000],
-                color=discord.Color.from_rgb(160, 82, 45),
-            )
-            embed.set_footer(text=f"by {cb_persona.display_name} · {cb_persona.byline}")
-            _sent = await analysis_channel.send(embed=embed)
-            await _feedback_log.register_columnist_post(
-                pool, _sent,
-                league_id=league_id, season=season,
-                persona_id="coach_beat", category="coaching_beat",
-                headline=cb_article["headline"], body=cb_article["body"],
-                subject_team_ids=[subject_team_id],
-            )
-            # Reset counter only after a successful post so empty-content batches
-            # can retry immediately on the next batch.
-            _coach_beat_game_counter[league_id] = 0
-    except Exception as exc:
-        log.warning(f"_maybe_post_coach_beat failed: {exc}", exc_info=True)
 
 
 async def _build_batch_game_context(batch_results: list[dict]) -> dict:
