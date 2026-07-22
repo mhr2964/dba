@@ -200,8 +200,9 @@ def compute_team_mode(
     Derive the 5-bucket trade posture mode from season projection data.
 
     This is the single source of truth for CPU mode computation.
-    Both cpu_trade_service._compute_team_posture and trade_service._cpu_evaluate
-    call this function so propose-side and accept-side always agree.
+    Both cpu_trade_service._compute_team_posture and
+    cpu_trade_evaluation._cpu_evaluate call this function so propose-side
+    and accept-side always agree.
 
     Buckets (in priority order):
       contending    — projected ≥50 wins, or ≥45 + veteran core + top-4 conf

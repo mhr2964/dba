@@ -195,7 +195,7 @@ async def _compute_team_posture(
     # --- Derive mode (5-bucket system) via shared trade_context_builder function ---
     # Using trade_context_builder.compute_team_mode ensures propose-side and accept-side
     # always agree on mode — no divergence between _compute_team_posture and
-    # trade_service._cpu_evaluate.
+    # cpu_trade_evaluation._cpu_evaluate.
     in_top4 = conf_rank is not None and conf_rank <= 4
     in_top6 = conf_rank is not None and conf_rank <= 6
     in_top10 = conf_rank is not None and conf_rank <= 10
