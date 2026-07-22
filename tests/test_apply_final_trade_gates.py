@@ -17,9 +17,9 @@ import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-import services.cpu_trade_proposals as _mod
+import services.cpu_trade_proposal_runner as _mod
 from data.repositories import league_repo, player_repo, team_repo
-from services.cpu_trade_proposals import _apply_final_trade_gates
+from services.trade_gates import _apply_final_trade_gates
 
 SALARY_CAP = 140_000_000
 LEAGUE_ID = 1
@@ -426,12 +426,12 @@ async def test_outgoing_first_proposes_nothing_when_gates_fail():
             10: outgoing_contract, 20: incoming_contract
         }.get(pid))),
         patch.object(_mod.player_repo, "get_roster", AsyncMock(return_value=[outgoing_player])),
-        patch("services.cpu_trade_proposals._league_scan_counterparties",
+        patch("services.cpu_trade_proposal_runner._league_scan_counterparties",
               AsyncMock(return_value=[(team_b, 1.0, "fit")])),
-        patch("services.cpu_trade_proposals._derive_return_from_b", _fake_derive_return),
-        patch("services.cpu_trade_proposals._score_outgoing_pair", _fake_score),
+        patch("services.cpu_trade_proposal_runner._derive_return_from_b", _fake_derive_return),
+        patch("services.cpu_trade_proposal_runner._score_outgoing_pair", _fake_score),
         # Force all gate calls to reject with a named reason.
-        patch("services.cpu_trade_proposals._apply_final_trade_gates",
+        patch("services.cpu_trade_proposal_runner._apply_final_trade_gates",
               AsyncMock(return_value=(False, "test_gate_fail: lateral swap with lost pick"))),
         patch.object(_mod.trade_service, "propose", _fake_propose),
     ):
@@ -632,15 +632,15 @@ async def test_outgoing_first_tries_next_candidate_when_first_rejected():
             10: outgoing_contract, 20: incoming_contract_first, 30: incoming_contract_second,
         }.get(pid))),
         patch.object(_mod.player_repo, "get_roster", AsyncMock(return_value=[outgoing_player])),
-        patch("services.cpu_trade_proposals._league_scan_counterparties",
+        patch("services.cpu_trade_proposal_runner._league_scan_counterparties",
               AsyncMock(return_value=[(team_b_first, 1.0, "fit"), (team_b_second, 0.9, "fit")])),
-        patch("services.cpu_trade_proposals._derive_return_from_b", _fake_derive_return),
-        patch("services.cpu_trade_proposals._score_outgoing_pair", _fake_score),
-        patch("services.cpu_trade_proposals._apply_final_trade_gates", _fake_gates),
-        patch("services.cpu_trade_proposals._team_archetype_counts", return_value={}),
-        patch("services.cpu_trade_proposals.trade_evaluator._player_archetype", return_value=None),
+        patch("services.cpu_trade_proposal_runner._derive_return_from_b", _fake_derive_return),
+        patch("services.cpu_trade_proposal_runner._score_outgoing_pair", _fake_score),
+        patch("services.cpu_trade_proposal_runner._apply_final_trade_gates", _fake_gates),
+        patch("services.cpu_trade_proposal_runner._team_archetype_counts", return_value={}),
+        patch("services.cpu_trade_proposal_runner.trade_evaluator._player_archetype", return_value=None),
         patch.object(_mod.trade_service, "propose", _fake_propose),
-        patch("services.cpu_trade_proposals._maybe_auto_approve", _fake_auto_approve),
+        patch("services.cpu_trade_proposal_runner._maybe_auto_approve", _fake_auto_approve),
     ):
         result = await _mod._attempt_outgoing_first_offer(
             pool=pool,

@@ -11,11 +11,8 @@ from core.logging import get_logger
 from data.repositories import league_repo, player_repo, team_repo, trade_block_repo
 from services import cpu_block_service
 from services.cpu_trade_posture import _compute_team_posture, _default_posture
-from services.cpu_trade_proposals import (
-    _attempt_one_offer,
-    _attempt_three_team_deal,
-    _build_cpu_trade_block,
-)
+from services.cpu_trade_proposal_runner import _attempt_one_offer, _attempt_three_team_deal
+from services.trade_block_builder import _build_cpu_trade_block
 
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 

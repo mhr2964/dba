@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from services.cpu_trade_proposals import _score_outgoing_pair
+from services.trade_proposal_scoring import _score_outgoing_pair
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ def test_incoming_first_two_pass_archetype_check():
     We test the underlying primitives (_team_archetype_counts, _player_archetype,
     and the penalty logic) directly to assert the same math fires correctly.
     """
-    from services.cpu_trade_proposals import _team_archetype_counts
+    from services.trade_proposal_scoring import _team_archetype_counts
     from services import trade_evaluator
 
     # Build 3 ball-needs PGs with identical tendencies (high pass/ast, high drive).
@@ -386,7 +386,7 @@ def test_dispatcher_v2_flag_ignored():
     on posture, plan, cap_state, not on the removed env var.
     """
     import os
-    from services.cpu_trade_proposals import pick_proposal_modes
+    from services.trade_proposal_scoring import pick_proposal_modes
 
     team = _FakeTeam()
     plan = {"goal": "tank", "surplus_player_ids": [1, 2], "asset_targets": []}
@@ -434,7 +434,7 @@ async def test_pass2_uses_form_adjusted_target_value():
     no form modifier applied, so it will differ from _p2_adj_tv by factor ~1.15.
     The captured_tv assertion (== expected_adj_tv) will fail.
     """
-    import services.cpu_trade_proposals as _mod
+    import services.cpu_trade_proposal_runner as _mod
     from data.repositories import league_repo, player_repo, team_repo
     from services import trade_evaluator
 
@@ -571,8 +571,8 @@ async def test_pass2_uses_form_adjusted_target_value():
             _mod.trade_evaluator, "compute_form_map",
             AsyncMock(return_value={CAND_PID: (HOT_FORM_MOD, {})}),
         ),
-        patch("services.cpu_trade_proposals._build_return_package", _fake_build_return_package),
-        patch("services.cpu_trade_proposals.random.random", return_value=0.99),  # no secondary
+        patch("services.cpu_trade_proposal_runner._build_return_package", _fake_build_return_package),
+        patch("services.cpu_trade_proposal_runner.random.random", return_value=0.99),  # no secondary
         patch("services.trade_context.compute_context_modifier", AsyncMock(return_value=(1.0, []))),
     ):
         await _mod._run_incoming_first_for_team(
@@ -622,7 +622,7 @@ async def test_pass2_includes_secondary_target_in_sizing():
     The captured_tv assertion (== expected_combined) will fail because _cand_tv
     carries only the primary raw value with no secondary folded in.
     """
-    import services.cpu_trade_proposals as _mod
+    import services.cpu_trade_proposal_runner as _mod
     from data.repositories import league_repo, player_repo, team_repo
     from services import trade_evaluator
 
@@ -796,10 +796,10 @@ async def test_pass2_includes_secondary_target_in_sizing():
         patch.object(_mod.player_repo, "get_by_id", _get_by_id),
         patch.object(_mod.player_repo, "get_active_contract", _get_active_contract),
         patch.object(_mod.trade_evaluator, "compute_form_map", _compute_form_map),
-        patch("services.cpu_trade_proposals._build_return_package", _fake_build_return_package),
+        patch("services.cpu_trade_proposal_runner._build_return_package", _fake_build_return_package),
         # Force random.random() < 0.3 so the secondary branch always fires for
         # a player with overall >= 75 (PRIMARY_OVERALL = 82 qualifies).
-        patch("services.cpu_trade_proposals.random.random", return_value=0.1),
+        patch("services.cpu_trade_proposal_runner.random.random", return_value=0.1),
         patch("services.trade_context.compute_context_modifier", AsyncMock(return_value=(1.0, []))),
     ):
         await _mod._run_incoming_first_for_team(

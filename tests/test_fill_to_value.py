@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.cpu_trade_proposals import _fill_to_value
+from services.trade_proposal_scoring import _fill_to_value
 
 
 # Minimal pick dict shape used by the helper.

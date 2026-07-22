@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.cpu_trade_proposals import pick_proposal_modes
+from services.trade_proposal_scoring import pick_proposal_modes
 
 
 # ---------------------------------------------------------------------------
