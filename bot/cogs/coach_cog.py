@@ -33,7 +33,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo
 from services import league_service, role_service, team_intel
-from services.batch_sim_runner import invalidate_role_cache
+from services.sim_persistence import invalidate_role_cache
 from services.ride_along import emit_role_change, is_role_pause_enabled
 from bot.embeds import intel_embeds
 

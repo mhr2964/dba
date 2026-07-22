@@ -1263,10 +1263,11 @@ async def approve(
     # Invalidate role cache and re-derive for every team that gained or lost a player.
     # Must run after the transaction commits so the new lineups are visible to derive_roles.
     if affected_team_ids:
-        from services import batch_sim_runner, role_service
+        from services import role_service
+        from services.sim_persistence import invalidate_role_cache
         async with pool.acquire() as _conn:
             for tid in affected_team_ids:
-                batch_sim_runner.invalidate_role_cache(trade.league_id, tid, current_season)
+                invalidate_role_cache(trade.league_id, tid, current_season)
                 await role_service.derive_and_persist_all_for_team(
                     _conn, trade.league_id, tid, current_season,
                     silent_emit=True,
