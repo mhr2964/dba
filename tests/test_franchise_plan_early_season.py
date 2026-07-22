@@ -6,7 +6,7 @@ instead of falling through to ("transition", 2).
 """
 from __future__ import annotations
 
-from services.franchise_plan_service import _derive_goal_and_horizon
+from services.franchise_plan_math import _derive_goal_and_horizon
 
 
 # ---------------------------------------------------------------------------
