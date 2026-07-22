@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import discord
 
-from bot.embeds import awards_embeds, sim_embeds
+from bot.embeds import sim_embeds
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import article_repo, game_repo, gameplan_repo, league_repo, strategy_repo, team_repo
@@ -16,6 +16,7 @@ from phase.states import Phase
 from services import awards_service, columnist_service, cpu_coach_service, franchise_plan_service, league_service, notifier_service, potm_service, sim_engine, strategy_service, team_intel
 from services.cpu_trade_round_trigger import _maybe_run_cpu_trades
 from services.personas import PERSONAS as _PERSONAS
+from services.sim_content_pipeline import _maybe_post_awards_races
 from services.player_style_service import context_summary as _player_style_context
 from services.sim_channel_announcer import (
     _ensure_records_channel,
@@ -279,30 +280,6 @@ async def _fetch_race_leaders_once(pool, league_id: int, season: int) -> dict:
     except Exception as exc:
         log.warning(f"_fetch_race_leaders_once: failed for league={league_id}: {exc}")
         return {}
-
-
-async def _maybe_post_awards_races(
-    pool,
-    league_id: int,
-    season: int,
-    news_channel: Optional[discord.TextChannel],
-    current_game_index: int = 0,
-    prefetched_leaders: dict | None = None,
-) -> None:
-    """Post award race odds. Called from _maybe_post_potm so it fires once per simulated month."""
-    try:
-        if not news_channel:
-            return
-        odds = await awards_service.generate_awards_race_odds(
-            pool, league_id, season, prefetched_leaders=prefetched_leaders
-        )
-        if not odds:
-            return
-        embed = awards_embeds.awards_race_embed(odds, game_index=current_game_index)
-        if embed:
-            await news_channel.send(embed=embed)
-    except Exception as exc:
-        log.warning(f"_maybe_post_awards_races failed: {exc}", exc_info=True)
 
 
 async def _maybe_post_potm(
