@@ -13,6 +13,7 @@ A fully simulated NBA league game for Discord. GMs draft, trade, and manage rost
 - 📊 **Stats**: live standings, leaderboards, career stats, all-time records, power rankings
 - 🧠 **Strategy**: offensive/defensive schemes, pace settings, player minutes management — all affect simulation output
 - 🤖 **GM Tools**: contract extensions, trade block management, trade grades, Hall of Fame voting
+- 📰 **Columnists**: LLM-voiced persona articles (trade reports, power rankings, awards, tank watch) reacting to league events
 
 ---
 
@@ -34,7 +35,7 @@ cp .env.example .env
 
 docker compose up -d           # Start Postgres on port 5434
 pip install -r requirements.txt
-python -m alembic upgrade head  # Apply all 17 migrations
+python -m alembic upgrade head  # Apply all migrations
 python main.py                  # Start the bot
 ```
 
@@ -78,6 +79,7 @@ The `phase` system enforces which commands are available at each stage. Attempti
 | `DISCORD_TOKEN` | Yes | Bot token from discord.com/developers |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `LOG_LEVEL` | No | Log verbosity — `DEBUG`, `INFO` (default), `WARNING` |
+| `ANTHROPIC_API_KEY` | No | Enables columnist/awards/storyline article generation; those features skip gracefully if unset |
 
 ---
 
@@ -85,22 +87,20 @@ The `phase` system enforces which commands are available at each stage. Attempti
 
 Layered monolith: discord.py 2.x (slash commands) + asyncpg (async DB access) + PostgreSQL.
 
-- **13 cogs** covering every feature area (setup, roster, sim, trade, playoff, awards, draft, season, offseason, FA, stats, strategy, meta)
-- **17 migrations** (Alembic) tracking schema from initial league tables through trade block and waiver claims
-- **25 test files / 174 tests** covering services, repos, sim engine, and integration paths
-
 ```
-bot/cogs/       — discord.py Cog classes (one per domain)
+bot/cogs/       — discord.py Cog classes, 16 command groups
+bot/embeds/     — embed builders
+bot/ui/         — interactive views/modals
+services/       — business logic (personas/, philosophies/, trade_signals/ subpackages)
+data/           — DB pool + repositories (one per aggregate) + seed data
 core/           — config, logging, error handling
-data/           — DB pool, repositories
-services/       — business logic (no Discord dependency)
-phase/          — phase enforcement and transitions
-notifier/       — Discord message delivery
-jobs/           — scheduled background tasks
-scripts/        — standalone CLI utilities
-alembic/        — DB migrations
-tests/          — pytest test suite
+phase/          — season-phase state machine
+scripts/        — durable CLI utilities (seed builders, rating fetchers, DB tools)
+alembic/        — 45 migrations
+tests/          — pytest suite, 253 tests
 ```
+
+Full architecture doc, invariants, and current file-split status: [docs/design/architecture.md](docs/design/architecture.md). Trade-evaluator rule specs: [docs/design/trade-logic-rules.md](docs/design/trade-logic-rules.md).
 
 ---
 
@@ -108,11 +108,15 @@ tests/          — pytest test suite
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/ -v
+pytest -v
 ```
+
+253 collected: 242 passing, 10 `xfail` (pre-existing, tracked issues — see markers in `tests/test_setup_cog.py` and `tests/test_trade_evaluator.py`), 1 integration-marked skip. Requires Postgres running (`docker compose up -d`) and migrations applied.
+
+Manual dual-account Discord testing protocol: [docs/testing.md](docs/testing.md).
 
 ---
 
 ## Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for Railway (recommended) and Fly.io step-by-step guides.
+See [docs/deployment.md](docs/deployment.md) for Railway (recommended) and Fly.io step-by-step guides.
