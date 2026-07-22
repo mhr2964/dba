@@ -1,6 +1,6 @@
 # HANDOFF — dba
 
-Full re-architecture sweep in progress (4-phase plan). Phase 0 (workspace hygiene) complete, awaiting user review before Phase 1.
+Full re-architecture sweep in progress (4-phase plan). Phase 0 (workspace hygiene) and Phase 1 (discord/SQL boundary + Announcer protocol) complete, awaiting user review before Phase 2.
 
 ```yaml
 last-model: claude-sonnet-5
@@ -10,7 +10,7 @@ state: yellow
 
 ## Next action
 
-User reviews/tests the Phase 0 hygiene changes (deletions, doc consolidation, `docs/design/` migration, xfail markers, alembic filename fix). Once approved, proceed to **Phase 1** (document the `services/` never imports `discord` / `data/repositories/` owns all SQL invariant in `docs/design/architecture.md`; add `services/announcer_protocol.py`), then **Phase 2** (split `cpu_trade_proposals.py` and `batch_sim_runner.py`). Full plan detail lives in the session's plan-mode artifact; the durable version is `docs/design/architecture.md` + `docs/design/trade-logic-rules.md`.
+User reviews Phase 1 (below). Once approved, proceed to **Phase 2**: split `cpu_trade_proposals.py` (4,274 LOC) and `batch_sim_runner.py` (3,653 LOC) per the risk-ascending sequencing in the plan — gate-covered pure functions first, then `Announcer`-protocol discord code, then SQL into `data/repositories/`, then the highest-risk orchestration code last with new characterization tests. Full plan detail lives in the session's plan-mode artifact; the durable version is `docs/design/architecture.md` + `docs/design/trade-logic-rules.md`.
 
 Separately, still open from the prior work-stream: user must toggle **Message Content Intent** in the Discord Developer Portal (Application → Bot → Privileged Gateway Intents) and restart the bot before ride-along run 5 can verify the 2026-05-23 trade-restructure fixes — `bot/client.py:73` requests `intents.message_content = True` and the bot won't connect without it.
 
@@ -29,6 +29,7 @@ Separately, still open from the prior work-stream: user must toggle **Message Co
 
 ## Recent context
 
+- 2026-07-22 Phase 1 (discord/SQL boundary): added `services/announcer_protocol.py` — `Announcer` protocol (`post_embed(channel_key, EmbedData)`, `post_text(channel_key, content)`) plus the `EmbedData`/`EmbedField` dataclasses; finalized the invariants section in `docs/design/architecture.md` (dropped the "target — not yet fully enforced" qualifier now that the protocol exists; the two grep-based invariants themselves are still unenforced pending Phase 2). No behavior change — full suite re-verified clean at 242 passed/10 xfailed/1 skipped.
 - 2026-07-22 hygiene pass (Phase 0 of full re-architecture): deleted `Projects/dba_refactor` (stale sibling clone) and 3 orphaned agent worktrees (2026-05-14, already merged, uncommitted diffs stashed first); deleted nested `dba/` duplicate, all root log files, 17 throwaway root scripts, 14 diagnostic + 6 backfill one-timers in `scripts/`, empty `jobs/`/`notifier/` stubs; renamed mis-numbered migration `013_commissioner_actions.py` → `014_commissioner_actions.py` (revision-ID chain was already correct, filename-only fix); marked 10 known-failing tests `xfail`; migrated `.design/` → `docs/design/` (durable trade-logic rules + architecture doc) and `Brain/Note Pad/dba/` (columnist voice/eval feedback); moved `services/extensibility.md` → `docs/extensibility.md`, `DEPLOYMENT.md`/`TESTING.md` → `docs/`; rewrote `README.md` with accurate stats (16 cogs, 45 migrations, 253 tests); added `WORKING.md`; documented `ANTHROPIC_API_KEY` in `.env.example`.
 - 2026-05-24 commit `ae7cd97` shipped Discord-reply feedback capture (`bot_message_log`/`feedback_replies` tables, migration 045, `services/feedback_log.py`, `bot/cogs/feedback_cog.py`).
 - 2026-05-23 (3 commits): bidirectional CPU trade proposals (`outgoing_first` mode), B7 posture root-cause fix, B8 gate-parity helper (`_apply_final_trade_gates`), B5 sub-rule retune. See session note `Brain/General Session Notes/2026-05-23 - DBA Trade Restructure - Bidirectional Proposals, B7 Fix, Marcus Prompt.md`.
