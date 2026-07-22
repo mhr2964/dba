@@ -17,6 +17,7 @@ from services.cpu_trade_round_trigger import _maybe_run_cpu_trades
 from services.personas import PERSONAS as _PERSONAS
 from services.sim_content_pipeline import (
     _build_batch_game_context,
+    _maybe_post_big_picture,
     _maybe_post_coach_beat,
     _maybe_post_potm,
     _maybe_post_power_list,
@@ -102,7 +103,6 @@ _COLUMNIST_FORCE_MIN_GAP: int = 70
 
 # New specialty persona game counters.  Each fires on its own cadence, independent
 # of the main columnist rotation.  70 games ≈ weekly; 280 games ≈ monthly.
-_big_picture_game_counter: dict[int, int] = {}     # fires every ~70 games (weekly)
 _ledger_game_counter: dict[int, int] = {}          # fires every ~280 games (monthly)
 _ledger_first_post_done: dict[tuple[int, int], bool] = {}  # True after first post per (league_id, season)
 _race_game_counter: dict[int, int] = {}            # fires every ~280 games (monthly)
@@ -310,84 +310,6 @@ async def _maybe_snapshot_teams(
     except Exception as exc:
         log.warning(f"_maybe_snapshot_teams failed silently: {exc}")
 
-
-
-async def _maybe_post_big_picture(
-    pool,
-    league_id: int,
-    season: int,
-    batch_results: list[dict],
-    guild: discord.Guild,
-) -> None:
-    """Post The Big Picture long-form column every ~70 games (weekly cadence, Sunday-equivalent)."""
-    _big_picture_game_counter[league_id] = _big_picture_game_counter.get(league_id, 0) + len(batch_results)
-    if _big_picture_game_counter[league_id] < 70:
-        return
-    _big_picture_game_counter[league_id] = 0
-
-    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
-    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
-    if not analysis_channel:
-        return
-
-    persona = _PERSONAS.get("big_picture")
-    if not persona:
-        log.warning("_maybe_post_big_picture: big_picture persona not registered — skipping")
-        return
-
-    try:
-        context = await _build_batch_game_context(batch_results)
-        standings = await game_repo.get_standings(pool, league_id, season)
-        context["standings"] = standings
-
-        # Top performers season-to-date for thematic anchor.
-        top_performers = await pool.fetch(
-            """
-            SELECT p.first_name || ' ' || p.last_name AS name,
-                   t.nba_team_code AS team,
-                   ROUND(AVG(b.points)::numeric, 1) AS ppg,
-                   ROUND(AVG(b.assists)::numeric, 1) AS apg,
-                   ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
-                   COUNT(b.id) AS gp
-            FROM players p
-            JOIN teams t ON t.id = p.team_id
-            JOIN game_box_scores b ON b.player_id = p.id
-            JOIN games g ON g.id = b.game_id
-            WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
-            GROUP BY p.id, t.nba_team_code
-            HAVING COUNT(b.id) >= 5
-            ORDER BY AVG(b.points) DESC
-            LIMIT 8
-            """,
-            league_id, season,
-        )
-        context["top_performers"] = [dict(r) for r in top_performers]
-
-        article = await asyncio.wait_for(
-            columnist_service.generate(
-                pool, league_id, season,
-                persona_id="big_picture",
-                category="sunday_column",
-                context=context,
-            ),
-            timeout=20.0,
-        )
-        if article:
-            embed = discord.Embed(
-                title=f"🔭 {article['headline']}",
-                description=article["body"][:2000],
-                color=discord.Color.from_rgb(70, 90, 160),
-            )
-            embed.set_footer(text=f"by {persona.display_name} · {persona.byline}")
-            _sent = await analysis_channel.send(embed=embed)
-            await _feedback_log.register_columnist_post(
-                pool, _sent,
-                league_id=league_id, season=season,
-                persona_id="big_picture", category="sunday_column",
-                headline=article["headline"], body=article["body"],
-            )
-    except Exception as exc:
-        log.warning(f"_maybe_post_big_picture failed: {exc}", exc_info=True)
 
 
 async def _maybe_post_ledger(
