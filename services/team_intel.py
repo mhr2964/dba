@@ -92,7 +92,7 @@ async def compute_posture(
 ) -> dict:
     """Compute trade posture from standings + roster age.
 
-    Lifted verbatim from ra_reasoning._compute_posture.
+    Lifted verbatim from what is now trade_reasoning_fetchers._compute_posture.
     Returns:
         {mode, urgency, projected_wins, conf_rank, avg_age,
          games_remaining, wins, losses}
