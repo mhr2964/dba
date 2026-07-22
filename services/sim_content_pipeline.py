@@ -15,17 +15,19 @@ from __future__ import annotations
 import asyncio
 import random
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
 
 from bot.embeds import awards_embeds
 from core.logging import get_logger
 from data.repositories import article_repo, game_repo, league_repo
 from phase.states import Phase
-from services import awards_service, columnist_service, potm_service, team_intel
+from services import awards_service, columnist_service, potm_service, strategy_service, team_intel
+from services import columnist_ride_along as _columnist_ride_along
 from services import feedback_log as _feedback_log
 from services.announcer_protocol import EmbedData
 from services.personas import PERSONAS as _PERSONAS
+from services.player_style_service import context_summary as _player_style_context
 from services.sim_channel_announcer import _BoundChannelAnnouncer, _get_news_channel
 
 if TYPE_CHECKING:
@@ -705,6 +707,861 @@ async def _maybe_post_triage_report(
             )
     except Exception as exc:
         log.warning(f"_maybe_post_triage_report failed: {exc}", exc_info=True)
+
+
+# Tracks games processed so Marcus Brooks fires every ~200 games (every 20 batches of 10).
+# Keyed by league_id so multi-league bots don't bleed counters across leagues.
+_marcus_game_counter: dict[int, int] = {}
+
+# Tracks games processed so Darius Cole fires every ~50 games.
+_darius_game_counter: dict[int, int] = {}
+
+# Tracks the game index of the last columnist article so the 50-game fallback works.
+# Keyed by league_id.
+_last_columnist_game_index: dict[int, int] = {}
+
+# Columnist rotation -- cycles through these personas on every batch (subject to reactive gate).
+_COLUMNIST_ROTATION = ["jordan_rivera", "keisha_williams", "hot_take_hour", "pat_chen", "darius_cole", "carla_knox"]
+# Keyed by league_id so concurrent leagues each have their own rotation position.
+_columnist_rotation_index: dict[int, int] = {}
+
+# Hot Take Hour season-long running narratives.  Seeded on first HTH article of the
+# season and then injected into every subsequent HTH context so Dave and Tony keep
+# their multi-episode storylines alive.  Keyed by league_id so multi-league bots work.
+_HTH_NARRATIVES: dict[int, dict] = {}
+
+# Columnist force-mode cadence: minimum game-index gap between articles when
+# force=True.  70 games ~= 7 game-days of 10 games each.
+_COLUMNIST_FORCE_MIN_GAP: int = 70
+
+
+async def _maybe_post_columnist(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+    batch_start_index: int = 0,
+    batch_end_index: int = 0,
+    total_regular_games: int = 0,
+    force: bool = False,
+    prefetched_race_leaders: dict | None = None,
+) -> None:
+    """
+    Post a columnist article after each batch, rotating through _COLUMNIST_ROTATION.
+
+    Marcus Brooks also fires every ~200 games (every 20 batches of 10), independently.
+    hot_take_hour uses a JSON debate format instead of a plain article embed.
+
+    force=True cadence gate: when running a forced bulk sim (e.g. /sim deadline
+    force:True), columnist articles are capped to at most one per
+    _COLUMNIST_FORCE_MIN_GAP games.  This avoids ~10s LLM calls on every
+    game-day when the sim is covering hundreds of games at once.  The Darius Cole
+    independent counter is unaffected — he still fires every ~50 games.
+    """
+    if not batch_results:
+        return
+
+    # Counters must increment even when the analysis channel is absent so that
+    # Darius Cole and Marcus Brooks fire correctly once the channel exists.
+    _darius_game_counter[league_id] = _darius_game_counter.get(league_id, 0) + len(batch_results)
+    _marcus_game_counter[league_id] = _marcus_game_counter.get(league_id, 0) + len(batch_results)
+    log.info(f"Darius Cole check: counter={_darius_game_counter[league_id]}")
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    # Build real per-game context so the AI writes about actual results, not fabrications.
+    games_data: list[dict] = []
+    overall_top_scorer: str | None = None
+    overall_top_pts: int = 0
+    overall_top_scorer_team: str | None = None
+    _overall_top_game: dict = {}
+
+    for br in batch_results:
+        ht = br["home_team"]
+        at = br["away_team"]
+        r = br["result"]
+        hs: int = r["home_score"]
+        as_: int = r["away_score"]
+        winner_id = r.get("winner_team_id")
+        home_code = ht.nba_team_code if hasattr(ht, "nba_team_code") else "???"
+        away_code = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
+        winner_code = home_code if winner_id == ht.id else away_code
+        loser_code = away_code if winner_id == ht.id else home_code
+
+        # Track which team the top scorer belongs to so the AI gets correct attribution.
+        game_top: dict = {}
+        game_top_pts_val: int = 0
+        game_top_team_code: str = ""
+        for box_lines, team_code in [
+            (r.get("home_box", []), home_code),
+            (r.get("away_box", []), away_code),
+        ]:
+            for line in box_lines:
+                if line.get("points", 0) > game_top_pts_val:
+                    game_top_pts_val = line.get("points", 0)
+                    game_top = line
+                    game_top_team_code = team_code
+
+        game_top_name = game_top.get("player_name", "") if game_top else ""
+
+        if game_top_pts_val > overall_top_pts:
+            overall_top_pts = game_top_pts_val
+            overall_top_scorer = game_top_name
+            overall_top_scorer_team = game_top_team_code
+            _overall_top_game = game_top
+
+        # Build full stat-line dict for this game's top performer.
+        if game_top_name and game_top:
+            game_top_performer_dict = {
+                "name": game_top_name,
+                "team": game_top_team_code,
+                "pts": game_top.get("points", 0),
+                "reb": game_top.get("rebounds_off", 0) + game_top.get("rebounds_def", 0),
+                "ast": game_top.get("assists", 0),
+                "stl": game_top.get("steals", 0),
+                "blk": game_top.get("blocks", 0),
+                "tpm": game_top.get("tpm", 0),
+                "tpa": game_top.get("tpa", 0),
+                "fgm": game_top.get("fgm", 0),
+                "fga": game_top.get("fga", 0),
+            }
+        else:
+            game_top_performer_dict = None
+
+        margin = abs(hs - as_)
+        games_data.append({
+            "game": f"{away_code} @ {home_code}",
+            "actual_final_score": f"{away_code} {as_} - {home_code} {hs}",
+            "result_summary": f"{winner_code} beat {loser_code} {max(hs, as_)}-{min(hs, as_)}",
+            "result_instruction": (
+                f"IMPORTANT: The actual final score is {away_code} {as_} - {home_code} {hs}. "
+                "Do NOT invent or change the score."
+            ),
+            "winner": winner_code,
+            "loser": loser_code,
+            "margin": margin,
+            "was_blowout": margin >= 20,
+            "top_performer": game_top_performer_dict,
+        })
+
+    # Sort by interest: close finishes and big blowouts float to the top.
+    def _game_interest(g: dict) -> float:
+        m = g["margin"]
+        return max(0.0, 8.0 - m) + max(0.0, m - 20.0)
+    games_data.sort(key=_game_interest, reverse=True)
+
+    if overall_top_scorer and _overall_top_game:
+        _top_of_batch = {
+            "name": overall_top_scorer,
+            "team": overall_top_scorer_team,
+            "pts": _overall_top_game.get("points", 0),
+            "reb": _overall_top_game.get("rebounds_off", 0) + _overall_top_game.get("rebounds_def", 0),
+            "ast": _overall_top_game.get("assists", 0),
+            "stl": _overall_top_game.get("steals", 0),
+            "blk": _overall_top_game.get("blocks", 0),
+            "tpm": _overall_top_game.get("tpm", 0),
+            "tpa": _overall_top_game.get("tpa", 0),
+            "fgm": _overall_top_game.get("fgm", 0),
+            "fga": _overall_top_game.get("fga", 0),
+        }
+    else:
+        _top_of_batch = None
+
+    # The top-3 most interesting games (most pts, biggest upset, closest game).
+    # Sort by a combined interest score and take the top 3.
+    _by_pts = sorted(games_data, key=lambda g: (g.get("top_performer") or {}).get("pts", 0), reverse=True)
+    _by_margin_close = sorted(games_data, key=lambda g: g["margin"])
+    _by_blowout = sorted(games_data, key=lambda g: g["margin"], reverse=True)
+    _interesting_set: list[dict] = []
+    for _g in [_by_pts[0] if _by_pts else None,
+               _by_margin_close[0] if _by_margin_close else None,
+               _by_blowout[0] if _by_blowout else None]:
+        if _g is not None and _g not in _interesting_set:
+            _interesting_set.append(_g)
+
+    # Plain-English game results for the prompt.
+    game_results_summary = [
+        g["result_summary"] for g in games_data if g.get("result_summary")
+    ]
+
+    # Enrich top performers with player style context so columnists can write
+    # about archetypes, tendencies, and whether performances matched expectations.
+    def _enrich_performer(perf: dict | None) -> dict | None:
+        if not perf or not perf.get("name"):
+            return perf
+        style = _player_style_context(perf["name"], season)
+        if style:
+            perf = dict(perf)
+            perf["style"]        = style["style"]
+            perf["shot_profile"] = style["shot_profile"]
+            perf["playmaking"]   = style["playmaking"]
+            perf["defense"]      = style["defense"]
+        return perf
+
+    _top_of_batch = _enrich_performer(_top_of_batch)
+    for gd in games_data:
+        if gd.get("top_performer"):
+            gd["top_performer"] = _enrich_performer(gd["top_performer"])
+
+    batch_context = {
+        "season_games": games_data[:10],  # all games (≤10 per batch)
+        "top_3_interesting_games": _interesting_set,
+        "game_results": game_results_summary,
+        "top_performer_of_batch": _top_of_batch,
+        "games_count": len(batch_results),
+    }
+
+    # 1b: Add standings snapshot.
+    try:
+        standings = await game_repo.get_standings(pool, league_id, season)
+        east_rows = sorted(
+            [r for r in standings if r.get("conference") == "East"],
+            key=lambda r: -(r.get("win_pct") or 0.0),
+        )
+        west_rows = sorted(
+            [r for r in standings if r.get("conference") == "West"],
+            key=lambda r: -(r.get("win_pct") or 0.0),
+        )
+        batch_context["standings_east"] = [
+            {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"], "pct": round(r.get("win_pct") or 0.0, 3)}
+            for r in east_rows[:5]
+        ]
+        batch_context["standings_west"] = [
+            {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"], "pct": round(r.get("win_pct") or 0.0, 3)}
+            for r in west_rows[:5]
+        ]
+
+        # 1c: Build narrative_hooks.
+        narrative_hooks: list[str] = []
+        # Collect teams that appeared in this batch.
+        batch_team_codes: dict[int, str] = {}
+        for br in batch_results:
+            ht = br["home_team"]
+            at = br["away_team"]
+            if ht:
+                batch_team_codes[ht.id] = ht.nba_team_code if hasattr(ht, "nba_team_code") else "???"
+            if at:
+                batch_team_codes[at.id] = at.nba_team_code if hasattr(at, "nba_team_code") else "???"
+
+        # Pull win/loss streaks for those teams.
+        if batch_team_codes:
+            streak_rows = await pool.fetch(
+                """
+                SELECT team_id, win_streak, loss_streak
+                FROM standings_cache
+                WHERE league_id = $1 AND team_id = ANY($2)
+                """,
+                league_id, list(batch_team_codes.keys()),
+            )
+            for row in streak_rows:
+                code = batch_team_codes.get(row["team_id"], "???")
+                ws = row.get("win_streak") or 0
+                ls = row.get("loss_streak") or 0
+                if ws >= 4 and len(narrative_hooks) < 6:
+                    narrative_hooks.append(f"{code} has won {ws} straight")
+                elif ls >= 4 and len(narrative_hooks) < 6:
+                    narrative_hooks.append(f"{code} has lost {ls} straight")
+
+        # East/West title race hooks.
+        if len(east_rows) >= 2 and len(narrative_hooks) < 6:
+            e1, e2 = east_rows[0], east_rows[1]
+            e1_gb = ((e2["wins"] - e1["wins"]) + (e1["losses"] - e2["losses"])) / 2.0
+            if abs(e1_gb) <= 2.0:
+                diff_str = f"{abs(e1_gb):.1f}"
+                narrative_hooks.append(
+                    f"East title race: {e1['nba_team_code']} leads {e2['nba_team_code']} by {diff_str} games"
+                )
+        if len(west_rows) >= 2 and len(narrative_hooks) < 6:
+            w1, w2 = west_rows[0], west_rows[1]
+            w1_gb = ((w2["wins"] - w1["wins"]) + (w1["losses"] - w2["losses"])) / 2.0
+            if abs(w1_gb) <= 2.0:
+                diff_str = f"{abs(w1_gb):.1f}"
+                narrative_hooks.append(
+                    f"West title race: {w1['nba_team_code']} leads {w2['nba_team_code']} by {diff_str} games"
+                )
+
+        # 30+ point games.
+        for gd in games_data:
+            if len(narrative_hooks) >= 6:
+                break
+            tp = gd.get("top_performer")
+            if isinstance(tp, dict) and tp.get("pts", 0) >= 30:
+                wl = "W" if tp.get("team") == gd.get("winner") else "L"
+                narrative_hooks.append(
+                    f"{tp['name']} dropped {tp['pts']} in a {wl} for {tp['team']}"
+                )
+
+        batch_context["narrative_hooks"] = narrative_hooks[:6]
+
+        # 1b-2: Standings leaders (East + West top 3) for columnist topic variety.
+        batch_context["standings_leaders"] = {
+            "east": [
+                {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"]}
+                for r in east_rows[:3]
+            ],
+            "west": [
+                {"code": r["nba_team_code"], "w": r["wins"], "l": r["losses"]}
+                for r in west_rows[:3]
+            ],
+        }
+    except Exception as _standings_exc:
+        log.warning(f"_maybe_post_columnist: standings/hooks enrichment failed: {_standings_exc}")
+
+    # 1c-2: Recent executed trades (last 2-3 approved trades within 50 games).
+    try:
+        trade_rows = await pool.fetch(
+            """
+            SELECT tr.id, tr.proposer_team_id, tr.counterparty_team_id,
+                   t1.nba_team_code AS proposer_code, t2.nba_team_code AS counterparty_code
+            FROM trades tr
+            JOIN teams t1 ON t1.id = tr.proposer_team_id
+            JOIN teams t2 ON t2.id = tr.counterparty_team_id
+            WHERE tr.league_id = $1
+              AND tr.status = 'approved'
+            ORDER BY tr.id DESC
+            LIMIT 3
+            """,
+            league_id,
+        )
+        if trade_rows:
+            recent_trades = []
+            for tr in trade_rows:
+                # Fetch player names on each side.
+                asset_rows = await pool.fetch(
+                    """
+                    SELECT ta.from_team_id, ta.asset_type,
+                           p.first_name || ' ' || p.last_name AS player_name
+                    FROM trade_assets ta
+                    LEFT JOIN players p ON p.id = ta.player_id
+                    WHERE ta.trade_id = $1
+                    """,
+                    tr["id"],
+                )
+                prop_assets = [
+                    a["player_name"] for a in asset_rows
+                    if a["from_team_id"] == tr["proposer_team_id"] and a["player_name"]
+                ]
+                counter_assets = [
+                    a["player_name"] for a in asset_rows
+                    if a["from_team_id"] == tr["counterparty_team_id"] and a["player_name"]
+                ]
+                recent_trades.append({
+                    "teams": f"{tr['proposer_code']} / {tr['counterparty_code']}",
+                    f"{tr['counterparty_code']}_receives": prop_assets or ["picks"],
+                    f"{tr['proposer_code']}_receives": counter_assets or ["picks"],
+                })
+            batch_context["recent_trades"] = recent_trades
+    except Exception as _trade_exc:
+        log.warning(f"_maybe_post_columnist: trade enrichment failed: {_trade_exc}")
+
+    # 1d: Add award race leaders for topic variety.
+    # Use pre-fetched leaders from the batch tick (top_n=5 fetched once) to avoid
+    # a redundant DB round-trip. Fall back to fetching directly if not provided.
+    try:
+        if prefetched_race_leaders is not None:
+            # Slice each award to top 3 candidates for the columnist context.
+            _race_leaders = {
+                award: candidates[:3]
+                for award, candidates in prefetched_race_leaders.items()
+            }
+        else:
+            _race_leaders = await awards_service.get_race_leaders(pool, league_id, season, top_n=3)
+        _race_player_ids = [
+            p["player_id"]
+            for candidates in _race_leaders.values()
+            for p in candidates[:1]  # only top candidate per award
+        ]
+        if _race_player_ids:
+            _race_name_rows = await pool.fetch(
+                "SELECT id, first_name, last_name FROM players WHERE id = ANY($1)",
+                _race_player_ids,
+            )
+            _race_names = {r["id"]: f"{r['first_name']} {r['last_name']}" for r in _race_name_rows}
+            batch_context["award_race_leaders"] = {
+                award: _race_names.get(candidates[0]["player_id"], "Unknown")
+                for award, candidates in _race_leaders.items()
+                if candidates
+            }
+    except Exception as _award_exc:
+        log.warning(f"_maybe_post_columnist: award race enrichment failed: {_award_exc}")
+
+    # 1f: Add game_index_range.
+    if batch_end_index > 0 and total_regular_games > 0:
+        batch_context["game_index_range"] = {
+            "first": batch_start_index,
+            "last": batch_end_index,
+            "season_pct": round(batch_end_index / total_regular_games * 100, 1),
+        }
+
+    # 1g: Compute subject_team_ids from the two most common teams in this batch.
+    _team_id_counter: Counter = Counter()
+    for br in batch_results:
+        ht = br["home_team"]
+        at = br["away_team"]
+        r = br["result"]
+        if ht:
+            _team_id_counter[ht.id] += 1
+        if at:
+            _team_id_counter[at.id] += 1
+    subject_team_ids = [tid for tid, _ in _team_id_counter.most_common(2)]
+
+    _FORMAT_VARIANTS = ["classic_debate", "co_sign_trap", "tony_monologue", "trial"]
+
+    # --- Reactive regular-season trigger gate ---
+    # Before picking a columnist, determine whether anything interesting enough
+    # happened to warrant an article.  If none of the conditions below are true,
+    # skip the rotation slot entirely (but still count games for Darius Cole and
+    # Marcus Brooks, and still advance _last_columnist_game_index on a post).
+    _batch_is_interesting = False
+    _recent_trade_within_50 = bool(batch_context.get("recent_trades"))
+
+    # Check 5+ win/loss streak for any team in the batch.
+    _streak_hooks: list[str] = batch_context.get("narrative_hooks", [])
+    _has_long_streak = any(
+        ("won 5" in h or "won 6" in h or "won 7" in h or "won 8" in h or "won 9" in h
+         or "won 10" in h or "lost 5" in h or "lost 6" in h or "lost 7" in h
+         or "lost 8" in h or "lost 9" in h or "lost 10" in h)
+        for h in _streak_hooks
+    )
+
+    # Check blowout (20+ margin) in this batch.
+    _has_blowout = any(g.get("was_blowout", False) for g in games_data)
+
+    # Check 40+ point game.
+    _has_big_game = overall_top_pts >= 40
+
+    # Fallback: more than 50 games since the last article.
+    _games_since_last = batch_end_index - _last_columnist_game_index.get(league_id, 0)
+    _fallback_due = _games_since_last >= 50
+
+    if _has_long_streak or _has_blowout or _has_big_game or _recent_trade_within_50 or _fallback_due:
+        _batch_is_interesting = True
+
+    # Force-mode frequency gate: when bulk-simming (force=True) suppress the main
+    # columnist unless at least _COLUMNIST_FORCE_MIN_GAP games have elapsed since the
+    # last article.  This prevents an LLM call on every game-day when hundreds of games
+    # are being pushed through at once.  Darius Cole's independent counter is unaffected.
+    if force and _batch_is_interesting:
+        _games_since_last_for_force = batch_end_index - _last_columnist_game_index.get(league_id, 0)
+        if _games_since_last_for_force < _COLUMNIST_FORCE_MIN_GAP:
+            log.debug(
+                f"_maybe_post_columnist: force mode — suppressing article "
+                f"({_games_since_last_for_force} games since last, need {_COLUMNIST_FORCE_MIN_GAP})"
+            )
+            _batch_is_interesting = False
+
+    # Rotation — pick this batch's columnist.
+    _columnist_rotation_index[league_id] = _columnist_rotation_index.get(league_id, 0)
+    persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index[league_id] % len(_COLUMNIST_ROTATION)]
+    _columnist_rotation_index[league_id] += 1
+
+    # Pat Chen: enrich context with team strategy data.
+    # Build a copy so we don't mutate the shared batch_context used by other callers.
+    columnist_context = batch_context
+
+    # Darius Cole fires independently every ~50 games — skip him in the regular rotation
+    # so he doesn't consume a rotation slot.
+    if persona_id == "darius_cole":
+        persona_id = _COLUMNIST_ROTATION[_columnist_rotation_index[league_id] % len(_COLUMNIST_ROTATION)]
+        _columnist_rotation_index[league_id] += 1
+
+    if persona_id == "hot_take_hour":
+        # Inject format_variant so the four Hot Take Hour variants cycle.
+        columnist_context = dict(batch_context)
+        columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index[league_id] - 1) % len(_FORMAT_VARIANTS)]
+
+        # Seed season-long HTH narratives on first use per league, then inject every time.
+        global _HTH_NARRATIVES
+        if league_id not in _HTH_NARRATIVES:
+            try:
+                # Seed: top scorer = "sleeper" Dave has been high on; best team = "fraud"
+                # Tony doubts; two closest-stat players on different teams = "rivalry."
+                _seed_rows = await pool.fetch(
+                    """
+                    SELECT p.id, p.first_name || ' ' || p.last_name AS player_name,
+                           t.nba_team_code AS team_code, t.conference,
+                           AVG(b.points) AS ppg,
+                           AVG(b.rebounds_off + b.rebounds_def) AS rpg,
+                           AVG(b.assists) AS apg,
+                           COUNT(b.id) AS gp
+                    FROM players p
+                    JOIN game_box_scores b ON b.player_id = p.id
+                    JOIN games g ON g.id = b.game_id
+                    JOIN teams t ON t.id = p.team_id
+                    WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
+                    GROUP BY p.id, t.nba_team_code, t.conference
+                    HAVING COUNT(b.id) >= 10
+                    ORDER BY AVG(b.points) DESC
+                    LIMIT 20
+                    """,
+                    league_id, season,
+                )
+                _std_rows = await pool.fetch(
+                    """
+                    SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
+                    FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
+                    WHERE sc.league_id = $1 AND sc.season = $2
+                    ORDER BY sc.wins DESC LIMIT 1
+                    """,
+                    league_id, season,
+                )
+                _top_team = _std_rows[0]["nba_team_code"] if _std_rows else "the league leader"
+                _sleeper = _seed_rows[0]["player_name"] if _seed_rows else "the top scorer"
+                # Rivalry: two players from different teams with similar scoring (top 5)
+                _rivalry_a = _seed_rows[1]["player_name"] if len(_seed_rows) > 1 else None
+                _rivalry_b = _seed_rows[2]["player_name"] if len(_seed_rows) > 2 else None
+                _rivalry_teams = (
+                    f"{_seed_rows[1]['team_code']} vs {_seed_rows[2]['team_code']}"
+                    if len(_seed_rows) > 2 else ""
+                )
+                _HTH_NARRATIVES[league_id] = {
+                    "sleeper_pick": (
+                        f"Dave has been insisting all season that {_sleeper} is criminally underrated "
+                        f"and deserves more recognition."
+                    ),
+                    "fraud_call": (
+                        f"Tony has been calling {_top_team} a 'paper tiger' since day one — "
+                        f"great record, no real test, waiting to collapse."
+                    ),
+                    "rivalry": (
+                        f"Dave and Tony have been tracking the {_rivalry_teams} rivalry — "
+                        f"{_rivalry_a} vs {_rivalry_b} — all season, arguing who's the better player."
+                    ) if _rivalry_a and _rivalry_b else None,
+                }
+                log.info(f"HTH narratives seeded for league {league_id}: {_HTH_NARRATIVES[league_id]}")
+            except Exception as _hth_exc:
+                log.warning(f"HTH narrative seeding failed: {_hth_exc}")
+                _HTH_NARRATIVES[league_id] = {}
+
+        # Inject non-None narratives into context.
+        _active_narratives = {k: v for k, v in _HTH_NARRATIVES.get(league_id, {}).items() if v}
+        if _active_narratives:
+            columnist_context["hth_season_narratives"] = _active_narratives
+    if persona_id == "pat_chen":
+        try:
+            team_ids_in_batch = list({
+                br["home_team"].id for br in batch_results
+            } | {
+                br["away_team"].id for br in batch_results
+            })
+            strat_rows = await pool.fetch(
+                """
+                SELECT t.id AS team_id, t.nba_team_code,
+                       ts.offensive_scheme, ts.defensive_scheme,
+                       ts.offensive_pace, ts.defensive_intensity,
+                       sc.wins, sc.losses
+                FROM teams t
+                LEFT JOIN team_strategies ts ON ts.team_id = t.id AND ts.league_id = $1
+                LEFT JOIN standings_cache sc ON sc.team_id = t.id AND sc.league_id = $1 AND sc.season = $2
+                WHERE t.id = ANY($3)
+                """,
+                league_id, season, team_ids_in_batch,
+            )
+            pat_context = dict(batch_context)
+            pat_context["team_strategies"] = [
+                {
+                    "team": r["nba_team_code"],
+                    "record": f"{r['wins'] or 0}-{r['losses'] or 0}",
+                    "offensive_scheme": r["offensive_scheme"] or "auto",
+                    "defensive_scheme": r["defensive_scheme"] or "auto",
+                    "pace": r["offensive_pace"] or "normal",
+                    "defensive_intensity": r["defensive_intensity"] or "standard",
+                    "archetype_label": strategy_service.get_team_archetype_label(league_id, r["team_id"]),
+                }
+                for r in strat_rows
+            ]
+            # Fix 3: expose archetype labels as a flat code->label dict.
+            pat_context["team_archetypes"] = {
+                r["nba_team_code"]: strategy_service.get_team_archetype_label(league_id, r["team_id"])
+                for r in strat_rows
+                if strategy_service.get_team_archetype_label(league_id, r["team_id"]) is not None
+            }
+            pat_context["gameplans"] = [
+                {
+                    "matchup": f"{br['home_team'].nba_team_code if hasattr(br['home_team'], 'nba_team_code') else '???'} vs {br['away_team'].nba_team_code if hasattr(br['away_team'], 'nba_team_code') else '???'}",
+                    "home": {
+                        "team": br["home_team"].nba_team_code if hasattr(br["home_team"], "nba_team_code") else "???",
+                        "rationale": br["home_gameplan"]["rationale"],
+                        "scheme": br["home_gameplan"]["strategy"]["offensive_scheme"],
+                    },
+                    "away": {
+                        "team": br["away_team"].nba_team_code if hasattr(br["away_team"], "nba_team_code") else "???",
+                        "rationale": br["away_gameplan"]["rationale"],
+                        "scheme": br["away_gameplan"]["strategy"]["offensive_scheme"],
+                    },
+                }
+                for br in batch_results
+                if br.get("home_gameplan") and br.get("away_gameplan")
+            ]
+            columnist_context = pat_context
+        except Exception as _exc:
+            log.warning(f"Pat Chen strategy enrichment failed: {_exc}")
+
+    # Only post a regular-season article if something interesting happened.
+    if _batch_is_interesting:
+        # Ride-along: capture the prompt when the chosen persona is about to fire.
+        _ra_capture: dict | None = (
+            {} if (
+                _columnist_ride_along.is_enabled()
+                and persona_id == _columnist_ride_along.target_persona_id()
+            ) else None
+        )
+        try:
+            article = await asyncio.wait_for(
+                columnist_service.generate(
+                    pool, league_id, season,
+                    persona_id=persona_id,
+                    category="game_recap",
+                    context=columnist_context,
+                    subject_team_ids=subject_team_ids,
+                    _capture_prompt=_ra_capture,
+                ),
+                timeout=20.0,
+            )
+        except Exception as _col_exc:
+            log.warning(f"_maybe_post_columnist: article timed out or failed ({persona_id}): {_col_exc}")
+            article = None
+        if article:
+            _last_columnist_game_index[league_id] = batch_end_index
+            if persona_id == "hot_take_hour":
+                # Body is plain text formatted as "DAVE: ...\n\nTONY: ...\n\nDAVE: ..."
+                # Bold the speaker labels for Discord markdown.
+                body = article["body"]
+                body = body.replace("DAVE:", "**Dave:**").replace("TONY:", "**Tony:**")
+                embed_data = EmbedData(
+                    title=f"🔥 {article['headline']}",
+                    description=body[:2000],
+                    color=_rgb_to_int((231, 76, 60)),
+                    footer="Dave Collier & Tony Reyes · DBA Sports Debate",
+                )
+            else:
+                persona = _PERSONAS.get(persona_id)
+                rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
+                embed_data = EmbedData(
+                    title=article["headline"],
+                    description=article["body"][:2000],
+                    color=_rgb_to_int(rgb),
+                    footer=f"by {persona.display_name} · {persona.byline}" if persona else None,
+                )
+            _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                "analysis", embed_data
+            )
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id=persona_id, category="game_recap",
+                headline=article["headline"], body=article["body"],
+                game_index=batch_end_index,
+                subject_team_ids=list(subject_team_ids) if subject_team_ids else None,
+            )
+            # Ride-along: pause AFTER the embed lands in Discord.
+            if _ra_capture is not None:
+                _persona_obj = _PERSONAS.get(persona_id)
+                await _columnist_ride_along.request_pause({
+                    "persona_id": persona_id,
+                    "persona_display_name": _persona_obj.display_name if _persona_obj else persona_id,
+                    "league_id": league_id,
+                    "season": season,
+                    "game_index_at_post": batch_end_index,
+                    "category": "game_recap",
+                    "prompt": _ra_capture,
+                    "context_dict": columnist_context,
+                    "article": {
+                        "headline": article.get("headline", ""),
+                        "body": article.get("body", ""),
+                        "raw_llm_response": _ra_capture.get("raw_llm_response", ""),
+                    },
+                    "embed_preview": (
+                        f"{article.get('headline', '')}\n\n"
+                        + article.get("body", "")[:400]
+                    ),
+                })
+    else:
+        log.debug(
+            f"_maybe_post_columnist: skipping regular-season article (no interesting condition met) "
+            f"for batch ending at game {batch_end_index}"
+        )
+
+    # Darius Cole — every ~30 games, independently.  Covers bottom-5 teams and lottery odds.
+    # Counter was already incremented at the top of this function (before channel guard).
+    # Threshold is 30 (not 50) so he fires in early-season testing with fewer games played.
+    if _darius_game_counter.get(league_id, 0) >= 30:
+        _darius_game_counter[league_id] = 0
+        dc_persona = _PERSONAS.get("darius_cole")
+        if not dc_persona:
+            log.warning("_maybe_post_columnist: darius_cole persona missing from _PERSONAS — skipping")
+        else:
+            dc_article = None
+            try:
+                # Build bottom-5 context for Darius Cole.
+                _all_standings = await pool.fetch(
+                    """
+                    SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
+                    FROM standings_cache sc
+                    JOIN teams t ON t.id = sc.team_id
+                    WHERE sc.league_id = $1 AND sc.season = $2
+                    ORDER BY sc.wins ASC, sc.losses DESC
+                    LIMIT 5
+                    """,
+                    league_id, season,
+                )
+                # Approximate lottery odds: last-place gets ~14%, decreasing by ~2% per slot.
+                _lottery_base = [14.0, 13.4, 12.7, 12.0, 10.5]
+                _bottom5 = []
+                _bottom5_team_ids: list[int] = []
+                for _idx, _row in enumerate(_all_standings):
+                    _bottom5.append({
+                        "team": _row["nba_team_code"],
+                        "record": f"{_row['wins']}-{_row['losses']}",
+                        "lottery_odds_pct": _lottery_base[_idx] if _idx < len(_lottery_base) else 9.0,
+                    })
+                    _bottom5_team_ids.append(_row["team_id"])
+                _dc_context = dict(batch_context)
+                _dc_context["bottom_5_teams"] = _bottom5
+                _dc_context["article_focus"] = (
+                    "Draft lottery odds, tanking race, pick asset value. "
+                    "Focus on which teams are best positioned in the lottery."
+                )
+                log.info(f"Darius Cole: firing article (bottom_5={[t['team'] for t in _bottom5]})")
+                _dc_ra_capture: dict | None = (
+                    {} if (
+                        _columnist_ride_along.is_enabled()
+                        and "darius_cole" == _columnist_ride_along.target_persona_id()
+                    ) else None
+                )
+                dc_article = await asyncio.wait_for(
+                    columnist_service.generate(
+                        pool, league_id, season,
+                        persona_id="darius_cole",
+                        category="tank_watch",
+                        context=_dc_context,
+                        subject_team_ids=_bottom5_team_ids,
+                        _capture_prompt=_dc_ra_capture,
+                    ),
+                    timeout=20.0,
+                )
+            except Exception as _dc_exc:
+                log.warning(
+                    f"_maybe_post_columnist: darius_cole timed out or failed: {_dc_exc}",
+                    exc_info=True,
+                )
+                _dc_ra_capture = None
+            if dc_article:
+                dc_embed_data = EmbedData(
+                    title=f"📋 {dc_article['headline']}",
+                    description=dc_article["body"][:2000],
+                    color=_rgb_to_int((34, 139, 34)),
+                    footer=f"by {dc_persona.display_name} · {dc_persona.byline}",
+                )
+                try:
+                    _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                        "analysis", dc_embed_data
+                    )
+                    await _feedback_log.register_columnist_post(
+                        pool, _sent,
+                        league_id=league_id, season=season,
+                        persona_id="darius_cole", category="tank_watch",
+                        headline=dc_article["headline"], body=dc_article["body"],
+                        game_index=batch_end_index,
+                        subject_team_ids=_bottom5_team_ids or None,
+                    )
+                    log.info("Darius Cole article posted to #analysis")
+                    # Ride-along: pause AFTER embed lands in Discord.
+                    if _dc_ra_capture is not None:
+                        await _columnist_ride_along.request_pause({
+                            "persona_id": "darius_cole",
+                            "persona_display_name": dc_persona.display_name,
+                            "league_id": league_id,
+                            "season": season,
+                            "game_index_at_post": batch_end_index,
+                            "category": "tank_watch",
+                            "prompt": _dc_ra_capture,
+                            "context_dict": _dc_context,
+                            "article": {
+                                "headline": dc_article.get("headline", ""),
+                                "body": dc_article.get("body", ""),
+                                "raw_llm_response": _dc_ra_capture.get("raw_llm_response", ""),
+                            },
+                            "embed_preview": (
+                                f"{dc_article.get('headline', '')}\n\n"
+                                + dc_article.get("body", "")[:400]
+                            ),
+                        })
+                except Exception as _dc_send_exc:
+                    log.warning(f"_maybe_post_columnist: darius_cole send failed: {_dc_send_exc}")
+            else:
+                log.warning("Darius Cole: generate() returned None — article not posted")
+
+    # Marcus Brooks — every ~200 games (every 20 batches), independently of the rotation.
+    # Counter was already incremented at the top of this function (before channel guard).
+    if _marcus_game_counter.get(league_id, 0) >= 200:
+        _marcus_game_counter[league_id] = 0
+        mb_persona = _PERSONAS.get("marcus_brooks")
+        _mb_ra_capture: dict | None = (
+            {} if (
+                _columnist_ride_along.is_enabled()
+                and "marcus_brooks" == _columnist_ride_along.target_persona_id()
+            ) else None
+        )
+        try:
+            mb_article = await asyncio.wait_for(
+                columnist_service.generate(
+                    pool, league_id, season,
+                    persona_id="marcus_brooks",
+                    category="power_rankings",
+                    context=batch_context,
+                    subject_team_ids=subject_team_ids,
+                    _capture_prompt=_mb_ra_capture,
+                ),
+                timeout=20.0,
+            )
+        except Exception as _mb_exc:
+            log.warning(f"_maybe_post_columnist: marcus_brooks timed out or failed: {_mb_exc}")
+            mb_article = None
+        if mb_article:
+            embed_data = EmbedData(
+                title=mb_article["headline"],
+                description=mb_article["body"][:2000],
+                color=_rgb_to_int((0, 128, 255)),
+                footer=f"by {mb_persona.display_name} · {mb_persona.byline}" if mb_persona else None,
+            )
+            _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                "analysis", embed_data
+            )
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="marcus_brooks", category="power_rankings",
+                headline=mb_article["headline"], body=mb_article["body"],
+                game_index=batch_end_index,
+                subject_team_ids=list(subject_team_ids) if subject_team_ids else None,
+            )
+            # Ride-along: pause AFTER embed lands in Discord.
+            if _mb_ra_capture is not None:
+                _mb_p = mb_persona
+                await _columnist_ride_along.request_pause({
+                    "persona_id": "marcus_brooks",
+                    "persona_display_name": _mb_p.display_name if _mb_p else "Marcus Brooks",
+                    "league_id": league_id,
+                    "season": season,
+                    "game_index_at_post": batch_end_index,
+                    "category": "power_rankings",
+                    "prompt": _mb_ra_capture,
+                    "context_dict": batch_context,
+                    "article": {
+                        "headline": mb_article.get("headline", ""),
+                        "body": mb_article.get("body", ""),
+                        "raw_llm_response": _mb_ra_capture.get("raw_llm_response", ""),
+                    },
+                    "embed_preview": (
+                        f"{mb_article.get('headline', '')}\n\n"
+                        + mb_article.get("body", "")[:400]
+                    ),
+                })
 
 
 async def _maybe_post_prelude(
