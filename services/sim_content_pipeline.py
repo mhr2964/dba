@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from bot.embeds import awards_embeds
 from core.logging import get_logger
-from data.repositories import league_repo
+from data.repositories import article_repo, game_repo, league_repo
 from services import awards_service, columnist_service, potm_service, team_intel
 from services import feedback_log as _feedback_log
 from services.announcer_protocol import EmbedData
@@ -48,6 +49,145 @@ _PERSONA_COLORS: dict[str, tuple[int, int, int]] = {
 def _rgb_to_int(rgb: tuple[int, int, int]) -> int:
     r, g, b = rgb
     return (r << 16) | (g << 8) | b
+
+
+async def _build_batch_game_context(batch_results: list[dict]) -> dict:
+    """Build a minimal context dict from batch game results for specialty personas.
+
+    Only includes recent_games summary — standings and team intel are not fetched
+    here to keep the call lightweight.  The AI is instructed to use only what it
+    receives, so partial context is fine for these cadence-driven columns.
+    """
+    recent_games = []
+    for br in batch_results[-10:]:  # last 10 games is enough context
+        ht = br.get("home_team")
+        at = br.get("away_team")
+        r = br.get("result", {})
+        if not (ht and at):
+            continue
+        home_code = getattr(ht, "nba_team_code", "???")
+        away_code = getattr(at, "nba_team_code", "???")
+        recent_games.append({
+            "home": home_code,
+            "away": away_code,
+            "home_score": r.get("home_score", 0),
+            "away_score": r.get("away_score", 0),
+            "winner": home_code if r.get("winner_team_id") == ht.id else away_code,
+            "top_scorer": r.get("top_scorer", {}),
+        })
+    return {"recent_games": recent_games}
+
+
+# fires every ~70 games (weekly)
+_power_list_game_counter: dict[int, int] = {}
+
+
+async def _maybe_post_power_list(
+    pool,
+    league_id: int,
+    season: int,
+    batch_results: list[dict],
+    guild: discord.Guild,
+) -> None:
+    """Post The Power List weekly top-10 ranking every ~70 games (approx. one game-week)."""
+    _power_list_game_counter[league_id] = _power_list_game_counter.get(league_id, 0) + len(batch_results)
+    if _power_list_game_counter[league_id] < 70:
+        return
+    _power_list_game_counter[league_id] = 0
+
+    analysis_channel_id = await league_repo.get_channel(pool, league_id, "analysis")
+    analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
+    if not analysis_channel:
+        return
+
+    persona = _PERSONAS.get("power_list")
+    if not persona:
+        log.warning("_maybe_post_power_list: power_list persona not registered — skipping")
+        return
+
+    try:
+        context = await _build_batch_game_context(batch_results)
+        standings = await game_repo.get_standings(pool, league_id, season)
+        if not standings:
+            log.info("_maybe_post_power_list: no standings data — skipping")
+            return
+        context["standings"] = standings
+
+        # Add win/loss streaks for richer power-ranking narrative.
+        streak_rows = await pool.fetch(
+            """
+            SELECT t.nba_team_code, sc.wins, sc.losses,
+                   sc.win_streak, sc.loss_streak
+            FROM standings_cache sc
+            JOIN teams t ON t.id = sc.team_id
+            WHERE sc.league_id = $1 AND sc.season = $2
+            ORDER BY sc.wins DESC, sc.losses ASC
+            """,
+            league_id, season,
+        )
+        context["power_rankings_data"] = [
+            {
+                "team": r["nba_team_code"],
+                "record": f"{r['wins']}-{r['losses']}",
+                "win_streak": r["win_streak"] or 0,
+                "loss_streak": r["loss_streak"] or 0,
+            }
+            for r in streak_rows
+        ]
+
+        # Build rank_deltas from the most recent previous power_rankings article.
+        # Positive delta = team moved up; negative = down; 0 = unchanged; missing = NEW.
+        rank_deltas: dict[str, int] = {}
+        prev_articles = await article_repo.recent_by_persona(pool, league_id, "power_list", limit=1, season=season)
+        if prev_articles:
+            prev_body = prev_articles[0].get("body", "") or ""
+            # Extract team code → rank from "> **N.** TEAM_CODE" lines.
+            prev_ranks: dict[str, int] = {}
+            for m in re.finditer(r">\s*\*\*(\d+)\.\*\*\s+([A-Z]{2,4})", prev_body):
+                prev_ranks[m.group(2)] = int(m.group(1))
+            # Current rank is positional in the streak_rows (sorted by wins DESC already).
+            for cur_rank, row in enumerate(streak_rows, start=1):
+                code = row["nba_team_code"]
+                if code in prev_ranks:
+                    rank_deltas[code] = prev_ranks[code] - cur_rank  # positive = moved up
+                # else: not in prev_ranks → missing key → LLM uses NEW
+            if not prev_ranks:
+                log.debug("_maybe_post_power_list: previous article had no parseable ranks — all NEW")
+        else:
+            log.debug("_maybe_post_power_list: no prior ranking this season — all NEW")
+
+        context["rank_deltas"] = rank_deltas
+        if not rank_deltas:
+            # Tell the LLM explicitly so it doesn't invent arrows.
+            context["rank_deltas_note"] = "No prior ranking exists this season; use NEW for every team's arrow position."
+
+        article = await asyncio.wait_for(
+            columnist_service.generate(
+                pool, league_id, season,
+                persona_id="power_list",
+                category="power_rankings",
+                context=context,
+            ),
+            timeout=20.0,
+        )
+        if article:
+            embed_data = EmbedData(
+                title=f"🏆 {article['headline']}",
+                description=article["body"][:2000],
+                color=_rgb_to_int((212, 175, 55)),
+                footer=f"by {persona.display_name} · {persona.byline}",
+            )
+            _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
+                "analysis", embed_data
+            )
+            await _feedback_log.register_columnist_post(
+                pool, _sent,
+                league_id=league_id, season=season,
+                persona_id="power_list", category="power_rankings",
+                headline=article["headline"], body=article["body"],
+            )
+    except Exception as exc:
+        log.warning(f"_maybe_post_power_list failed: {exc}", exc_info=True)
 
 
 # Tracks the last simulated "YYYY-MM" POTM was checked for, per league_id, so
