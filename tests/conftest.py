@@ -114,6 +114,7 @@ async def patch_get_pool(db_pool):
         patch("services.schedule_service.get_pool", pool_mock),
         patch("services.notifier_service.get_pool", pool_mock),
         patch("bot.cogs.setup_cog.get_pool", pool_mock),
+        patch("bot.cogs.team_cog.get_pool", pool_mock),
         patch("bot.cogs.roster_cog.get_pool", pool_mock),
         patch("bot.cogs.draft_cog.get_pool", pool_mock),
         patch("bot.cogs.strategy_cog.get_pool", pool_mock),

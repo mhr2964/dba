@@ -1,5 +1,5 @@
 """
-Cog-layer tests for bot.cogs.setup_cog (LeagueGroup and TeamGroup).
+Cog-layer tests for bot.cogs.setup_cog (LeagueGroup) and bot.cogs.team_cog (TeamGroup).
 
 These tests call the command handler functions directly, bypassing the Discord
 app-command dispatch machinery.  Service calls are patched so this layer only
@@ -13,7 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.cogs.setup_cog import LeagueGroup, TeamGroup
+from bot.cogs.setup_cog import LeagueGroup
+from bot.cogs.team_cog import TeamGroup
 from core.errors import DBAError
 from data.repositories.league_repo import League
 from data.repositories.team_repo import Team
@@ -180,9 +181,9 @@ async def test_assign_command_calls_service_and_sends_embed(mock_interaction, mo
     fake_league = _make_fake_league()
     fake_team = _make_fake_team(manager_id=mock_manager.id)
 
-    with patch("bot.cogs.setup_cog.league_service.get_league", new=AsyncMock(return_value=fake_league)), \
-         patch("bot.cogs.setup_cog.league_service.assign_manager", new=AsyncMock(return_value=fake_team)) as mock_assign, \
-         patch("bot.cogs.setup_cog.league_repo.get_channel", new=AsyncMock(return_value=None)):
+    with patch("bot.cogs.team_cog.league_service.get_league", new=AsyncMock(return_value=fake_league)), \
+         patch("bot.cogs.team_cog.league_service.assign_manager", new=AsyncMock(return_value=fake_team)) as mock_assign, \
+         patch("bot.cogs.team_cog.league_repo.get_channel", new=AsyncMock(return_value=None)):
 
         group = TeamGroup()
         await group.assign.callback(group, mock_interaction, user=mock_manager, team_code="LAL")
@@ -210,9 +211,9 @@ async def test_assign_command_posts_to_league_news(mock_interaction, mock_manage
     fake_channel.send = AsyncMock()
     mock_interaction.guild.get_channel = MagicMock(return_value=fake_channel)
 
-    with patch("bot.cogs.setup_cog.league_service.get_league", new=AsyncMock(return_value=fake_league)), \
-         patch("bot.cogs.setup_cog.league_service.assign_manager", new=AsyncMock(return_value=fake_team)), \
-         patch("bot.cogs.setup_cog.league_repo.get_channel", new=AsyncMock(return_value=201)):
+    with patch("bot.cogs.team_cog.league_service.get_league", new=AsyncMock(return_value=fake_league)), \
+         patch("bot.cogs.team_cog.league_service.assign_manager", new=AsyncMock(return_value=fake_team)), \
+         patch("bot.cogs.team_cog.league_repo.get_channel", new=AsyncMock(return_value=201)):
 
         group = TeamGroup()
         await group.assign.callback(group, mock_interaction, user=mock_manager, team_code="LAL")
@@ -229,7 +230,7 @@ async def test_assign_command_no_league_replies_ephemeral(mock_interaction, mock
     """
     /team assign sends an ephemeral error when there is no active league.
     """
-    with patch("bot.cogs.setup_cog.league_service.get_league", new=AsyncMock(return_value=None)):
+    with patch("bot.cogs.team_cog.league_service.get_league", new=AsyncMock(return_value=None)):
         group = TeamGroup()
         await group.assign.callback(group, mock_interaction, user=mock_manager, team_code="LAL")
 
@@ -249,8 +250,8 @@ async def test_assign_command_propagates_dba_error(mock_interaction, mock_manage
     """
     fake_league = _make_fake_league()
 
-    with patch("bot.cogs.setup_cog.league_service.get_league", new=AsyncMock(return_value=fake_league)), \
-         patch("bot.cogs.setup_cog.league_service.assign_manager", new=AsyncMock(side_effect=DBAError("already manages"))):
+    with patch("bot.cogs.team_cog.league_service.get_league", new=AsyncMock(return_value=fake_league)), \
+         patch("bot.cogs.team_cog.league_service.assign_manager", new=AsyncMock(side_effect=DBAError("already manages"))):
 
         group = TeamGroup()
         with pytest.raises(DBAError, match="already manages"):
