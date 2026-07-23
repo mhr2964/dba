@@ -52,6 +52,7 @@ COGS = [
     "bot.cogs.roster_cog",
     "bot.cogs.sim_cog",
     "bot.cogs.trade_cog",
+    "bot.cogs.trade_block_cog",
     "bot.cogs.playoff_cog",
     "bot.cogs.awards_cog",
     "bot.cogs.draft_cog",
