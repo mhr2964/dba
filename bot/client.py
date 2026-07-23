@@ -51,6 +51,8 @@ COGS = [
     "bot.cogs.setup_cog",
     "bot.cogs.team_cog",
     "bot.cogs.roster_cog",
+    "bot.cogs.extension_cog",
+    "bot.cogs.player_cog",
     "bot.cogs.sim_cog",
     "bot.cogs.trade_cog",
     "bot.cogs.trade_block_cog",
