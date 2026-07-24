@@ -39,12 +39,17 @@ class ColumnistRequest:
     subject_player_ids  : players referenced (stored in article_repo, not sent to AI)
     extra_context       : type-specific payload (trade details, game stats, etc.)
                           merged verbatim into the JSON context block seen by the AI
+    structured_data     : optional machine-readable payload persisted alongside the
+                          article (e.g. Power List's team-code-to-rank mapping) —
+                          never sent to the LLM, purely a storage passthrough so a
+                          later caller can read real data instead of re-parsing prose
     """
     persona_id: str
     category: str
     subject_team_ids: list[int] = field(default_factory=list)
     subject_player_ids: list[int] = field(default_factory=list)
     extra_context: dict = field(default_factory=dict)
+    structured_data: dict | None = None
 
 
 def _format_signals_block(context_signals_per_player: dict) -> str:
@@ -348,6 +353,7 @@ async def generate(  # noqa: PLR0912, PLR0915
     subject_team_ids: list[int] | None = None,
     subject_player_ids: list[int] | None = None,
     _capture_prompt: dict | None = None,
+    structured_data: dict | None = None,
 ) -> dict | None:
     """Generate one article from a persona.
 
@@ -371,6 +377,11 @@ async def generate(  # noqa: PLR0912, PLR0915
     When context["context_signals_per_player"] is present AND the persona
     declares "context_signals" in context_keys, formats the signals into a
     readable block injected before the context JSON.
+
+    structured_data (optional) is a machine-readable payload persisted
+    alongside the article — never sent to the LLM. Callers that need to read
+    real data back later (e.g. The Power List's rank-delta tracking) should
+    use this instead of re-parsing the rendered body prose.
     """
     # ── Shim: accept ColumnistRequest as the 4th positional argument ─────────
     # DEPRECATED: use ColumnistRequest
@@ -381,12 +392,14 @@ async def generate(  # noqa: PLR0912, PLR0915
         _context = req.extra_context
         _subject_team_ids = req.subject_team_ids or None
         _subject_player_ids = req.subject_player_ids or None
+        _structured_data = req.structured_data
     else:
         _persona_id = persona_id
         _category = category or ""
         _context = context or {}
         _subject_team_ids = subject_team_ids
         _subject_player_ids = subject_player_ids
+        _structured_data = structured_data
 
     persona = PERSONAS.get(_persona_id)
     if persona is None:
@@ -702,6 +715,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                                 headline=_h, body=_b,
                                 subject_team_ids=_subject_team_ids,
                                 subject_player_ids=_subject_player_ids,
+                                structured_data=_structured_data,
                             )
                             return {"headline": _h, "body": _b}
                         # New-shape keys available — assemble.
@@ -719,6 +733,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                                 headline=_h, body=_body,
                                 subject_team_ids=_subject_team_ids,
                                 subject_player_ids=_subject_player_ids,
+                                structured_data=_structured_data,
                             )
                             return {"headline": _h, "body": _body}
                     # JSON-shaped but still unparseable — discard JSON text entirely;
@@ -736,6 +751,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                     headline=headline, body=body,
                     subject_team_ids=_subject_team_ids,
                     subject_player_ids=_subject_player_ids,
+                    structured_data=_structured_data,
                 )
                 return {"headline": headline, "body": body}
 
@@ -787,6 +803,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                         headline=headline, body=body,
                         subject_team_ids=_subject_team_ids,
                         subject_player_ids=_subject_player_ids,
+                        structured_data=_structured_data,
                     )
                     return {"headline": headline, "body": body}
 
@@ -849,6 +866,7 @@ async def generate(  # noqa: PLR0912, PLR0915
             body=_final_body,
             subject_team_ids=_subject_team_ids,
             subject_player_ids=_subject_player_ids,
+            structured_data=_structured_data,
         )
 
         return {"headline": _final_headline, "body": _final_body}

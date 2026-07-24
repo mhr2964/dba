@@ -198,24 +198,32 @@ async def _maybe_post_power_list(
             for r in streak_rows
         ]
 
-        # Build rank_deltas from the most recent previous power_rankings article.
+        # Build rank_deltas from the most recent previous power_rankings article's
+        # STRUCTURED rank data (team code -> rank), not by regex-parsing the LLM's
+        # own rendered markdown (Finding #5) -- any formatting deviation in the
+        # rendered body used to silently degrade every team to "NEW".
         # Positive delta = team moved up; negative = down; 0 = unchanged; missing = NEW.
         rank_deltas: dict[str, int] = {}
         prev_articles = await article_repo.recent_by_persona(pool, league_id, "power_list", limit=1, season=season)
         if prev_articles:
-            prev_body = prev_articles[0].get("body", "") or ""
-            # Extract team code → rank from "> **N.** TEAM_CODE" lines.
-            prev_ranks: dict[str, int] = {}
-            for m in re.finditer(r">\s*\*\*(\d+)\.\*\*\s+([A-Z]{2,4})", prev_body):
-                prev_ranks[m.group(2)] = int(m.group(1))
+            prev_ranks: dict[str, int] = prev_articles[0].get("structured_data") or {}
+            if not prev_ranks:
+                # Legacy article predating the structured_data column — fall back to
+                # regex-parsing its rendered body so a mid-season upgrade doesn't
+                # reset every team to NEW on the very next post.
+                prev_body = prev_articles[0].get("body", "") or ""
+                for m in re.finditer(r">\s*\*\*(\d+)\.\*\*\s+([A-Z]{2,4})", prev_body):
+                    prev_ranks[m.group(2)] = int(m.group(1))
+                if prev_ranks:
+                    log.debug("_maybe_post_power_list: prior article had no structured_data — used legacy regex parse")
+                else:
+                    log.debug("_maybe_post_power_list: previous article had no parseable ranks — all NEW")
             # Current rank is positional in the streak_rows (sorted by wins DESC already).
             for cur_rank, row in enumerate(streak_rows, start=1):
                 code = row["nba_team_code"]
                 if code in prev_ranks:
                     rank_deltas[code] = prev_ranks[code] - cur_rank  # positive = moved up
                 # else: not in prev_ranks → missing key → LLM uses NEW
-            if not prev_ranks:
-                log.debug("_maybe_post_power_list: previous article had no parseable ranks — all NEW")
         else:
             log.debug("_maybe_post_power_list: no prior ranking this season — all NEW")
 
@@ -224,12 +232,20 @@ async def _maybe_post_power_list(
             # Tell the LLM explicitly so it doesn't invent arrows.
             context["rank_deltas_note"] = "No prior ranking exists this season; use NEW for every team's arrow position."
 
+        # The CURRENT ranking, structured (team code -> rank), persisted alongside
+        # this article's rendered text so the NEXT post's rank_deltas read real
+        # data instead of re-parsing this post's prose.
+        current_rank_data: dict[str, int] = {
+            row["nba_team_code"]: cur_rank for cur_rank, row in enumerate(streak_rows, start=1)
+        }
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
                 persona_id="power_list",
                 category="power_rankings",
                 context=context,
+                structured_data=current_rank_data,
             ),
             timeout=20.0,
         )
