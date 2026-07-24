@@ -790,6 +790,142 @@ _columnist_rotation_index: dict[int, int] = {}
 # their multi-episode storylines alive.  Keyed by league_id so multi-league bots work.
 _HTH_NARRATIVES: dict[int, dict] = {}
 
+
+async def _fetch_hth_seed_data(pool, league_id: int, season: int) -> tuple[list[dict], str | None]:
+    """Fetch the current top-20-scorers pool (>=10 games) and current #1-by-wins
+    team code -- the raw data both initial HTH narrative seeding and periodic
+    re-validation are built from (Finding #3)."""
+    seed_rows = await pool.fetch(
+        """
+        SELECT p.id, p.first_name || ' ' || p.last_name AS player_name,
+               t.nba_team_code AS team_code, t.conference,
+               AVG(b.points) AS ppg,
+               AVG(b.rebounds_off + b.rebounds_def) AS rpg,
+               AVG(b.assists) AS apg,
+               COUNT(b.id) AS gp
+        FROM players p
+        JOIN game_box_scores b ON b.player_id = p.id
+        JOIN games g ON g.id = b.game_id
+        JOIN teams t ON t.id = p.team_id
+        WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
+        GROUP BY p.id, t.nba_team_code, t.conference
+        HAVING COUNT(b.id) >= 10
+        ORDER BY AVG(b.points) DESC
+        LIMIT 20
+        """,
+        league_id, season,
+    )
+    std_rows = await pool.fetch(
+        """
+        SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
+        FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id = $1 AND sc.season = $2
+        ORDER BY sc.wins DESC LIMIT 1
+        """,
+        league_id, season,
+    )
+    top_team = std_rows[0]["nba_team_code"] if std_rows else None
+    return [dict(r) for r in seed_rows], top_team
+
+
+def _build_hth_sleeper_slot(seed_rows: list[dict]) -> dict | None:
+    """sleeper_pick: the current top scorer, framed as Dave's underrated pick."""
+    if not seed_rows:
+        return None
+    top = seed_rows[0]
+    return {
+        "player_id": top["id"],
+        "text": (
+            f"Dave has been insisting all season that {top['player_name']} is criminally underrated "
+            f"and deserves more recognition."
+        ),
+    }
+
+
+def _build_hth_fraud_slot(top_team: str | None) -> dict | None:
+    """fraud_call: the current #1-by-wins team, framed as Tony's 'paper tiger' skepticism."""
+    if not top_team:
+        return None
+    return {
+        "team_code": top_team,
+        "text": (
+            f"Tony has been calling {top_team} a 'paper tiger' since day one — "
+            f"great record, no real test, waiting to collapse."
+        ),
+    }
+
+
+def _build_hth_rivalry_slot(seed_rows: list[dict]) -> dict | None:
+    """rivalry: the #2/#3 scorers, framed as a season-long Dave/Tony debate."""
+    if len(seed_rows) <= 2:
+        return None
+    a, b = seed_rows[1], seed_rows[2]
+    return {
+        "player_a_id": a["id"],
+        "player_b_id": b["id"],
+        "text": (
+            f"Dave and Tony have been tracking the {a['team_code']} vs {b['team_code']} rivalry — "
+            f"{a['player_name']} vs {b['player_name']} — all season, arguing who's the better player."
+        ),
+    }
+
+
+async def _seed_or_revalidate_hth_narratives(pool, league_id: int, season: int) -> None:
+    """Seed HTH's season-long narratives on first use, then re-validate each
+    frozen premise against CURRENT data on every subsequent fire (Finding #3).
+
+    Previously sleeper_pick/fraud_call/rivalry were seeded ONCE from early
+    (>=10-game) data and re-injected verbatim for the rest of the season with
+    no check for whether the premise was still true — a 'paper tiger' team
+    that keeps winning without a real challenger, or a 'sleeper' who gets
+    traded away, would keep getting the same stale framing forever. This runs
+    the same lightweight seed query every time HTH fires and swaps out (or
+    retires) any slot whose subject is no longer supported by current data:
+    sleeper_pick/rivalry regenerate when a named player falls out of the
+    current top-20-scorers qualifying pool (traded, injured, cooled off past
+    the sample threshold); fraud_call regenerates when a different team now
+    holds the #1-by-wins spot.
+    """
+    try:
+        seed_rows, top_team = await _fetch_hth_seed_data(pool, league_id, season)
+    except Exception as exc:
+        log.warning(f"HTH narrative seed/revalidate fetch failed: {exc}")
+        _HTH_NARRATIVES.setdefault(league_id, {})
+        return
+
+    current = _HTH_NARRATIVES.get(league_id)
+    if current is None:
+        # First use for this league — seed from scratch.
+        _HTH_NARRATIVES[league_id] = {
+            "sleeper_pick": _build_hth_sleeper_slot(seed_rows),
+            "fraud_call": _build_hth_fraud_slot(top_team),
+            "rivalry": _build_hth_rivalry_slot(seed_rows),
+        }
+        log.info(f"HTH narratives seeded for league {league_id}: {_HTH_NARRATIVES[league_id]}")
+        return
+
+    seed_ids = {r["id"] for r in seed_rows}
+
+    sleeper = current.get("sleeper_pick")
+    if sleeper and sleeper.get("player_id") not in seed_ids:
+        new_slot = _build_hth_sleeper_slot(seed_rows)
+        current["sleeper_pick"] = new_slot
+        log.info(f"HTH sleeper_pick premise flipped for league {league_id} — regenerated: {new_slot}")
+
+    fraud = current.get("fraud_call")
+    if fraud and fraud.get("team_code") != top_team:
+        new_slot = _build_hth_fraud_slot(top_team)
+        current["fraud_call"] = new_slot
+        log.info(f"HTH fraud_call premise flipped for league {league_id} — regenerated: {new_slot}")
+
+    rivalry = current.get("rivalry")
+    if rivalry and (rivalry.get("player_a_id") not in seed_ids or rivalry.get("player_b_id") not in seed_ids):
+        new_slot = _build_hth_rivalry_slot(seed_rows)
+        current["rivalry"] = new_slot
+        log.info(f"HTH rivalry premise flipped for league {league_id} — regenerated: {new_slot}")
+
+    _HTH_NARRATIVES[league_id] = current
+
 # Columnist force-mode cadence: minimum game-index gap between articles when
 # force=True.  70 games ~= 7 game-days of 10 games each.
 _COLUMNIST_FORCE_MIN_GAP: int = 70
@@ -1249,71 +1385,16 @@ async def _maybe_post_columnist(
         columnist_context = dict(batch_context)
         columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index[league_id] - 1) % len(_FORMAT_VARIANTS)]
 
-        # Seed season-long HTH narratives on first use per league, then inject every time.
+        # Seed season-long HTH narratives on first use per league; re-validate
+        # each frozen premise against current data on every subsequent fire.
         global _HTH_NARRATIVES
-        if league_id not in _HTH_NARRATIVES:
-            try:
-                # Seed: top scorer = "sleeper" Dave has been high on; best team = "fraud"
-                # Tony doubts; two closest-stat players on different teams = "rivalry."
-                _seed_rows = await pool.fetch(
-                    """
-                    SELECT p.id, p.first_name || ' ' || p.last_name AS player_name,
-                           t.nba_team_code AS team_code, t.conference,
-                           AVG(b.points) AS ppg,
-                           AVG(b.rebounds_off + b.rebounds_def) AS rpg,
-                           AVG(b.assists) AS apg,
-                           COUNT(b.id) AS gp
-                    FROM players p
-                    JOIN game_box_scores b ON b.player_id = p.id
-                    JOIN games g ON g.id = b.game_id
-                    JOIN teams t ON t.id = p.team_id
-                    WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
-                    GROUP BY p.id, t.nba_team_code, t.conference
-                    HAVING COUNT(b.id) >= 10
-                    ORDER BY AVG(b.points) DESC
-                    LIMIT 20
-                    """,
-                    league_id, season,
-                )
-                _std_rows = await pool.fetch(
-                    """
-                    SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
-                    FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
-                    WHERE sc.league_id = $1 AND sc.season = $2
-                    ORDER BY sc.wins DESC LIMIT 1
-                    """,
-                    league_id, season,
-                )
-                _top_team = _std_rows[0]["nba_team_code"] if _std_rows else "the league leader"
-                _sleeper = _seed_rows[0]["player_name"] if _seed_rows else "the top scorer"
-                # Rivalry: two players from different teams with similar scoring (top 5)
-                _rivalry_a = _seed_rows[1]["player_name"] if len(_seed_rows) > 1 else None
-                _rivalry_b = _seed_rows[2]["player_name"] if len(_seed_rows) > 2 else None
-                _rivalry_teams = (
-                    f"{_seed_rows[1]['team_code']} vs {_seed_rows[2]['team_code']}"
-                    if len(_seed_rows) > 2 else ""
-                )
-                _HTH_NARRATIVES[league_id] = {
-                    "sleeper_pick": (
-                        f"Dave has been insisting all season that {_sleeper} is criminally underrated "
-                        f"and deserves more recognition."
-                    ),
-                    "fraud_call": (
-                        f"Tony has been calling {_top_team} a 'paper tiger' since day one — "
-                        f"great record, no real test, waiting to collapse."
-                    ),
-                    "rivalry": (
-                        f"Dave and Tony have been tracking the {_rivalry_teams} rivalry — "
-                        f"{_rivalry_a} vs {_rivalry_b} — all season, arguing who's the better player."
-                    ) if _rivalry_a and _rivalry_b else None,
-                }
-                log.info(f"HTH narratives seeded for league {league_id}: {_HTH_NARRATIVES[league_id]}")
-            except Exception as _hth_exc:
-                log.warning(f"HTH narrative seeding failed: {_hth_exc}")
-                _HTH_NARRATIVES[league_id] = {}
+        await _seed_or_revalidate_hth_narratives(pool, league_id, season)
 
-        # Inject non-None narratives into context.
-        _active_narratives = {k: v for k, v in _HTH_NARRATIVES.get(league_id, {}).items() if v}
+        # Inject non-None narratives into context (text only — the structured
+        # identifying fields on each slot are for revalidation, not the prompt).
+        _active_narratives = {
+            k: v["text"] for k, v in _HTH_NARRATIVES.get(league_id, {}).items() if v
+        }
         if _active_narratives:
             columnist_context["hth_season_narratives"] = _active_narratives
     if persona_id == "pat_chen":
