@@ -294,7 +294,7 @@ async def maybe_initiate_round(
     used_pairs: set[tuple[int, int]] = set()
     taken_player_ids: set[int] = {row["player_id"] for row in already_committed_rows}
 
-    for _ in range(n_offers):
+    for _offer_idx in range(n_offers):
         try:
             # 10% chance at high pressure: attempt a 3-team deal instead of a
             # standard 2-team offer.  Only fires when pressure >= 0.6 so it's
@@ -312,6 +312,10 @@ async def maybe_initiate_round(
                 pool, league, season, cpu_teams, block_by_team,
                 used_pairs, taken_player_ids, deadline_game_index, recently_signed_ids, guild,
                 postures=postures,
+                # Varies per offer attempt within the round (and across rounds via
+                # current_game_index) so pick_proposal_modes' #7 variety injection
+                # doesn't pick the same alternative every time. See _weighted_mode_choice.
+                round_seed=current_game_index * 1000 + _offer_idx,
             )
             proposed_count += count
         except Exception as exc:

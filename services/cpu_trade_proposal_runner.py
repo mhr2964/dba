@@ -32,6 +32,7 @@ from services.trade_proposal_scoring import (
     _asset_upside_modifier,
     _derive_cap_state,
     _get_trade_target_positions,
+    _is_stacked_without_upgrade,
     _position_matches_need,
     _score_outgoing_pair,
     _team_a_wants_player,
@@ -473,9 +474,14 @@ async def _attempt_one_offer(
     recently_signed_ids: set[int] | None = None,
     guild: Optional[discord.Guild] = None,
     postures: dict[int, dict] | None = None,
+    round_seed: int | None = None,
 ) -> int:
     """Mode dispatcher: picks a mode list per team A and routes to the appropriate
     proposal function.  Returns 1 if any proposal was produced, 0 otherwise.
+
+    round_seed: forwarded to pick_proposal_modes' opt-in #7 variety injection —
+    a value that changes call to call (see maybe_initiate_round) so the handful
+    of "coaching philosophy" mode rules aren't identical every single round.
 
     The V2 mode dispatcher is now unconditional — DBA_PROPOSAL_DISPATCHER_V2 no
     longer exists.  pick_proposal_modes runs for every team every cycle.
@@ -551,6 +557,7 @@ async def _attempt_one_offer(
             plan=_disp_plan_a or {},
             cap_state=_disp_cap_state,
             roster_size=len(_disp_roster_a),
+            round_seed=round_seed,
         )
 
         _disp_proposed = 0
@@ -860,6 +867,11 @@ async def _run_incoming_first_for_team(
             if mode_a in ("contending", "play_in_fringe"):
                 if not _position_matches_need(p.position, target_positions):
                     continue
+            # All other modes (#2): skip piling onto an already-stacked position
+            # (3+ rostered) unless the incoming player is a clear value upgrade
+            # over the weakest player already there.
+            elif _is_stacked_without_upgrade(p.position, p.overall, pos_count_map, roster_a_cache):
+                continue
 
             # Positional need multiplier: deprioritize if A already has 3+
             # at this position; boost if A has 0-1.

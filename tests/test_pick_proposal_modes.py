@@ -302,3 +302,80 @@ def test_no_priority_intent_falls_through_to_normal_rules():
     assert result == ["incoming_first"], (
         f"No priority intent should fall through to normal rules: {result}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #7: round_seed variety injection (opt-in — omitted round_seed keeps every
+# test above byte-for-byte identical to pre-#7 deterministic behavior).
+# ---------------------------------------------------------------------------
+
+
+def test_round_seed_omitted_stays_fully_deterministic():
+    """Without round_seed, rules 3/6/7 always return their primary option —
+    the exact pre-#7 behavior every test above already exercises."""
+    tank_result = pick_proposal_modes(
+        team=_FakeTeam(1), posture="tanking",
+        plan=_plan(goal="tank", surplus=[1]), cap_state="under", roster_size=12,
+    )
+    assert tank_result == ["outgoing_first"]
+
+    soft_rebuild_result = pick_proposal_modes(
+        team=_FakeTeam(2), posture="soft_rebuild",
+        plan=_plan(goal="transition", surplus=[1]), cap_state="under", roster_size=12,
+    )
+    assert soft_rebuild_result == ["outgoing_first"]
+
+    fringe_result = pick_proposal_modes(
+        team=_FakeTeam(3), posture="play_in_fringe",
+        plan=_plan(goal="transition"), cap_state="under", roster_size=12,
+    )
+    assert fringe_result == ["incoming_first"]
+
+
+def test_round_seed_produces_variety_across_seeds():
+    """With round_seed supplied, rule 6 (soft_rebuild + surplus) occasionally
+    picks the alternative two-way mode list instead of always outgoing_first —
+    sweeping many seeds must surface both options at least once."""
+    seen: set[tuple[str, ...]] = set()
+    for seed in range(200):
+        result = pick_proposal_modes(
+            team=_FakeTeam(7), posture="soft_rebuild",
+            plan=_plan(goal="transition", surplus=[1]), cap_state="under",
+            roster_size=12, round_seed=seed,
+        )
+        seen.add(tuple(result))
+
+    assert ("outgoing_first",) in seen, f"Primary option never appeared across 200 seeds: {seen}"
+    assert ("outgoing_first", "incoming_first") in seen, (
+        f"Alternative option never appeared across 200 seeds — no variety injected: {seen}"
+    )
+
+
+def test_round_seed_is_reproducible_for_the_same_seed_and_team():
+    """Same (team_id, round_seed) pair must always produce the same result —
+    the variety is seeded/reproducible, not genuinely random per call."""
+    results = [
+        pick_proposal_modes(
+            team=_FakeTeam(9), posture="tanking",
+            plan=_plan(goal="tank", surplus=[1]), cap_state="under",
+            roster_size=12, round_seed=42,
+        )
+        for _ in range(10)
+    ]
+    assert all(r == results[0] for r in results), (
+        f"Same seed/team should always reproduce the same mode choice; got {results}"
+    )
+
+
+def test_round_seed_hard_requirement_rules_are_never_varied():
+    """Rules with a hard requirement (here: over_luxury + win_now) must ignore
+    round_seed entirely — #7 only varies the coaching-philosophy judgment calls."""
+    for seed in range(50):
+        result = pick_proposal_modes(
+            team=_FakeTeam(3), posture="contending",
+            plan=_plan(goal="win_now", surplus=[1, 2]), cap_state="over_luxury",
+            roster_size=13, round_seed=seed,
+        )
+        assert result == ["outgoing_first", "incoming_first"], (
+            f"Hard-requirement rule must not vary with round_seed (seed={seed}): {result}"
+        )
