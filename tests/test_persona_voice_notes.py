@@ -67,6 +67,16 @@ def test_coach_beat_has_explicit_word_cap_in_prompt_text():
     assert "120 words" in voice_notes
 
 
+def test_coach_beat_has_scheme_history_awareness():
+    """C3: coach_beat's context_keys declares scheme_history and its
+    voice_notes references it (has this team run this scheme before, did it
+    work), degrading gracefully when the data isn't there yet."""
+    assert "scheme_history" in PERSONAS["coach_beat"].context_keys
+    voice_notes = PERSONAS["coach_beat"].voice_notes.lower()
+    assert "scheme_history" in voice_notes
+    assert "w-l record" in voice_notes
+
+
 def test_keisha_williams_has_a_stated_standing_bias():
     voice_notes = PERSONAS["keisha_williams"].voice_notes.lower()
     assert "standing bias" in voice_notes

@@ -171,6 +171,17 @@ async def test_all_time_records_provider_returns_records_duplicated_per_team(db_
 # build_columnist_intel end-to-end — new keys registered and mergeable
 # ---------------------------------------------------------------------------
 
+async def test_scheme_history_provider_empty_safe(db_pool):
+    """C3: team-scoped (unlike the league-wide providers above) -- omits
+    teams with no simmed games/gameplans yet rather than erroring."""
+    if db_pool is None:
+        return
+    league_id, team_id = await _make_league_and_team(db_pool)
+    league = SimpleNamespace(id=league_id)
+    result = await columnist_intel._provide_scheme_history(db_pool, league, 2025, [team_id])
+    assert result == {}
+
+
 async def test_build_columnist_intel_merges_new_provider_keys(db_pool):
     if db_pool is None:
         return
