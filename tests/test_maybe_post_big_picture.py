@@ -49,9 +49,14 @@ async def _run(league_id, initial_counter=70, standings=None, top_performers=Non
     pool.fetch = AsyncMock(return_value=top_performers)
 
     register_calls = []
+    generate_calls = []
 
     async def _fake_register(pool_, sent_message, **kwargs):
         register_calls.append(kwargs)
+
+    async def _fake_generate(pool_, league_id_, season_, **kwargs):
+        generate_calls.append(kwargs)
+        return article
 
     persona_patch = (
         patch.dict("services.sim_content_pipeline._PERSONAS",
@@ -64,15 +69,15 @@ async def _run(league_id, initial_counter=70, standings=None, top_performers=Non
         patch("services.sim_content_pipeline.league_repo.get_channel", AsyncMock(return_value=777)),
         persona_patch,
         patch("services.sim_content_pipeline.game_repo.get_standings", AsyncMock(return_value=standings)),
-        patch("services.sim_content_pipeline.columnist_service.generate", AsyncMock(return_value=article)),
+        patch("services.sim_content_pipeline.columnist_service.generate", _fake_generate),
         patch("services.sim_content_pipeline._feedback_log.register_columnist_post", _fake_register),
     ):
         await _maybe_post_big_picture(pool, league_id, season=2025, batch_results=_batch_results(), guild=guild)
-    return analysis_channel, register_calls
+    return analysis_channel, register_calls, generate_calls
 
 
 async def test_counter_below_threshold_skips():
-    analysis_channel, register_calls = await _run(league_id=4001, initial_counter=10)
+    analysis_channel, register_calls, _generate_calls = await _run(league_id=4001, initial_counter=10)
     assert analysis_channel.sent == []
     assert register_calls == []
     assert _big_picture_game_counter[4001] < 70
@@ -88,14 +93,14 @@ async def test_no_analysis_channel_skips():
 
 
 async def test_missing_persona_skips():
-    analysis_channel, register_calls = await _run(league_id=4003, persona=False)
+    analysis_channel, register_calls, _generate_calls = await _run(league_id=4003, persona=False)
     assert analysis_channel.sent == []
     assert register_calls == []
 
 
 async def test_happy_path_posts_article_and_resets_counter():
     article = {"headline": "The State of the League", "body": "A sweeping look at the season so far."}
-    analysis_channel, register_calls = await _run(league_id=4004, article=article)
+    analysis_channel, register_calls, _generate_calls = await _run(league_id=4004, article=article)
 
     assert len(analysis_channel.sent) == 1
     embed = analysis_channel.sent[0]["embed"]
@@ -108,3 +113,28 @@ async def test_happy_path_posts_article_and_resets_counter():
     assert register_calls[0]["category"] == "sunday_column"
 
     assert _big_picture_game_counter[4004] == 0
+
+
+async def test_passes_subject_team_ids_from_standings_for_history_intel(): # D5
+    """D5: season_history/hall_of_fame are league-wide providers, but
+    columnist_service.generate() only fires intel injection when
+    subject_team_ids is truthy -- the #1-standings team_id is passed purely
+    to unlock that path, not because Big Picture is about that team."""
+    article = {"headline": "Headline", "body": "Body."}
+    standings = [{"team_id": 42}, {"team_id": 7}]
+    _analysis_channel, _register_calls, generate_calls = await _run(
+        league_id=4005, article=article, standings=standings,
+    )
+    assert len(generate_calls) == 1
+    assert generate_calls[0]["subject_team_ids"] == [42]
+
+
+async def test_no_standings_passes_no_subject_team_ids():
+    """D5: when standings is empty (e.g. pre-season), subject_team_ids is None
+    rather than crashing on an index into an empty list."""
+    article = {"headline": "Headline", "body": "Body."}
+    _analysis_channel, _register_calls, generate_calls = await _run(
+        league_id=4006, article=article, standings=[],
+    )
+    assert len(generate_calls) == 1
+    assert generate_calls[0]["subject_team_ids"] is None

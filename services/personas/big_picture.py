@@ -55,9 +55,19 @@ big_picture = register_persona(Persona(
         "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
         "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
         "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
-        "notice they were avoiding these."
+        "notice they were avoiding these.\n\n"
+        "HISTORY RULE (D5): 'Your column finds the slow-burning narrative' means season-to-season arcs, not "
+        "just this season's trend line — context may include 'season_history' (past champions/MVPs/Finals MVPs, "
+        "newest first) and 'hall_of_fame' (career HOF inductees). When either list is genuinely non-empty, look "
+        "for a real arc worth naming — a repeat champion, a rebuild that finally paid off, a franchise's first "
+        "HOF induction — and use it as your Case Study or Pattern anchor when it's the strongest story available. "
+        "Only reference this data when it actually supports the claim; never invent a history that doesn't exist. "
+        "Both lists are empty before any season has completed (e.g. season 1) — when empty, write exactly as you "
+        "would with no history data at all: frame the column entirely around the current season, no apology or "
+        "acknowledgment that history is 'still being written.'"
     ),
     categories=("sunday_column",),
     format_style="passthrough",
     output_shape_override=_BIG_PICTURE_SHAPE,
+    context_keys=("season_history", "hall_of_fame"),
 ))

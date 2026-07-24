@@ -492,12 +492,20 @@ async def _maybe_post_big_picture(
         )
         context["top_performers"] = [dict(r) for r in top_performers]
 
+        # D5: season_history/hall_of_fame are LEAGUE-wide (not team-scoped -- see
+        # columnist_intel.py's module docstring), but the intel-injection path in
+        # columnist_service.generate() only fires when subject_team_ids is truthy.
+        # Any single real team_id unlocks the same league-wide lists, so the
+        # current #1-standings team is used purely as a key, not a subject.
+        _subject_team_ids = [standings[0]["team_id"]] if standings else None
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
                 persona_id="big_picture",
                 category="sunday_column",
                 context=context,
+                subject_team_ids=_subject_team_ids,
             ),
             timeout=20.0,
         )
