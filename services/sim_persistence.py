@@ -120,9 +120,21 @@ async def _stamp_role_data(
 
         reg = ROLE_REGISTRY.get(role, ROLE_REGISTRY["glue_guy"])
 
-        # Apply scheme_synergy modifier (+15%) before renormalising below.
-        if offensive_scheme in reg.get("scheme_synergy", []):
+        # Apply scheme_synergy modifier before renormalising below. Finding #3a
+        # (realism audit): this used to be a one-way +15% bonus for a MATCHING
+        # scheme and nothing else -- a role could be actively mismatched with
+        # the scheme running that game (e.g. movement_shooter while the team
+        # runs isolation) with zero in-sim consequence. Roles with a non-empty
+        # scheme_synergy list that does NOT include the active scheme now take
+        # a small (-8%) touch-share penalty so a real conflict is visible.
+        # Roles with an EMPTY scheme_synergy list (glue_guy, veteran_mentor,
+        # developmental, end_of_bench) aren't scheme-committed at all -- no
+        # bonus, no penalty, same as before.
+        _synergy = reg.get("scheme_synergy", [])
+        if offensive_scheme in _synergy:
             touch_share *= 1.15
+        elif _synergy:
+            touch_share *= 0.92
 
         stamped.append((p, role, touch_share, reg))
 

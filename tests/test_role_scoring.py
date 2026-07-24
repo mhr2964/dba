@@ -181,6 +181,32 @@ def test_derive_tendency_respecter_bottom_3_get_depth_roles():
             assert a["role"] in depth_roles
 
 
+def test_derive_tendency_respecter_all_big_top3_does_not_force_guard_wing_role():
+    """Finding #3b fix: when the top-3 OVR players are ALL bigs (no real
+    guard/wing present), Step 2 must NOT fall back to the guard/wing pool
+    (`primary_pool_ids = top_3_guard_wing_ids or top_3_ids`) -- that used to
+    force a ball-handling primary role (e.g. primary_initiator) onto a
+    center. It now routes to a big-appropriate pool instead
+    (`_BIG_PRIMARY_ROLES`: post_anchor / pick_and_pop / rim_runner /
+    screen_roller).
+
+    Pre-fix, this exact roster produced `top_player_role in
+    guard_wing_primary_roles` (confirmed manually before the fix landed).
+    """
+    roster = [
+        _roster_player(1, 95, position="C", reb_tendency=70, blk_tendency=60),
+        _roster_player(2, 90, position="PF", reb_tendency=65),
+        _roster_player(3, 88, position="C", reb_tendency=60),
+        *[_roster_player(i, 75, position="SF") for i in range(4, 13)],
+    ]
+    assignments = rs._derive_tendency_respecter(roster)
+    guard_wing_primary_roles = {"iso_scorer", "primary_initiator", "movement_shooter", "slashing_lead"}
+    big_primary_roles = {"post_anchor", "pick_and_pop", "rim_runner", "screen_roller"}
+    top_player_role = next(a["role"] for a in assignments if a["player_id"] == 1)
+    assert top_player_role not in guard_wing_primary_roles
+    assert top_player_role in big_primary_roles
+
+
 def test_derive_tendency_respecter_returns_touch_share_and_rationale():
     roster = [_roster_player(i, 80 - i) for i in range(5)]
     assignments = rs._derive_tendency_respecter(roster)

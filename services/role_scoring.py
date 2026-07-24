@@ -212,6 +212,15 @@ _PRIMARY_SCORING_ROLES = frozenset({
 })
 
 
+# Finding #3b (realism audit): primary-scoring role pool for a team whose
+# top-3 OVR players are ALL bigs (no real guard/wing present). Pulling from
+# the guard/wing pool in that case forced a ball-handling identity (e.g.
+# primary_initiator) onto a center -- a personnel-fit bug even though "top-3
+# OVR" is otherwise a reasonable proxy for "who deserves offensive
+# recognition." Tuple (not frozenset) for deterministic score-tie iteration.
+_BIG_PRIMARY_ROLES = ("post_anchor", "pick_and_pop", "rim_runner", "screen_roller")
+
+
 # Defensive anchor roles — every team must get exactly ONE.
 # Tuple (not frozenset) so iteration order is deterministic on score ties.
 _DEFENSIVE_ANCHOR_ROLES = (
@@ -520,7 +529,15 @@ def _derive_tendency_respecter(
         pid for pid in top_3_ids
         if next(x for x in players if x["player_id"] == pid).get("position") not in _BIG_POSITIONS
     ]
-    primary_pool_ids = top_3_guard_wing_ids or top_3_ids  # fallback to full top-3 if no guards
+    # Finding #3b: when NO guard/wing exists in the top-3 (all-big top-3), do
+    # NOT fall back to the guard/wing pool -- that forces a ball-handling
+    # identity onto a center. Route to a big-appropriate pool instead.
+    if top_3_guard_wing_ids:
+        primary_pool_ids = top_3_guard_wing_ids
+        _primary_role_options = _guard_wing_primary_roles
+    else:
+        primary_pool_ids = top_3_ids
+        _primary_role_options = _BIG_PRIMARY_ROLES
 
     primary_role_filled = False
     for pid in primary_pool_ids:  # already ordered highest OVR first
@@ -530,8 +547,8 @@ def _derive_tendency_respecter(
         rank = ovr_rank_map[pid]
         # Pick the best-fitting role for THIS player specifically
         best_role_score = -9999.0
-        best_role = "iso_scorer"
-        for role in _guard_wing_primary_roles:
+        best_role = _primary_role_options[0]
+        for role in _primary_role_options:
             s = _score_role_fit(p, role, rank, n, ctx)
             if s > best_role_score:
                 best_role_score = s
@@ -597,9 +614,17 @@ def _derive_tendency_respecter(
     # anchor role is filled, ALL anchor roles are blocked so Step 4 cannot assign
     # a second player to post_anchor, two_way_big, etc.  This is the intended
     # "exactly one anchor" invariant.
+    #
+    # Finding #3b: the guard/wing exclusion only applies when Step 2 actually
+    # contested the guard/wing pool (top_3_guard_wing_ids non-empty). When an
+    # all-big top-3 routed to _BIG_PRIMARY_ROLES instead, the guard/wing primary
+    # roles were never claimed -- leave them open so a genuine guard/wing
+    # further down the roster (rank 4+) can still earn one via its own best-fit
+    # score in this step, instead of the whole team going without a
+    # ball-handling primary identity.
     _depth_role_names = frozenset({"end_of_bench", "developmental", "veteran_mentor"})
     exclusions: set[str] = set()
-    if primary_role_filled:
+    if primary_role_filled and top_3_guard_wing_ids:
         exclusions.update(_guard_wing_primary_roles)
     # anchor_filled is the only source of defensive anchor roles in `assigned` at
     # this point — Step 2 can never produce a post_anchor because it is excluded
