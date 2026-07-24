@@ -130,6 +130,26 @@ def _player_3pct(player: dict) -> float:
     return max(0.20, min(0.60, base + adj))
 
 
+def _scheme_fit_factor(skill: float, low: float = 40.0, high: float = 80.0) -> float:
+    """Linear 0..1 fit factor for skill-conditioned scheme bumps (finding #2).
+
+    skill <= low  -> 0.0 (mismatch -- no bump/suppression applied)
+    skill >= high -> 1.0 (full bump/suppression applied)
+    Linear ramp in between.
+
+    Mirrors _role_tendency_fg_adj's fit-vs-mismatch shape (bonus for high
+    tendency, muted-to-none for low) but keyed off a raw skill rating
+    (e.g. shooting_3pt) instead of a role tendency, so a scheme-level
+    attempt-rate/tendency bump can be scaled by whether a given player can
+    actually convert on the extra volume a coach would be asking for.
+    """
+    if skill <= low:
+        return 0.0
+    if skill >= high:
+        return 1.0
+    return (skill - low) / (high - low)
+
+
 def _apply_scheme_to_players(players: List[dict], scheme: str) -> List[dict]:
     """Return shallow-copied player list with tendency values nudged by offensive scheme.
 
@@ -169,8 +189,17 @@ def _apply_scheme_to_players(players: List[dict], scheme: str) -> List[dict]:
                 p["tendency_3pt"] = _clamp(p.get("tendency_3pt", 50) - 3)
 
     elif scheme == "three_heavy":
+        # Finding #2 (realism audit): the +12 tendency_3pt bump used to be
+        # flat for every player regardless of shooting_3pt -- a 30-rated
+        # shooting center got pushed to jack up 3s just like the team's best
+        # shooter (he just missed more, since make% was already skill-gated
+        # via _player_3pct; only attempt VOLUME was scheme-flat). A real coach
+        # wouldn't force a non-shooter into this scheme's shot diet, so the
+        # bump now scales with each player's own shooting_3pt via the same
+        # fit-vs-mismatch shape _role_tendency_fg_adj uses for role fit.
         for p in result:
-            p["tendency_3pt"] = _clamp(p.get("tendency_3pt", 50) + 12)
+            fit = _scheme_fit_factor(p.get("shooting_3pt", 50))
+            p["tendency_3pt"] = _clamp(p.get("tendency_3pt", 50) + 12 * fit)
 
     elif scheme == "inside_out":
         star_idx = max(range(len(result)), key=lambda i: result[i].get("overall", result[i].get("finishing", 50)))
@@ -581,9 +610,17 @@ def _build_box_for_team(
             rng, p, team_id, started, minutes_list[i],
             team_score, players, minutes_list, i, score_diff,
         )
-        # Apply three_rate_adj: scale tpa/tpm proportionally.
+        # Apply three_rate_adj: scale tpa/tpm proportionally, conditioned on
+        # this player's own shooting_3pt (finding #2) -- three_rate_adj bundles
+        # both the team's own offensive-scheme rate change (e.g. three_heavy's
+        # +0.22) and the opponent's defensive-scheme rate change (e.g. zone's
+        # -0.12), and previously applied identically to every player on the
+        # floor. A coach wouldn't ask a non-shooter to change their 3PA volume
+        # either way, so a low-shooting_3pt player now gets little-to-no
+        # change while a genuine shooter gets close to the full adjustment.
         if three_rate_adj != 0.0:
-            adj_factor = max(0.0, 1.0 + three_rate_adj)
+            fit = _scheme_fit_factor(p.get("shooting_3pt", 50))
+            adj_factor = max(0.0, 1.0 + three_rate_adj * fit)
             line["tpa"] = max(line["tpm"], round(line["tpa"] * adj_factor))
         lines.append(line)
 

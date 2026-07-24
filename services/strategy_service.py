@@ -4,6 +4,7 @@ import asyncpg
 
 from data.repositories import strategy_repo
 from services.auto_strategy import infer_archetype
+from services.sim_engine import _scheme_fit_factor
 
 # Module-level inference cache keyed by (league_id, team_id).
 # Cleared at the start of each batch run via clear_archetype_cache().
@@ -33,6 +34,15 @@ async def get_sim_modifiers(
     When `players` is provided and the team's strategy is all defaults (indicating
     no custom strategy has been set), auto-strategy inference is applied instead.
     The returned dict includes `archetype_label` for Pat Chen enrichment.
+
+    When `players` is provided (regardless of override_strategy), it is ALSO used
+    to condition the press/switch_all defensive-scheme modifiers on the team's own
+    roster (finding #2, realism audit): press's opp_turnover_adj benefit and its
+    new foul_adj downside scale with the roster's average `speed`; switch_all's
+    ppp_defense_mult/opp_three_rate_adj scale with the roster's average `defense`/
+    `defensive_effort`. Without `players`, both schemes fall back to their old flat
+    magnitudes (preserves behavior for callers that don't have roster data handy,
+    e.g. bot/cogs/strategy_cog.py's preview embeds).
     """
     archetype_label: str | None = None
 
@@ -75,6 +85,18 @@ async def get_sim_modifiers(
     opp_three_rate_adj: float = 0.0
     opp_turnover_adj: float = 0.0
 
+    # Finding #2 personnel conditioning: own-roster averages for the press/
+    # switch_all magnitude gates below. None when no roster was supplied.
+    roster_avg_speed: float | None = None
+    roster_avg_defense: float | None = None
+    roster_avg_defensive_effort: float | None = None
+    if players:
+        _top8 = sorted(players, key=lambda p: p.get("overall", 50), reverse=True)[:8]
+        _n = len(_top8)
+        roster_avg_speed = sum(p.get("speed", 50) for p in _top8) / _n
+        roster_avg_defense = sum(p.get("defense", 50) for p in _top8) / _n
+        roster_avg_defensive_effort = sum(p.get("defensive_effort", 50) for p in _top8) / _n
+
     # PACE
     pace = strategy["offensive_pace"]
     if pace == "slow":
@@ -112,11 +134,39 @@ async def get_sim_modifiers(
     elif defense == "press":
         # Full-court press raises pace and forces extra turnovers on the opponent.
         pace_adjustment += 4.0
-        opp_turnover_adj += 0.05
+        if roster_avg_speed is not None:
+            # Finding #2: press had zero downside and a flat benefit regardless of
+            # personnel -- a team of slow bigs pressed just as "effectively" as a
+            # track team. speed_fit scales the turnover-forcing benefit down (never
+            # to zero -- even a slow team rushes the opponent a little) and adds a
+            # real foul-rate cost (fatigue/closeout scramble) for a team that can't
+            # actually keep up full-court. 50/70 mirrors the switch_all gate's
+            # low/high shape at a lower band, since speed's raw-rating scale here
+            # is being read continuously rather than as a hard pass/fail cutoff.
+            speed_fit = _scheme_fit_factor(roster_avg_speed, low=50.0, high=70.0)
+            opp_turnover_adj += 0.05 * (0.4 + 0.6 * speed_fit)
+            foul_adj += 1.5 * (1.0 - speed_fit)
+        else:
+            opp_turnover_adj += 0.05
     elif defense == "switch_all":
         # Switch-all creates mismatches: slight ppp concession, opens more 3s for opponent.
-        ppp_defense_mult *= 0.98
-        opp_three_rate_adj += 0.07
+        if roster_avg_defense is not None and roster_avg_defensive_effort is not None:
+            # Finding #2: this used to be the same flat concession for every
+            # roster. A genuinely versatile, high-defense roster (the same
+            # >=74 defense / >=60 defensive_effort bar the finding #1 selection
+            # gate uses) can switch across positions with minimal cost -- the
+            # concession shrinks toward neutral (1.00) and the extra open looks
+            # shrink toward zero. A roster that only barely cleared the
+            # selection gate keeps the full flat concession as its floor.
+            defense_fit = min(
+                _scheme_fit_factor(roster_avg_defense, low=50.0, high=74.0),
+                _scheme_fit_factor(roster_avg_defensive_effort, low=40.0, high=60.0),
+            )
+            ppp_defense_mult *= 0.98 + 0.02 * defense_fit
+            opp_three_rate_adj += 0.07 * (1.0 - defense_fit)
+        else:
+            ppp_defense_mult *= 0.98
+            opp_three_rate_adj += 0.07
     # man_to_man: no adjustment
 
     # DEFENSIVE INTENSITY
