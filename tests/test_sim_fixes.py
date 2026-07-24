@@ -142,7 +142,7 @@ def test_injury_roll_in_sim_output():
 
 async def test_injury_persistence(db_pool):
     """
-    When sim_game returns an injury, batch_sim_runner inserts a row into injuries.
+    When sim_game returns an injury, sim_orchestrator inserts a row into injuries.
     We patch sim_game to always return exactly one injury and verify the DB row.
     """
     from data.repositories import game_repo

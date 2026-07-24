@@ -1,6 +1,6 @@
 """Roster/lineup/game-result persistence used by batch sim.
 
-DB-read/write helpers extracted from batch_sim_runner.py. `_persist_injuries`
+DB-read/write helpers extracted from sim_orchestrator.py. `_persist_injuries`
 and `_persist_game_result` also post announcements (injury alerts, win-streak,
 all-time-record embeds) -- they build `EmbedData` and hand it to a
 `_BoundChannelAnnouncer` (services/sim_channel_announcer.py) rather than

@@ -17,7 +17,7 @@ Run from project root:
 
 Why --force-trades is needed:
     In normal headless runs, `_maybe_run_cpu_trades` is gated on `box_channel`
-    being truthy (batch_sim_runner.py lines 2145/2175: `if ... and box_channel`).
+    being truthy (sim_orchestrator.py: `if ... and box_channel`).
     MockGuild.get_channel() always returns None, so box_channel is always None
     and the CPU trade block is unreachable.  --force-trades bypasses that gate
     by calling cpu_trade_service.maybe_initiate_round directly from the harness.
@@ -65,7 +65,7 @@ class _FakeChannel:
 
 
 class MockGuild:
-    """No-op Discord guild. All methods that batch_sim_runner calls are present."""
+    """No-op Discord guild. All methods that sim_orchestrator calls are present."""
     id: int = 0
     me = None
     name: str = "HeadlessGuild"
@@ -162,7 +162,7 @@ async def _force_trade_round(
     """
     Directly invoke cpu_trade_service.maybe_initiate_round with elevated pressure.
 
-    Bypasses the box_channel gate in batch_sim_runner.sim_range that prevents
+    Bypasses the box_channel gate in sim_orchestrator.sim_range that prevents
     trades from firing in headless mode.  Pressure is forced to 1.0 so the
     formula always attempts 3 offers per call (int(1.0*2)+1 = 3).
     """
@@ -319,7 +319,7 @@ async def main() -> None:
 
     # ── Step 7: Sim full regular season ───────────────────────────────────
     progress("Starting full regular season sim (force=True)...")
-    from services import batch_sim_runner
+    from services import sim_orchestrator
 
     mock_guild = MockGuild()
     mock_guild.id = HEADLESS_GUILD_ID
@@ -346,7 +346,7 @@ async def main() -> None:
 
     while True:
         chunk_end = chunk_start + CHUNK_SIZE - 1
-        result = await batch_sim_runner.sim_range(
+        result = await sim_orchestrator.sim_range(
             league_id=league.id,
             guild=mock_guild,
             season=SEASON_YEAR,

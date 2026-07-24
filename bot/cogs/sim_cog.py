@@ -19,7 +19,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo
 from phase.helpers import get_league_or_error, require_commissioner, require_phase, require_all_ready, require_no_pending_trades
-from services import batch_sim_runner, league_service
+from services import sim_orchestrator, league_service
 
 log = get_logger(__name__)
 
@@ -144,7 +144,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         await require_no_pending_trades(league)
 
         pool = await get_pool()
-        summary = await batch_sim_runner.sim_until_rival(
+        summary = await sim_orchestrator.sim_until_rival(
             league.id,
             interaction.guild,
             league.current_season,
@@ -229,7 +229,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         to_index = await _target_index_for_n_more_per_team(pool, league.id, count)
 
         if not force:
-            user_matchups = await batch_sim_runner.check_user_matchups_in_range(
+            user_matchups = await sim_orchestrator.check_user_matchups_in_range(
                 pool, league.id, league.current_season, current_index + 1, to_index
             )
             if user_matchups:
@@ -238,7 +238,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-        summary = await batch_sim_runner.sim_range(
+        summary = await sim_orchestrator.sim_range(
             league.id,
             interaction.guild,
             league.current_season,
@@ -297,7 +297,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         current_index = await game_repo.get_current_index(pool, league.id, league.current_season)
 
         if not force:
-            user_matchups = await batch_sim_runner.check_user_matchups_in_range(
+            user_matchups = await sim_orchestrator.check_user_matchups_in_range(
                 pool, league.id, league.current_season, current_index + 1, 10000
             )
             if user_matchups:
@@ -324,7 +324,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         )
 
         async def _run_sim_and_post() -> None:
-            summary = await batch_sim_runner.sim_range(
+            summary = await sim_orchestrator.sim_range(
                 league.id,
                 interaction.guild,
                 league.current_season,
@@ -401,7 +401,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             return
 
         if not force:
-            user_matchups = await batch_sim_runner.check_user_matchups_in_range(
+            user_matchups = await sim_orchestrator.check_user_matchups_in_range(
                 pool, league.id, league.current_season, current_index + 1, deadline_index
             )
             if user_matchups:
@@ -412,7 +412,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                 await safe_respond(interaction, embed=embed)
                 return
 
-        summary = await batch_sim_runner.sim_range(
+        summary = await sim_orchestrator.sim_range(
             league.id,
             interaction.guild,
             league.current_season,

@@ -2,7 +2,7 @@
 batch, then announces the results (trade-executed embed + thread, Marcus Cole
 blockbuster analysis) via the Announcer protocol.
 
-Extracted from batch_sim_runner.py. Builds EmbedData and posts through
+Extracted from sim_orchestrator.py. Builds EmbedData and posts through
 _BoundChannelAnnouncer (services/sim_channel_announcer.py) instead of
 constructing discord.Embed directly -- see tests/test_run_cpu_trades_inner.py
 for the characterization tests written before this conversion (both had zero

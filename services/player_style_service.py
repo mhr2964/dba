@@ -6,7 +6,7 @@ human-readable player style tags and summaries.
 
 Used by:
   - bot/embeds/stats_embeds.py  (player profile embed)
-  - services/batch_sim_runner.py  (columnist context enrichment)
+  - services/sim_orchestrator.py  (columnist context enrichment)
 """
 from __future__ import annotations
 

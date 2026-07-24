@@ -682,7 +682,7 @@ async def build_team_intel(
 
 
 # ---------------------------------------------------------------------------
-# snapshot_all_teams — called at every batch flush in batch_sim_runner
+# snapshot_all_teams — called at every batch flush via sim_batch_hooks._maybe_snapshot_teams
 # ---------------------------------------------------------------------------
 
 async def snapshot_all_teams(

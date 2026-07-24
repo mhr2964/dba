@@ -286,7 +286,7 @@ async def _check_all_time_records(
 
     # Longest active win streak tracked via standings_cache (all-time)
     # We silently update the all-time record in the DB but do NOT emit an announcement here.
-    # batch_sim_runner already posts a milestone "Win Streak" embed (via game_repo notable_streak
+    # sim_orchestrator already posts a milestone "Win Streak" embed (via game_repo notable_streak
     # at {5, 10, 15} games) — emitting a second message here causes every milestone to post twice.
     winner_team_id = result.get("winner_team_id")
     if winner_team_id:
@@ -306,6 +306,6 @@ async def _check_all_time_records(
                     game_id=game_id,
                     season_set=season,
                 )
-                # No announcement — batch_sim_runner handles the user-facing milestone post.
+                # No announcement — sim_orchestrator handles the user-facing milestone post.
 
     return at_announcements

@@ -75,7 +75,7 @@ _cold_sweep_done: bool = False
 
 
 # ---------------------------------------------------------------------------
-# Public gate queries  (same interface as v1 — callers in batch_sim_runner.py
+# Public gate queries  (same interface as v1 — callers in sim_orchestrator.py
 # use these two functions; only the implementations change)
 # ---------------------------------------------------------------------------
 
@@ -579,7 +579,7 @@ async def ipc_watch_task() -> None:
 # ---------------------------------------------------------------------------
 
 async def request_pause(article_record: dict[str, Any]) -> None:
-    """Called from batch_sim_runner after the chosen persona's embed is sent.
+    """Called from sim_orchestrator after the chosen persona's embed is sent.
 
     Writes a pending JSONL record, writes pause.json (IPC signal to sidecar),
     then suspends until the sidecar submits feedback.json or a stop/timeout

@@ -500,7 +500,7 @@ def _build_box_for_team(
     # touch_share from player_roles replaces the old OVR × usage_weight^1.55 formula.
     # star_usage_mult and the star-debuff-target logic are neutralised below.
     #
-    # Step 1: Base touch share from role (stamped onto player dicts by batch_sim_runner).
+    # Step 1: Base touch share from role (stamped onto player dicts by sim_orchestrator).
     # Step 2: Minutes-tier eligibility penalties (bench can't get starter touches).
     # Step 3: Per-game form noise (keeps game-to-game variance realistic).
     # Step 4: Clutch adjustment (unchanged from Phase 1).

@@ -139,7 +139,7 @@ async def register_columnist_post(
 ) -> Optional[int]:
     """Convenience wrapper — every columnist article uses the same context shape.
 
-    Keeps per-call-site code to one line in batch_sim_runner.py.
+    Keeps per-call-site code to one line in sim_orchestrator.py.
     """
     ctx: FeedbackContext = {
         "kind": "columnist_article",

@@ -1,7 +1,7 @@
 """Columnist/report content posted during batch sim: awards races, POTM, coach
 beat, power rankings, and the rest of the `_maybe_post_*` family.
 
-Extracted from batch_sim_runner.py one function at a time (see HANDOFF.md for
+Extracted from sim_orchestrator.py one function at a time (see HANDOFF.md for
 progress) -- each conversion is characterization-tests-first: pin the current
 inline-discord.Embed output with a recording fake, confirm against the
 original, convert to EmbedData + an announcer, confirm again unchanged, then

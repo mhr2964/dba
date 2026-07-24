@@ -21,7 +21,7 @@ def _extract_top_performer(
     home_team_code: str,
     away_team_code: str,
 ) -> dict | None:
-    """Return a top-performer dict (same shape batch_sim_runner uses) from a single game result."""
+    """Return a top-performer dict (same shape sim_orchestrator uses) from a single game result."""
     best_line: dict | None = None
     best_pts = -1
     best_team_code = ""
