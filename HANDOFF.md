@@ -24,10 +24,10 @@ Toggle **Message Content Intent** in the Discord Developer Portal (Application �
 
 ## Recent context
 
-- 2026-07-24: Fixed the flaky `test_progression.py::test_high_potential_grows_more` (commit `2328d22`) — under-powered statistical assertion (10 iterations wasn't enough sample size), not shared state. Also resynced `Projects/dba-site`'s command reference (separate repo, commit `17feab1`).
+- 2026-07-24: Fixed the flaky `test_progression.py::test_high_potential_grows_more` (`2328d22`) — under-powered statistical assertion, not shared state. Resynced `Projects/dba-site`'s command reference (separate repo, `17feab1`). Closed the last opportunistic item from the sweep: split `sim_batch_hooks.py` out of `batch_sim_runner.py` (renamed `sim_orchestrator.py`, `c79adbb`) — see `docs/design/architecture.md`'s Split status for why the discord-import invariant still isn't fully closed for these two files (DM sends need a separate abstraction, out of scope).
 - 2026-07-22: Completed the full re-architecture sweep — Phase 0 (hygiene), Phase 1 (Announcer protocol seam), Phase 2 (both god-file splits: `cpu_trade_proposals.py`, `batch_sim_runner.py`), Phase 3 (6 oversized service files split), and a cog-splitting extension (6 oversized cogs split). See `docs/design/architecture.md`'s "Split status" / "Phase 3 splits" / "Cog splits" sections for the durable breakdown; git log has full per-split detail.
 - 2026-05-23: Bidirectional CPU trade proposals, B7 posture fix, B8 gate-parity helper, B5 retune. See session note `Brain/General Session Notes/2026-05-23 - DBA Trade Restructure - Bidirectional Proposals, B7 Fix, Marcus Prompt.md`.
 
 ---
 
-When the re-architecture work-stream is fully closed out (Discord intent toggle flipped, trades verified, dba-site pushed), prune this back further or delete it — don't leave a stale "complete" handoff lying around.
+Re-architecture sweep (Phases 0-3, cog splits, and the opportunistic sim_orchestrator split) is fully done. Only 3 loose ends remain: the Discord intent toggle, the 3 unverified trades, and the unpushed dba-site commit. When those close, prune this back further or delete it — don't leave a stale "complete" handoff lying around.
