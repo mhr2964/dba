@@ -636,27 +636,47 @@ async def generate(  # noqa: PLR0912, PLR0915
         "Do not invent, round, or approximate any score value.\n\n"
     )
 
-    narrative_rule = (
-        "NARRATIVE RULE: Write about the narrative of the week/round, not just a single player. "
-        "Cover team stories, matchup dynamics, and multiple players. "
-        "The best articles zoom out to team and league context, not just stat lines. "
-        "Use standings, streaks, and recent results from the context to build a wider story.\n\n"
-        "ANALYTICAL VARIETY (mandatory): Do NOT default to 'Player X had a big game but his team "
-        "needed more' or 'Y's brilliance wasn't enough.' Find a fresh angle EVERY article. "
-        "Acceptable angles: team defense at the rim/perimeter/forcing turnovers; a specific "
-        "matchup that turned the game (player vs player, scheme vs scheme); a teammate's quiet "
-        "contribution that made the star's night possible; a rivalry storyline that gives the game "
-        "extra weight; a coaching decision (rotation, late-game) that swung the result; a "
-        "pace/efficiency angle (TS%, eFG%, pace differential); a trend across the recent batch "
-        "(e.g. 'this is the third time TEAM has X'). Reference at least one OTHER player in the "
-        "game by name with a specific stat. The 'team needed more' framing is BANNED unless "
-        "explicitly named as a cliche the columnist is rejecting.\n\n"
-        "HEADLINE RULE (mandatory): The headline must convey the WHAT at a glance. A reader who "
-        "scrolls past should know what happened without opening it. Include at least ONE of: a "
-        "player's last name, a team code, a specific number, or a specific event. Generic "
-        "vibes-headlines are BANNED. Better: 'Brunson's 38 Lifts NYK Over BOS in Double-OT "
-        "Thriller' or 'LAL's Defense Holds MIA Under 90 for First Time This Season'.\n\n"
-    )
+    # A2: narrative_rule's "zoom out to team and league context, reference at
+    # least one OTHER player by name" instruction is only appropriate for
+    # categories that are actually supposed to cover multiple storylines.
+    # It used to be injected into EVERY system prompt, which directly fought
+    # personas whose own voice_notes demand tight, single-focus brevity
+    # (Jordan Rivera: "reacts to ONE specific moment"; Keisha Williams: "picks
+    # ONE metric... do NOT summarize the whole game"; Rookie Watch, The Race,
+    # Power List, Triage Report, etc. are all single-subject-per-article by
+    # design). Scoped to the two categories that are explicitly wide-angle:
+    # sunday_column (Big Picture's whole point is a league-wide arc) and
+    # game_recap (the main columnist rotation, whose task_line already asks
+    # for "multiple players and team storylines").  The HEADLINE RULE half of
+    # this block is generically useful (a vague headline is bad regardless of
+    # scope) so it stays bundled with the narrative half only for these two
+    # categories — other categories already get headline guidance from their
+    # own output_shape_rule/voice_notes.
+    _NARRATIVE_RULE_CATEGORIES = frozenset({"sunday_column", "game_recap"})
+    if _category in _NARRATIVE_RULE_CATEGORIES:
+        narrative_rule = (
+            "NARRATIVE RULE: Write about the narrative of the week/round, not just a single player. "
+            "Cover team stories, matchup dynamics, and multiple players. "
+            "The best articles zoom out to team and league context, not just stat lines. "
+            "Use standings, streaks, and recent results from the context to build a wider story.\n\n"
+            "ANALYTICAL VARIETY (mandatory): Do NOT default to 'Player X had a big game but his team "
+            "needed more' or 'Y's brilliance wasn't enough.' Find a fresh angle EVERY article. "
+            "Acceptable angles: team defense at the rim/perimeter/forcing turnovers; a specific "
+            "matchup that turned the game (player vs player, scheme vs scheme); a teammate's quiet "
+            "contribution that made the star's night possible; a rivalry storyline that gives the game "
+            "extra weight; a coaching decision (rotation, late-game) that swung the result; a "
+            "pace/efficiency angle (TS%, eFG%, pace differential); a trend across the recent batch "
+            "(e.g. 'this is the third time TEAM has X'). Reference at least one OTHER player in the "
+            "game by name with a specific stat. The 'team needed more' framing is BANNED unless "
+            "explicitly named as a cliche the columnist is rejecting.\n\n"
+            "HEADLINE RULE (mandatory): The headline must convey the WHAT at a glance. A reader who "
+            "scrolls past should know what happened without opening it. Include at least ONE of: a "
+            "player's last name, a team code, a specific number, or a specific event. Generic "
+            "vibes-headlines are BANNED. Better: 'Brunson's 38 Lifts NYK Over BOS in Double-OT "
+            "Thriller' or 'LAL's Defense Holds MIA Under 90 for First Time This Season'.\n\n"
+        )
+    else:
+        narrative_rule = ""
 
     # Prevent hallucination of 3-team trades: only describe a trade as 3-team
     # when the context explicitly shows 3 distinct team names as parties.

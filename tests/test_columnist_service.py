@@ -205,6 +205,71 @@ async def test_generate_uses_per_category_max_tokens_in_api_call():
     assert call_kwargs["max_tokens"] == 500
 
 
+async def test_narrative_rule_included_for_sunday_column_and_game_recap():
+    """A2: the 'zoom out to team and league context' rule should reach the
+    system prompt only for the two wide-angle categories."""
+    persona = _persona(voice_notes="Tight single-focus voice.")
+    for category in ("sunday_column", "game_recap"):
+        captured: dict = {}
+        body_json = json.dumps({
+            "headline": "H", "lede": "L", "key_stats": [], "bullets": ["b"], "verdict": "V",
+        })
+        fake_anthropic_module = SimpleNamespace(
+            AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+        )
+        pool = MagicMock()
+
+        async def _fake_insert(pool_, **insert_kwargs):
+            return 1
+
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+            patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+            patch("services.columnist_ride_along.should_fire_for", return_value=True),
+            patch("data.repositories.article_repo.insert", _fake_insert),
+            patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+        ):
+            await columnist_service.generate(
+                pool, league_id=1, season=2025,
+                persona_id=persona.id, category=category, context={},
+                _capture_prompt=captured,
+            )
+        assert "NARRATIVE RULE" in captured["system"], f"expected NARRATIVE RULE for {category}"
+
+
+async def test_narrative_rule_omitted_for_tight_single_focus_categories():
+    """A2: single-focus categories (e.g. rookie_watch, award_race, hot_take)
+    must NOT get the wide-angle instruction — it directly fights their
+    voice_notes' brevity requirements."""
+    persona = _persona(voice_notes="Tight single-focus voice.")
+    for category in ("rookie_watch", "award_race", "hot_take", "power_rankings"):
+        captured: dict = {}
+        body_json = json.dumps({
+            "headline": "H", "lede": "L", "key_stats": [], "bullets": ["b"], "verdict": "V",
+        })
+        fake_anthropic_module = SimpleNamespace(
+            AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+        )
+        pool = MagicMock()
+
+        async def _fake_insert(pool_, **insert_kwargs):
+            return 1
+
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+            patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+            patch("services.columnist_ride_along.should_fire_for", return_value=True),
+            patch("data.repositories.article_repo.insert", _fake_insert),
+            patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+        ):
+            await columnist_service.generate(
+                pool, league_id=1, season=2025,
+                persona_id=persona.id, category=category, context={},
+                _capture_prompt=captured,
+            )
+        assert "NARRATIVE RULE" not in captured["system"], f"unexpected NARRATIVE RULE for {category}"
+
+
 async def test_old_shape_headline_body_also_gets_grounding_checked():
     """The legacy {"headline","body"} shape (no 'lede') goes through the same
     grounding gate as the structured shape."""
