@@ -81,6 +81,66 @@ async def _build_batch_game_context(batch_results: list[dict]) -> dict:
     return {"recent_games": recent_games}
 
 
+async def _build_player_form_signals(
+    pool, league_id: int, season: int, performers: list[dict],
+) -> dict[str, dict]:
+    """Compute a real 'recent form vs season/OVR expectation' signal for notable
+    batch performers, reusing the trade system's compute_form_map (Finding #2).
+
+    Player-level "declining/washed/cooked" claims previously had no grounded
+    threshold to check against — unlike team-level streak claims, which are
+    gated on real win_streak/loss_streak values. This gives Jordan Rivera and
+    Hot Take Hour a real number to check a decline claim against, the same way
+    trade_reasoning_fetchers._fetch_player_form grounds buy-low/sell-high
+    framing in trade panels.
+
+    Returns dict keyed by player NAME (how personas reference players in
+    prose) -> {"form_modifier": float, "games_played": int, "read": str}.
+    Only includes players compute_form_map considers to have a sufficient
+    sample (>= 10 games this season) — the same gate the trade system uses —
+    so a decline claim is never grounded off a handful of noisy games.
+    """
+    ids = [p["player_id"] for p in performers if p.get("player_id")]
+    if not ids:
+        return {}
+    try:
+        from services import trade_context_builder
+        ovr_rows = await pool.fetch(
+            "SELECT id, overall FROM players WHERE id = ANY($1)", ids,
+        )
+        ovr_map = {r["id"]: r["overall"] or 80 for r in ovr_rows}
+        form_map = await trade_context_builder.compute_form_map(
+            pool, player_ids=ids, ovr_map=ovr_map, position_map={},
+            league_id=league_id, season=season,
+        )
+    except Exception as exc:
+        log.warning(f"_build_player_form_signals: compute_form_map failed: {exc}")
+        return {}
+
+    signals: dict[str, dict] = {}
+    for p in performers:
+        pid = p.get("player_id")
+        name = p.get("name")
+        if not pid or not name or pid not in form_map:
+            continue
+        modifier, stats = form_map[pid]
+        games = stats.get("games_played", 0)
+        if games < 10:
+            continue  # insufficient sample — same gate compute_form_map itself uses
+        if modifier < 0.92:
+            read = "cold stretch — running well below season/OVR expectation"
+        elif modifier >= 1.10:
+            read = "hot stretch — running well above season/OVR expectation"
+        else:
+            read = "normal form — in line with season expectation"
+        signals[name] = {
+            "form_modifier": modifier,
+            "games_played": games,
+            "read": read,
+        }
+    return signals
+
+
 # fires every ~70 games (weekly)
 _power_list_game_counter: dict[int, int] = {}
 
@@ -818,6 +878,7 @@ async def _maybe_post_columnist(
         if game_top_name and game_top:
             game_top_performer_dict = {
                 "name": game_top_name,
+                "player_id": game_top.get("player_id"),
                 "team": game_top_team_code,
                 "pts": game_top.get("points", 0),
                 "reb": game_top.get("rebounds_off", 0) + game_top.get("rebounds_def", 0),
@@ -857,6 +918,7 @@ async def _maybe_post_columnist(
     if overall_top_scorer and _overall_top_game:
         _top_of_batch = {
             "name": overall_top_scorer,
+            "player_id": _overall_top_game.get("player_id"),
             "team": overall_top_scorer_team,
             "pts": _overall_top_game.get("points", 0),
             "reb": _overall_top_game.get("rebounds_off", 0) + _overall_top_game.get("rebounds_def", 0),
@@ -914,6 +976,19 @@ async def _maybe_post_columnist(
         "top_performer_of_batch": _top_of_batch,
         "games_count": len(batch_results),
     }
+
+    # Player-level form signals (Finding #2) — grounds "declining/washed/hot"
+    # claims about individual performers the same way team streaks are grounded.
+    try:
+        _performers_seen = [_top_of_batch] if _top_of_batch else []
+        for gd in games_data:
+            if gd.get("top_performer"):
+                _performers_seen.append(gd["top_performer"])
+        _form_signals = await _build_player_form_signals(pool, league_id, season, _performers_seen)
+        if _form_signals:
+            batch_context["player_form_signals"] = _form_signals
+    except Exception as _form_exc:
+        log.warning(f"_maybe_post_columnist: player form signal enrichment failed: {_form_exc}")
 
     # 1b: Add standings snapshot.
     try:
