@@ -27,12 +27,13 @@ from services.cpu_trade_posture import (
     is_cornerstone,
 )
 from services.trade_block_builder import _get_franchise_plan
-from services.trade_gates import _apply_final_trade_gates
+from services.trade_gates import _apply_final_trade_gates, _sanity_floor_for_mode
 from services.trade_proposal_scoring import (
     _derive_cap_state,
     _get_trade_target_positions,
     _is_stacked_without_upgrade,
     _position_matches_need,
+    _roster_hole_penalty,
     _score_outgoing_pair,
     _team_a_wants_player,
     _team_archetype_counts,
@@ -1397,6 +1398,35 @@ async def _run_incoming_first_for_team(
         return 0
     # ── End final gates ───────────────────────────────────────────────────────
 
+    # ── B9 (#4): roster-hole soft downweight ──────────────────────────────────
+    # After gates approve, check whether the outgoing side leaves team A with a
+    # position-group hole (skipped for rebuilding/tanking — B4's own carve-out).
+    # Soft penalty, not a hard reject: only abandons the proposal if the
+    # downweighted ratio would ALSO fail the same sanity floor gates already
+    # enforce, matching B6's soft-penalty precedent rather than B1/B5's hard one.
+    _b9_incoming_players = [target_player] + ([secondary_target] if secondary_target else [])
+    _b9_penalty, _b9_holes = _roster_hole_penalty(
+        roster_a_cache, set(offer_player_ids), _b9_incoming_players, _mode_a_floor,
+    )
+    if _b9_holes:
+        _b9_adjusted_ratio = (package_value * _b9_penalty) / max(target_value, 1)
+        _b9_floor = _sanity_floor_for_mode(_mode_a_floor)
+        if _b9_adjusted_ratio < _b9_floor:
+            log.info(
+                "[CPU] %s abandoning proposal to %s: B9 roster-hole downweight "
+                "(holes=%s, adjusted ratio %.2f below %.2f)",
+                team_a.nba_team_code, target_team.nba_team_code,
+                _b9_holes, _b9_adjusted_ratio, _b9_floor,
+            )
+            return 0
+        log.info(
+            "[CPU] %s → %s: B9 roster-hole downweight noted but ratio still clears "
+            "floor (holes=%s, adjusted ratio %.2f >= %.2f) — proceeding",
+            team_a.nba_team_code, target_team.nba_team_code,
+            _b9_holes, _b9_adjusted_ratio, _b9_floor,
+        )
+    # ── End B9 ───────────────────────────────────────────────────────────────
+
     log.info(
         f"Trade check: target={target_value:.1f} package={package_value:.1f} "
         f"ratio={package_value / max(target_value, 1):.2f} "
@@ -2362,10 +2392,12 @@ async def _attempt_outgoing_first_offer(
         _cand_post_trade_roster_b6 = [p for p in _roster_a if p.id not in _cand_outgoing_set_b6]
         _cand_arch_counts_b6 = _team_archetype_counts(_cand_post_trade_roster_b6)
         _b6_rejected = False
+        _cand_ret_players: list = []  # populated for B9's roster-hole check below
         for _rpid in _cand_ret_player_ids:
             _rp_b6 = await player_repo.get_by_id(pool, _rpid)
             if not _rp_b6:
                 continue
+            _cand_ret_players.append(_rp_b6)
             _rp_arch = trade_grading._player_archetype({
                 "position": _rp_b6.position,
                 "tendency_3pt": getattr(_rp_b6, "tendency_3pt", 50) or 50,
@@ -2436,6 +2468,32 @@ async def _attempt_outgoing_first_offer(
                     pass
             continue
         # ── End final gates ───────────────────────────────────────────────────
+
+        # ── B9 (#4): roster-hole soft downweight ──────────────────────────────
+        # Mirrors the incoming-first wiring: soft penalty, not a hard reject —
+        # only skips this candidate (try the next one, loop continues) if the
+        # downweighted ratio would ALSO fail the same sanity floor gates enforce.
+        _b9_penalty, _b9_holes = _roster_hole_penalty(
+            _roster_a, {_cand_pid}, _cand_ret_players, _mode_a,
+        )
+        if _b9_holes:
+            _b9_adjusted_ratio = (_cand_package_value * _b9_penalty) / max(_cand_target_value, 1)
+            _b9_floor = _sanity_floor_for_mode(_mode_a)
+            if _b9_adjusted_ratio < _b9_floor:
+                log.info(
+                    "[CPU outgoing-first] %s → %s: B9 roster-hole downweight reject "
+                    "(candidate pid=%d, holes=%s, adjusted ratio %.2f below %.2f)",
+                    team_a.nba_team_code, _cand_team_b.nba_team_code, _cand_pid,
+                    _b9_holes, _b9_adjusted_ratio, _b9_floor,
+                )
+                continue
+            log.info(
+                "[CPU outgoing-first] %s → %s: B9 roster-hole downweight noted but ratio "
+                "still clears floor (candidate pid=%d, holes=%s, adjusted ratio %.2f >= %.2f)",
+                team_a.nba_team_code, _cand_team_b.nba_team_code, _cand_pid,
+                _b9_holes, _b9_adjusted_ratio, _b9_floor,
+            )
+        # ── End B9 ───────────────────────────────────────────────────────────
 
         # Candidate approved — capture and break.
         best_score = _cand_score

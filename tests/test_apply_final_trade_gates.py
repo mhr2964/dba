@@ -631,7 +631,15 @@ async def test_outgoing_first_tries_next_candidate_when_first_rejected():
         patch.object(_mod.player_repo, "get_active_contract", AsyncMock(side_effect=lambda pool, pid: {
             10: outgoing_contract, 20: incoming_contract_first, 30: incoming_contract_second,
         }.get(pid))),
-        patch.object(_mod.player_repo, "get_roster", AsyncMock(return_value=[outgoing_player])),
+        # Realistic-depth roster (2+ at every core position, 3 at PF) so the
+        # B9 roster-hole check (#4) doesn't spuriously fire on this otherwise-
+        # unrelated candidate-retry test — outgoing_player (PF) leaving still
+        # clears the hole floor since PF has depth beyond just outgoing_player.
+        patch.object(_mod.player_repo, "get_roster", AsyncMock(return_value=[
+            outgoing_player,
+            *[_FakePlayer(100 + i, position=pos)
+              for i, pos in enumerate(["PF", "PF", "PG", "PG", "SG", "SG", "SF", "SF", "C", "C"])],
+        ])),
         patch("services.cpu_trade_proposal_runner._league_scan_counterparties",
               AsyncMock(return_value=[(team_b_first, 1.0, "fit"), (team_b_second, 0.9, "fit")])),
         patch("services.cpu_trade_proposal_runner._derive_return_from_b", _fake_derive_return),
@@ -746,4 +754,221 @@ async def test_incoming_first_b6_remains_soft_penalty():
     )
     assert "B6" not in reason, (
         f"No B6 rejection expected from gate helper; got: {reason!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: B9 (#4) roster-hole downweight causes outgoing-first to try the
+# next candidate, exactly like a real gate rejection would.
+# ---------------------------------------------------------------------------
+
+
+async def test_outgoing_first_skips_candidate_that_creates_a_roster_hole():
+    """Team A's roster has exactly one PF (the outgoing player) and thin depth
+    (2) everywhere else. _apply_final_trade_gates is mocked to always approve
+    (isolates the test to B9, not B1/B5/sanity-floor). Candidate 1 (team 2)
+    returns a non-PF player — doesn't backfill, B9 downweight drops the ratio
+    below the sanity floor, candidate rejected. Candidate 2 (team 3) returns a
+    PF — backfills the hole, B9 finds no hole, trade proceeds.
+    """
+    league = _make_league()
+    team_a = team_repo.Team(
+        id=1, league_id=LEAGUE_ID, nba_team_code="DEN", name="Denver",
+        city="Denver", conference="West", division="Northwest",
+        manager_user_id=None, cpu_mode="contending",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+    team_b_first = team_repo.Team(
+        id=2, league_id=LEAGUE_ID, nba_team_code="HOU", name="Houston",
+        city="Houston", conference="West", division="Southwest",
+        manager_user_id=None, cpu_mode="rebuilding",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+    team_b_second = team_repo.Team(
+        id=3, league_id=LEAGUE_ID, nba_team_code="OKC", name="OKC",
+        city="OKC", conference="West", division="Northwest",
+        manager_user_id=None, cpu_mode="rebuilding",
+        team_offense_rating=None, team_defense_rating=None, pace=None,
+    )
+
+    outgoing_player = player_repo.Player(
+        id=10, league_id=LEAGUE_ID, external_id=None,
+        first_name="Aaron", last_name="Gordon", position="PF",
+        height_in=79, weight_lb=220, birth_date=datetime.date(1995, 9, 16),
+        years_pro=8, is_rookie=False, team_id=1,
+        roster_status="active", overall=76,
+        speed=78, shooting_2pt=72, shooting_3pt=72, shooting_mid=72,
+        finishing=76, playmaking=70, defense=82, rebounding=78,
+        iq=76, potential=76, peak_age_start=26, peak_age_end=30,
+        loyalty=60, money_drive=40, win_drive=70, market_pref="any",
+        star_leverage=40,
+    )
+    outgoing_contract = player_repo.Contract(
+        id=1, league_id=LEAGUE_ID, player_id=10, team_id=1,
+        salary=20_000_000, years_remaining=2, total_years=4,
+        contract_type="standard", signed_in_season=SEASON - 2,
+        is_active=True, terminated_reason=None,
+    )
+    # Candidate 1's return: an SF — does NOT backfill the vacated PF slot.
+    incoming_player_first = player_repo.Player(
+        id=20, league_id=LEAGUE_ID, external_id=None,
+        first_name="Player", last_name="NonBackfill", position="SF",
+        height_in=77, weight_lb=215, birth_date=datetime.date(1996, 1, 22),
+        years_pro=6, is_rookie=False, team_id=2,
+        roster_status="active", overall=76,
+        speed=77, shooting_2pt=72, shooting_3pt=74, shooting_mid=72,
+        finishing=72, playmaking=70, defense=80, rebounding=68,
+        iq=74, potential=76, peak_age_start=26, peak_age_end=30,
+        loyalty=50, money_drive=50, win_drive=60, market_pref="any",
+        star_leverage=30,
+    )
+    # Candidate 2's return: a PF — DOES backfill the vacated slot.
+    incoming_player_second = player_repo.Player(
+        id=30, league_id=LEAGUE_ID, external_id=None,
+        first_name="Player", last_name="Backfill", position="PF",
+        height_in=81, weight_lb=230, birth_date=datetime.date(1997, 3, 10),
+        years_pro=5, is_rookie=False, team_id=3,
+        roster_status="active", overall=76,
+        speed=72, shooting_2pt=74, shooting_3pt=68, shooting_mid=72,
+        finishing=74, playmaking=60, defense=78, rebounding=76,
+        iq=74, potential=76, peak_age_start=26, peak_age_end=31,
+        loyalty=55, money_drive=45, win_drive=65, market_pref="any",
+        star_leverage=25,
+    )
+    incoming_contract_first = player_repo.Contract(
+        id=2, league_id=LEAGUE_ID, player_id=20, team_id=2,
+        salary=18_000_000, years_remaining=2, total_years=3,
+        contract_type="standard", signed_in_season=SEASON - 1,
+        is_active=True, terminated_reason=None,
+    )
+    incoming_contract_second = player_repo.Contract(
+        id=3, league_id=LEAGUE_ID, player_id=30, team_id=3,
+        salary=18_000_000, years_remaining=2, total_years=3,
+        contract_type="standard", signed_in_season=SEASON - 1,
+        is_active=True, terminated_reason=None,
+    )
+
+    pool = MagicMock()
+
+    async def _fetch(sql, *args):
+        if "pending_counterparty" in sql.lower():
+            return []
+        return []
+
+    async def _fetchval(sql, *args):
+        return None
+
+    async def _fetchrow(sql, *args):
+        return None
+
+    pool.fetch = _fetch
+    pool.fetchval = _fetchval
+    pool.fetchrow = _fetchrow
+
+    plan_a = {
+        "goal": "win_now",
+        "surplus_player_ids": [10],
+        "flex_player_ids": [],
+        "core_player_ids": [],
+        "asset_targets": [],
+        "derived_from_record": {},
+    }
+    postures = {
+        1: {"mode": "contending", "urgency": "comfortable", "avg_age": 28.0,
+            "projected_wins": 50, "conf_rank": 2},
+        2: {"mode": "rebuilding", "urgency": "tanking", "avg_age": 24.0,
+            "projected_wins": 25, "conf_rank": 14},
+        3: {"mode": "rebuilding", "urgency": "tanking", "avg_age": 23.0,
+            "projected_wins": 22, "conf_rank": 15},
+    }
+
+    async def _fake_derive_return(pool, league, team_b, outgoing_player,
+                                   asset_targets_a, taken_player_ids,
+                                   recently_signed_ids, plan_b, posture_b,
+                                   cp_contexts, cp_r1_counts):
+        if team_b.id == 2:
+            return ([20], [], 35.0, {20: incoming_contract_first})
+        return ([30], [], 35.0, {30: incoming_contract_second})
+
+    # Both candidates score equally so team 2 (inserted first / higher fit)
+    # sorts first — the retry must be driven by B9, not the score order.
+    def _fake_score(team_a, outgoing_pid, team_b, speculative_return_player_ids,
+                    speculative_return_pick_ids, speculative_return_players,
+                    plan_a, posture_a, roster_a, cp_contexts, cp_r1_counts=None,
+                    incoming_contracts=None):
+        return 2.0 if team_b.id == 2 else 1.5
+
+    propose_calls: list[int] = []
+
+    async def _fake_propose(**kwargs):
+        propose_calls.append(kwargs["counterparty_team"].id)
+
+        class _FakeTrade:
+            id = 999
+            status = "pending_commissioner"
+
+        return _FakeTrade()
+
+    async def _fake_auto_approve(pool, league, trade, guild):
+        pass
+
+    # Always approve — isolates the test to B9's own retry-on-hole behavior,
+    # not B1/B5/sanity-floor (already covered by tests 2/3 above).
+    async def _fake_gates_always_ok(**kwargs):
+        return True, ""
+
+    # Thin roster: exactly two PF (the outgoing player + one backup) and 2 at
+    # every other core position — matches _roster_hole_penalty's hole_floor(2)/
+    # surplus_floor(3) defaults. Losing the outgoing PF with no PF coming back
+    # drops PF to 1 (a hole); a PF coming back keeps it at 2 (no hole).
+    _thin_roster = [
+        outgoing_player,
+        *[_FakePlayer(100 + i, position=pos)
+          for i, pos in enumerate(["PF", "PG", "PG", "SG", "SG", "SF", "SF", "C", "C"])],
+    ]
+
+    with (
+        patch.object(_mod.player_repo, "get_by_id", AsyncMock(side_effect=lambda pool, pid: {
+            10: outgoing_player, 20: incoming_player_first, 30: incoming_player_second,
+        }.get(pid))),
+        patch.object(_mod.player_repo, "get_active_contract", AsyncMock(side_effect=lambda pool, pid: {
+            10: outgoing_contract, 20: incoming_contract_first, 30: incoming_contract_second,
+        }.get(pid))),
+        patch.object(_mod.player_repo, "get_roster", AsyncMock(return_value=_thin_roster)),
+        patch("services.cpu_trade_proposal_runner._league_scan_counterparties",
+              AsyncMock(return_value=[(team_b_first, 1.0, "fit"), (team_b_second, 0.9, "fit")])),
+        patch("services.cpu_trade_proposal_runner._derive_return_from_b", _fake_derive_return),
+        patch("services.cpu_trade_proposal_runner._score_outgoing_pair", _fake_score),
+        patch("services.cpu_trade_proposal_runner._apply_final_trade_gates", _fake_gates_always_ok),
+        patch("services.cpu_trade_proposal_runner._team_archetype_counts", return_value={}),
+        patch("services.cpu_trade_proposal_runner.trade_grading._player_archetype", return_value=None),
+        patch.object(_mod.trade_service, "propose", _fake_propose),
+        patch("services.cpu_trade_proposal_runner._maybe_auto_approve", _fake_auto_approve),
+    ):
+        result = await _mod._attempt_outgoing_first_offer(
+            pool=pool,
+            league=league,
+            season=SEASON,
+            team_a=team_a,
+            cpu_teams=[team_a, team_b_first, team_b_second],
+            block_by_team={1: [10]},
+            used_pairs=set(),
+            taken_player_ids=set(),
+            deadline_game_index=50,
+            recently_signed_ids=set(),
+            guild=None,
+            postures=postures,
+            cp_plans={1: plan_a, 2: None, 3: None},
+            cp_contexts={1: {"current_payroll": int(SALARY_CAP * 0.85)}},
+            cp_r1_counts={},
+            plan_a=plan_a,
+            posture_a="contending",
+        )
+
+    assert result == 1, (
+        f"_attempt_outgoing_first_offer must fall through to the backfilling "
+        f"candidate after B9 skips the hole-creating one; got {result}"
+    )
+    assert propose_calls == [3], (
+        f"propose must fire only for the backfilling candidate (team 3); got {propose_calls}"
     )

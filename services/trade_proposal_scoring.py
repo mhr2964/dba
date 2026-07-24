@@ -255,6 +255,79 @@ def _is_stacked_without_upgrade(
     return incoming_overall < _weakest_ovr + upgrade_margin
 
 
+_CORE_POSITIONS: tuple[str, ...] = ("PG", "SG", "SF", "PF", "C")
+
+# Posture modes where a roster hole doesn't matter — a genuine tear-down moves
+# talent regardless of what it leaves behind at any one position.
+_DEEP_TANK_MODES: frozenset[str] = frozenset({"rebuilding", "tanking"})
+
+
+def _roster_hole_penalty(
+    roster: list,
+    outgoing_player_ids: set[int],
+    incoming_players: list,
+    posture_mode: str,
+    hole_floor: int = 2,
+    surplus_floor: int = 3,
+    penalty: float = 0.75,
+) -> tuple[float, list[str]]:
+    """B9 (#4): Soft downweight when a trade leaves the team's post-trade
+    roster with a position-group hole.
+
+    B4 in docs/design/trade-logic-rules.md was pure documentation with zero
+    implementation before this — nothing checked whether a trade left an
+    obvious gap (e.g. a big-man hole) with no plausible followup. This ships
+    the "downweight the original trade" half of B4's two documented options
+    (queueing a same-batch followup proposal is a larger change, left for a
+    future pass) — matching B6's soft-penalty precedent (a value multiplier
+    the caller compares against its own threshold) rather than B1/B5's hard
+    reject, per the finding's own guidance.
+
+    Returns (penalty_multiplier, hole_positions). penalty_multiplier is 1.0
+    (no-op) unless a hole is found, in which case it's `penalty` (0.75 by
+    default — a real but non-fatal downweight, distinct from B6's 0.65/0.85
+    archetype tiers so the two signals aren't confusable in logs).
+
+    A "hole" is a core position (PG/SG/SF/PF/C) where the post-trade count
+    (current roster - outgoing + incoming) drops below hole_floor (2), UNLESS
+    the team was already deep in surplus there pre-trade (>= surplus_floor,
+    matching #2's _is_stacked_without_upgrade stacked_floor convention) --
+    losing a 4th center down to 3 isn't a hole.
+
+    Skipped entirely (always returns (1.0, [])) when posture_mode is
+    rebuilding/tanking — B4's own carve-out: holes don't matter when the team
+    is genuinely tearing down.
+    """
+    if posture_mode in _DEEP_TANK_MODES:
+        return 1.0, []
+
+    _pre_counts: dict[str, int] = dict.fromkeys(_CORE_POSITIONS, 0)
+    for p in roster:
+        pos = getattr(p, "position", None)
+        if pos in _pre_counts:
+            _pre_counts[pos] += 1
+
+    _post_counts: dict[str, int] = dict.fromkeys(_CORE_POSITIONS, 0)
+    for p in roster:
+        if getattr(p, "id", None) in outgoing_player_ids:
+            continue
+        pos = getattr(p, "position", None)
+        if pos in _post_counts:
+            _post_counts[pos] += 1
+    for p in incoming_players:
+        pos = getattr(p, "position", None)
+        if pos in _post_counts:
+            _post_counts[pos] += 1
+
+    _holes = [
+        pos for pos in _CORE_POSITIONS
+        if _post_counts[pos] < hole_floor and _pre_counts[pos] < surplus_floor
+    ]
+    if _holes:
+        return penalty, _holes
+    return 1.0, []
+
+
 def _score_outgoing_pair(
     team_a,
     outgoing_pid: int,

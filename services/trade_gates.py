@@ -13,6 +13,21 @@ from services.trade_proposal_scoring import _team_a_wants_player
 log = get_logger(__name__)
 
 
+def _sanity_floor_for_mode(mode: str) -> float:
+    """Mode-specific minimum package/target value ratio (Gate 1).
+
+    Extracted so callers outside _apply_final_trade_gates (e.g. the B9
+    roster-hole downweight in cpu_trade_proposal_runner.py) can compare a
+    penalty-adjusted ratio against the same floor instead of hardcoding a
+    second copy of these thresholds.
+    """
+    if mode == "contending":
+        return 0.85
+    if mode == "play_in_fringe":
+        return 0.87
+    return 0.90
+
+
 async def _apply_final_trade_gates(
     pool,
     league,
@@ -52,11 +67,7 @@ async def _apply_final_trade_gates(
     _mode_a = posture_a
 
     # ── Gate 1: Sanity floor ────────────────────────────────────────────────
-    _sanity_floor = (
-        0.85 if _mode_a == "contending"
-        else 0.87 if _mode_a == "play_in_fringe"
-        else 0.90
-    )
+    _sanity_floor = _sanity_floor_for_mode(_mode_a)
     _final_ratio = package_value / max(target_value, 1)
     if _final_ratio < _sanity_floor:
         return False, (
