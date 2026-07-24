@@ -207,6 +207,31 @@ def test_derive_tendency_respecter_all_big_top3_does_not_force_guard_wing_role()
     assert top_player_role in big_primary_roles
 
 
+def test_derive_tendency_respecter_step4_diversifies_identical_players_post_fix():
+    """Finding #4 fix: Step 4 now applies a mild per-pass diversity nudge
+    (role_usage_counts * _ROLE_DIVERSITY_PENALTY) so identical bench players
+    no longer all independently converge on the exact same best-fitting role.
+
+    Pre-fix, this exact roster produced len(set(bench_roles)) == 1 (confirmed
+    manually before the nudge landed -- Step 4 had zero uniqueness constraint
+    beyond the primary-scorer/anchor exclusions from Steps 2-3). The nudge is
+    soft by design (not a hard cap), so this only asserts SOME diversification
+    appears, not full 1-per-role uniqueness.
+    """
+    roster = [
+        _roster_player(1, 95, position="PG", tendency_drive=80),
+        _roster_player(2, 90, position="C", reb_tendency=70, blk_tendency=60),
+        *[_roster_player(i, 70, position="SF") for i in range(3, 13)],
+    ]
+    assignments = rs._derive_tendency_respecter(roster)
+    # Bottom-3 OVR (ids 10, 11, 12) get depth roles -- the remaining identical
+    # bench players (ids 3-9) go through Step 4's argmax.
+    bench_roles = [a["role"] for a in assignments if a["player_id"] in range(3, 10)]
+    assert len(set(bench_roles)) > 1, (
+        f"Diversity nudge should spread identical bench players across >1 role, got {set(bench_roles)}"
+    )
+
+
 def test_derive_tendency_respecter_returns_touch_share_and_rationale():
     roster = [_roster_player(i, 80 - i) for i in range(5)]
     assignments = rs._derive_tendency_respecter(roster)

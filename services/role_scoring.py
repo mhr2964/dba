@@ -241,6 +241,13 @@ _BLK_THRESHOLD = 30
 _DEFENSE_LOW_USAGE_THRESHOLD = 40
 
 
+# Finding #4 (realism audit): mild per-pass diversity nudge for Step 4's
+# general-role assignment. Soft by design -- a nudge, not a hard cap, so a
+# genuinely lopsided roster (e.g. a team that really did draft/sign 3 similar
+# wings) can still stack a role if the fit gap is large enough to survive it.
+_ROLE_DIVERSITY_PENALTY = 6.0
+
+
 def _age_from_birth(birth_date: Optional[datetime.date], season: int) -> Optional[float]:
     """Estimate age at season-start (October of that year)."""
     if birth_date is None:
@@ -637,6 +644,13 @@ def _derive_tendency_respecter(
         if r not in exclusions and r not in _depth_role_names
     ]
 
+    # Finding #4: track how many players have already claimed each general
+    # role this pass so a mild penalty can be applied proportional to reuse --
+    # nothing enforced Step 4 diversity before, so a genuinely lopsided but
+    # not-identical bench (multiple similar wings/bigs) could converge on 2-3
+    # duplicate archetypes with zero rim-protector-type bigs off the bench.
+    role_usage_counts: dict[str, int] = {}
+
     for p in sorted_by_ovr:
         pid = p["player_id"]
         if pid in assigned:
@@ -647,10 +661,12 @@ def _derive_tendency_respecter(
         best_role = "glue_guy"
         for role in general_roles:
             s = _score_role_fit(p, role, rank, n, ctx)
+            s -= role_usage_counts.get(role, 0) * _ROLE_DIVERSITY_PENALTY
             if s > best_score:
                 best_score = s
                 best_role = role
 
+        role_usage_counts[best_role] = role_usage_counts.get(best_role, 0) + 1
         assigned[pid] = best_role
         # Build rationale from the strongest tendency signal
         sig_parts = []
