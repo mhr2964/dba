@@ -81,6 +81,66 @@ async def _build_batch_game_context(batch_results: list[dict]) -> dict:
     return {"recent_games": recent_games}
 
 
+async def _build_player_form_signals(
+    pool, league_id: int, season: int, performers: list[dict],
+) -> dict[str, dict]:
+    """Compute a real 'recent form vs season/OVR expectation' signal for notable
+    batch performers, reusing the trade system's compute_form_map (Finding #2).
+
+    Player-level "declining/washed/cooked" claims previously had no grounded
+    threshold to check against — unlike team-level streak claims, which are
+    gated on real win_streak/loss_streak values. This gives Jordan Rivera and
+    Hot Take Hour a real number to check a decline claim against, the same way
+    trade_reasoning_fetchers._fetch_player_form grounds buy-low/sell-high
+    framing in trade panels.
+
+    Returns dict keyed by player NAME (how personas reference players in
+    prose) -> {"form_modifier": float, "games_played": int, "read": str}.
+    Only includes players compute_form_map considers to have a sufficient
+    sample (>= 10 games this season) — the same gate the trade system uses —
+    so a decline claim is never grounded off a handful of noisy games.
+    """
+    ids = [p["player_id"] for p in performers if p.get("player_id")]
+    if not ids:
+        return {}
+    try:
+        from services import trade_context_builder
+        ovr_rows = await pool.fetch(
+            "SELECT id, overall FROM players WHERE id = ANY($1)", ids,
+        )
+        ovr_map = {r["id"]: r["overall"] or 80 for r in ovr_rows}
+        form_map = await trade_context_builder.compute_form_map(
+            pool, player_ids=ids, ovr_map=ovr_map, position_map={},
+            league_id=league_id, season=season,
+        )
+    except Exception as exc:
+        log.warning(f"_build_player_form_signals: compute_form_map failed: {exc}")
+        return {}
+
+    signals: dict[str, dict] = {}
+    for p in performers:
+        pid = p.get("player_id")
+        name = p.get("name")
+        if not pid or not name or pid not in form_map:
+            continue
+        modifier, stats = form_map[pid]
+        games = stats.get("games_played", 0)
+        if games < 10:
+            continue  # insufficient sample — same gate compute_form_map itself uses
+        if modifier < 0.92:
+            read = "cold stretch — running well below season/OVR expectation"
+        elif modifier >= 1.10:
+            read = "hot stretch — running well above season/OVR expectation"
+        else:
+            read = "normal form — in line with season expectation"
+        signals[name] = {
+            "form_modifier": modifier,
+            "games_played": games,
+            "read": read,
+        }
+    return signals
+
+
 # fires every ~70 games (weekly)
 _power_list_game_counter: dict[int, int] = {}
 
@@ -138,24 +198,32 @@ async def _maybe_post_power_list(
             for r in streak_rows
         ]
 
-        # Build rank_deltas from the most recent previous power_rankings article.
+        # Build rank_deltas from the most recent previous power_rankings article's
+        # STRUCTURED rank data (team code -> rank), not by regex-parsing the LLM's
+        # own rendered markdown (Finding #5) -- any formatting deviation in the
+        # rendered body used to silently degrade every team to "NEW".
         # Positive delta = team moved up; negative = down; 0 = unchanged; missing = NEW.
         rank_deltas: dict[str, int] = {}
         prev_articles = await article_repo.recent_by_persona(pool, league_id, "power_list", limit=1, season=season)
         if prev_articles:
-            prev_body = prev_articles[0].get("body", "") or ""
-            # Extract team code → rank from "> **N.** TEAM_CODE" lines.
-            prev_ranks: dict[str, int] = {}
-            for m in re.finditer(r">\s*\*\*(\d+)\.\*\*\s+([A-Z]{2,4})", prev_body):
-                prev_ranks[m.group(2)] = int(m.group(1))
+            prev_ranks: dict[str, int] = prev_articles[0].get("structured_data") or {}
+            if not prev_ranks:
+                # Legacy article predating the structured_data column — fall back to
+                # regex-parsing its rendered body so a mid-season upgrade doesn't
+                # reset every team to NEW on the very next post.
+                prev_body = prev_articles[0].get("body", "") or ""
+                for m in re.finditer(r">\s*\*\*(\d+)\.\*\*\s+([A-Z]{2,4})", prev_body):
+                    prev_ranks[m.group(2)] = int(m.group(1))
+                if prev_ranks:
+                    log.debug("_maybe_post_power_list: prior article had no structured_data — used legacy regex parse")
+                else:
+                    log.debug("_maybe_post_power_list: previous article had no parseable ranks — all NEW")
             # Current rank is positional in the streak_rows (sorted by wins DESC already).
             for cur_rank, row in enumerate(streak_rows, start=1):
                 code = row["nba_team_code"]
                 if code in prev_ranks:
                     rank_deltas[code] = prev_ranks[code] - cur_rank  # positive = moved up
                 # else: not in prev_ranks → missing key → LLM uses NEW
-            if not prev_ranks:
-                log.debug("_maybe_post_power_list: previous article had no parseable ranks — all NEW")
         else:
             log.debug("_maybe_post_power_list: no prior ranking this season — all NEW")
 
@@ -164,12 +232,20 @@ async def _maybe_post_power_list(
             # Tell the LLM explicitly so it doesn't invent arrows.
             context["rank_deltas_note"] = "No prior ranking exists this season; use NEW for every team's arrow position."
 
+        # The CURRENT ranking, structured (team code -> rank), persisted alongside
+        # this article's rendered text so the NEXT post's rank_deltas read real
+        # data instead of re-parsing this post's prose.
+        current_rank_data: dict[str, int] = {
+            row["nba_team_code"]: cur_rank for cur_rank, row in enumerate(streak_rows, start=1)
+        }
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
                 persona_id="power_list",
                 category="power_rankings",
                 context=context,
+                structured_data=current_rank_data,
             ),
             timeout=20.0,
         )
@@ -195,6 +271,61 @@ async def _maybe_post_power_list(
 
 # fires every ~70 games (weekly)
 _rookie_watch_game_counter: dict[int, int] = {}
+
+# Recency-weighting knobs for rookie_watch (Finding #6) — the most recent
+# _RECENCY_WINDOW games count _RECENCY_WEIGHT times as much as the rest of the
+# season-to-date sample, so an October hot streak doesn't dominate a stat line
+# the column frames as "current form" once the rookie has cooled off.
+_RECENCY_WINDOW = 15
+_RECENCY_WEIGHT = 2.0
+
+
+def _recency_weighted_avg(games: list[dict], stat_key: str) -> float:
+    """Weighted average of stat_key across games (assumed sorted most-recent-first),
+    with the first _RECENCY_WINDOW entries weighted _RECENCY_WEIGHT times as heavily."""
+    if not games:
+        return 0.0
+    total_weight = 0.0
+    total_value = 0.0
+    for i, g in enumerate(games):
+        w = _RECENCY_WEIGHT if i < _RECENCY_WINDOW else 1.0
+        total_weight += w
+        total_value += (g.get(stat_key) or 0) * w
+    return total_value / total_weight if total_weight else 0.0
+
+
+def _build_rookie_watch_stats(box_rows: list[dict]) -> list[dict]:
+    """Group per-game rookie box scores by player and compute recency-weighted
+    PPG/RPG/APG (Finding #6) instead of a flat season-to-date average.
+
+    Previously the SQL query pulled the whole season with no recency window,
+    so a rookie who was excellent in October and has since cooled off still
+    showed a stat line dominated by early performance, which the column then
+    framed as current form. box_rows is one row per (rookie, game) this
+    season, each with player_id/name/team/points/rebounds/assists/game_index;
+    game_index orders games chronologically within a season so "most recent"
+    is well-defined even mid-season.
+    """
+    by_player: dict[int, dict] = {}
+    for row in box_rows:
+        pid = row["player_id"]
+        entry = by_player.setdefault(pid, {"name": row["name"], "team": row["team"], "games": []})
+        entry["games"].append(row)
+
+    out: list[dict] = []
+    for pid, entry in by_player.items():
+        games = sorted(entry["games"], key=lambda g: g.get("game_index") or 0, reverse=True)
+        out.append({
+            "id": pid,
+            "name": entry["name"],
+            "team": entry["team"],
+            "ppg": round(_recency_weighted_avg(games, "points"), 1),
+            "rpg": round(_recency_weighted_avg(games, "rebounds"), 1),
+            "apg": round(_recency_weighted_avg(games, "assists"), 1),
+            "gp": len(games),
+        })
+    out.sort(key=lambda r: r["ppg"], reverse=True)
+    return out[:10]
 
 
 async def _maybe_post_rookie_watch(
@@ -223,27 +354,26 @@ async def _maybe_post_rookie_watch(
     try:
         context = await _build_batch_game_context(batch_results)
 
-        # Fetch rookie players and their recent stat averages.
-        rookie_rows = await pool.fetch(
+        # Fetch one row per (rookie, game) this season — game_index orders them
+        # chronologically so _build_rookie_watch_stats can recency-weight the
+        # averages instead of flattening the whole season into one number.
+        rookie_box_rows = await pool.fetch(
             """
-            SELECT p.id, p.first_name || ' ' || p.last_name AS name,
+            SELECT p.id AS player_id, p.first_name || ' ' || p.last_name AS name,
                    t.nba_team_code AS team,
-                   ROUND(AVG(b.points)::numeric, 1) AS ppg,
-                   ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
-                   ROUND(AVG(b.assists)::numeric, 1) AS apg,
-                   COUNT(b.id) AS gp
+                   b.points AS points,
+                   b.rebounds_off + b.rebounds_def AS rebounds,
+                   b.assists AS assists,
+                   g.game_index AS game_index
             FROM players p
             JOIN teams t ON t.id = p.team_id
-            LEFT JOIN game_box_scores b ON b.player_id = p.id
-            LEFT JOIN games g ON g.id = b.game_id AND g.season = $2
+            JOIN game_box_scores b ON b.player_id = p.id
+            JOIN games g ON g.id = b.game_id AND g.season = $2
             WHERE p.league_id = $1 AND p.is_rookie = true
-            GROUP BY p.id, t.nba_team_code
-            ORDER BY AVG(b.points) DESC NULLS LAST
-            LIMIT 10
             """,
             league_id, season,
         )
-        rookies = [dict(r) for r in rookie_rows]
+        rookies = _build_rookie_watch_stats([dict(r) for r in rookie_box_rows])
         if not rookies:
             log.info("_maybe_post_rookie_watch: no rookies found — skipping")
             return
@@ -730,6 +860,175 @@ _columnist_rotation_index: dict[int, int] = {}
 # their multi-episode storylines alive.  Keyed by league_id so multi-league bots work.
 _HTH_NARRATIVES: dict[int, dict] = {}
 
+
+async def _fetch_hth_seed_data(pool, league_id: int, season: int) -> tuple[list[dict], str | None]:
+    """Fetch the current top-20-scorers pool (>=10 games) and current #1-by-wins
+    team code -- the raw data both initial HTH narrative seeding and periodic
+    re-validation are built from (Finding #3)."""
+    seed_rows = await pool.fetch(
+        """
+        SELECT p.id, p.first_name || ' ' || p.last_name AS player_name,
+               t.nba_team_code AS team_code, t.conference,
+               AVG(b.points) AS ppg,
+               AVG(b.rebounds_off + b.rebounds_def) AS rpg,
+               AVG(b.assists) AS apg,
+               COUNT(b.id) AS gp
+        FROM players p
+        JOIN game_box_scores b ON b.player_id = p.id
+        JOIN games g ON g.id = b.game_id
+        JOIN teams t ON t.id = p.team_id
+        WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
+        GROUP BY p.id, t.nba_team_code, t.conference
+        HAVING COUNT(b.id) >= 10
+        ORDER BY AVG(b.points) DESC
+        LIMIT 20
+        """,
+        league_id, season,
+    )
+    std_rows = await pool.fetch(
+        """
+        SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
+        FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
+        WHERE sc.league_id = $1 AND sc.season = $2
+        ORDER BY sc.wins DESC LIMIT 1
+        """,
+        league_id, season,
+    )
+    top_team = std_rows[0]["nba_team_code"] if std_rows else None
+    return [dict(r) for r in seed_rows], top_team
+
+
+def _build_hth_sleeper_slot(seed_rows: list[dict]) -> dict | None:
+    """sleeper_pick: the current top scorer, framed as Dave's underrated pick."""
+    if not seed_rows:
+        return None
+    top = seed_rows[0]
+    return {
+        "player_id": top["id"],
+        "text": (
+            f"Dave has been insisting all season that {top['player_name']} is criminally underrated "
+            f"and deserves more recognition."
+        ),
+    }
+
+
+def _build_hth_fraud_slot(top_team: str | None) -> dict | None:
+    """fraud_call: the current #1-by-wins team, framed as Tony's 'paper tiger' skepticism."""
+    if not top_team:
+        return None
+    return {
+        "team_code": top_team,
+        "text": (
+            f"Tony has been calling {top_team} a 'paper tiger' since day one — "
+            f"great record, no real test, waiting to collapse."
+        ),
+    }
+
+
+def _build_hth_rivalry_slot(seed_rows: list[dict]) -> dict | None:
+    """rivalry: the #2/#3 scorers, framed as a season-long Dave/Tony debate."""
+    if len(seed_rows) <= 2:
+        return None
+    a, b = seed_rows[1], seed_rows[2]
+    return {
+        "player_a_id": a["id"],
+        "player_b_id": b["id"],
+        "text": (
+            f"Dave and Tony have been tracking the {a['team_code']} vs {b['team_code']} rivalry — "
+            f"{a['player_name']} vs {b['player_name']} — all season, arguing who's the better player."
+        ),
+    }
+
+
+async def _seed_or_revalidate_hth_narratives(pool, league_id: int, season: int) -> None:
+    """Seed HTH's season-long narratives on first use, then re-validate each
+    frozen premise against CURRENT data on every subsequent fire (Finding #3).
+
+    Previously sleeper_pick/fraud_call/rivalry were seeded ONCE from early
+    (>=10-game) data and re-injected verbatim for the rest of the season with
+    no check for whether the premise was still true — a 'paper tiger' team
+    that keeps winning without a real challenger, or a 'sleeper' who gets
+    traded away, would keep getting the same stale framing forever. This runs
+    the same lightweight seed query every time HTH fires and swaps out (or
+    retires) any slot whose subject is no longer supported by current data:
+    sleeper_pick/rivalry regenerate when a named player falls out of the
+    current top-20-scorers qualifying pool (traded, injured, cooled off past
+    the sample threshold); fraud_call regenerates when a different team now
+    holds the #1-by-wins spot.
+    """
+    try:
+        seed_rows, top_team = await _fetch_hth_seed_data(pool, league_id, season)
+    except Exception as exc:
+        log.warning(f"HTH narrative seed/revalidate fetch failed: {exc}")
+        _HTH_NARRATIVES.setdefault(league_id, {})
+        return
+
+    current = _HTH_NARRATIVES.get(league_id)
+    if current is None:
+        # First use for this league — seed from scratch.
+        _HTH_NARRATIVES[league_id] = {
+            "sleeper_pick": _build_hth_sleeper_slot(seed_rows),
+            "fraud_call": _build_hth_fraud_slot(top_team),
+            "rivalry": _build_hth_rivalry_slot(seed_rows),
+        }
+        log.info(f"HTH narratives seeded for league {league_id}: {_HTH_NARRATIVES[league_id]}")
+        return
+
+    seed_ids = {r["id"] for r in seed_rows}
+
+    sleeper = current.get("sleeper_pick")
+    if sleeper and sleeper.get("player_id") not in seed_ids:
+        new_slot = _build_hth_sleeper_slot(seed_rows)
+        current["sleeper_pick"] = new_slot
+        log.info(f"HTH sleeper_pick premise flipped for league {league_id} — regenerated: {new_slot}")
+
+    fraud = current.get("fraud_call")
+    if fraud and fraud.get("team_code") != top_team:
+        new_slot = _build_hth_fraud_slot(top_team)
+        current["fraud_call"] = new_slot
+        log.info(f"HTH fraud_call premise flipped for league {league_id} — regenerated: {new_slot}")
+
+    rivalry = current.get("rivalry")
+    if rivalry and (rivalry.get("player_a_id") not in seed_ids or rivalry.get("player_b_id") not in seed_ids):
+        new_slot = _build_hth_rivalry_slot(seed_rows)
+        current["rivalry"] = new_slot
+        log.info(f"HTH rivalry premise flipped for league {league_id} — regenerated: {new_slot}")
+
+    _HTH_NARRATIVES[league_id] = current
+
+
+# Size of the lottery odds pool _compute_lottery_odds normalizes across —
+# mirrors the real NBA's ~14-team non-playoff lottery field so odds reflect
+# actual record gaps across the whole tanking race, not just the 5 rows shown.
+_LOTTERY_POOL_SIZE = 14
+
+
+def _compute_lottery_odds(pool_rows: list[dict]) -> dict[int, float]:
+    """Compute real, record-gap-sensitive draft lottery odds from actual
+    standings (Finding #4) instead of a hardcoded rank-position array.
+
+    Weights each team in the lottery pool by inverse win percentage (worse
+    record = more ping-pong balls), normalized so the pool sums to 100%.
+    Unlike a fixed rank-only spread (14.0/13.4/12.7/12.0/10.5 regardless of
+    how bunched or spread the bottom standings actually are), two teams with
+    a real multi-game gap now get visibly different odds while two teams a
+    half-game apart land close together.
+    """
+    if not pool_rows:
+        return {}
+    weights: dict[int, float] = {}
+    for row in pool_rows:
+        wins = row.get("wins", 0) or 0
+        losses = row.get("losses", 0) or 0
+        games = wins + losses
+        win_pct = (wins / games) if games > 0 else 0.0
+        # Floor keeps a still-undefeated-but-untested team (games=0, early
+        # season) from producing a zero-weight edge case.
+        weights[row["team_id"]] = max(0.02, 1.0 - win_pct)
+    total = sum(weights.values()) or 1.0
+    return {tid: round(w / total * 100.0, 1) for tid, w in weights.items()}
+
+
 # Columnist force-mode cadence: minimum game-index gap between articles when
 # force=True.  70 games ~= 7 game-days of 10 games each.
 _COLUMNIST_FORCE_MIN_GAP: int = 70
@@ -818,6 +1117,7 @@ async def _maybe_post_columnist(
         if game_top_name and game_top:
             game_top_performer_dict = {
                 "name": game_top_name,
+                "player_id": game_top.get("player_id"),
                 "team": game_top_team_code,
                 "pts": game_top.get("points", 0),
                 "reb": game_top.get("rebounds_off", 0) + game_top.get("rebounds_def", 0),
@@ -857,6 +1157,7 @@ async def _maybe_post_columnist(
     if overall_top_scorer and _overall_top_game:
         _top_of_batch = {
             "name": overall_top_scorer,
+            "player_id": _overall_top_game.get("player_id"),
             "team": overall_top_scorer_team,
             "pts": _overall_top_game.get("points", 0),
             "reb": _overall_top_game.get("rebounds_off", 0) + _overall_top_game.get("rebounds_def", 0),
@@ -914,6 +1215,19 @@ async def _maybe_post_columnist(
         "top_performer_of_batch": _top_of_batch,
         "games_count": len(batch_results),
     }
+
+    # Player-level form signals (Finding #2) — grounds "declining/washed/hot"
+    # claims about individual performers the same way team streaks are grounded.
+    try:
+        _performers_seen = [_top_of_batch] if _top_of_batch else []
+        for gd in games_data:
+            if gd.get("top_performer"):
+                _performers_seen.append(gd["top_performer"])
+        _form_signals = await _build_player_form_signals(pool, league_id, season, _performers_seen)
+        if _form_signals:
+            batch_context["player_form_signals"] = _form_signals
+    except Exception as _form_exc:
+        log.warning(f"_maybe_post_columnist: player form signal enrichment failed: {_form_exc}")
 
     # 1b: Add standings snapshot.
     try:
@@ -1174,71 +1488,16 @@ async def _maybe_post_columnist(
         columnist_context = dict(batch_context)
         columnist_context["format_variant"] = _FORMAT_VARIANTS[(_columnist_rotation_index[league_id] - 1) % len(_FORMAT_VARIANTS)]
 
-        # Seed season-long HTH narratives on first use per league, then inject every time.
+        # Seed season-long HTH narratives on first use per league; re-validate
+        # each frozen premise against current data on every subsequent fire.
         global _HTH_NARRATIVES
-        if league_id not in _HTH_NARRATIVES:
-            try:
-                # Seed: top scorer = "sleeper" Dave has been high on; best team = "fraud"
-                # Tony doubts; two closest-stat players on different teams = "rivalry."
-                _seed_rows = await pool.fetch(
-                    """
-                    SELECT p.id, p.first_name || ' ' || p.last_name AS player_name,
-                           t.nba_team_code AS team_code, t.conference,
-                           AVG(b.points) AS ppg,
-                           AVG(b.rebounds_off + b.rebounds_def) AS rpg,
-                           AVG(b.assists) AS apg,
-                           COUNT(b.id) AS gp
-                    FROM players p
-                    JOIN game_box_scores b ON b.player_id = p.id
-                    JOIN games g ON g.id = b.game_id
-                    JOIN teams t ON t.id = p.team_id
-                    WHERE g.league_id = $1 AND g.season = $2 AND g.season_type = 'regular'
-                    GROUP BY p.id, t.nba_team_code, t.conference
-                    HAVING COUNT(b.id) >= 10
-                    ORDER BY AVG(b.points) DESC
-                    LIMIT 20
-                    """,
-                    league_id, season,
-                )
-                _std_rows = await pool.fetch(
-                    """
-                    SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
-                    FROM standings_cache sc JOIN teams t ON t.id = sc.team_id
-                    WHERE sc.league_id = $1 AND sc.season = $2
-                    ORDER BY sc.wins DESC LIMIT 1
-                    """,
-                    league_id, season,
-                )
-                _top_team = _std_rows[0]["nba_team_code"] if _std_rows else "the league leader"
-                _sleeper = _seed_rows[0]["player_name"] if _seed_rows else "the top scorer"
-                # Rivalry: two players from different teams with similar scoring (top 5)
-                _rivalry_a = _seed_rows[1]["player_name"] if len(_seed_rows) > 1 else None
-                _rivalry_b = _seed_rows[2]["player_name"] if len(_seed_rows) > 2 else None
-                _rivalry_teams = (
-                    f"{_seed_rows[1]['team_code']} vs {_seed_rows[2]['team_code']}"
-                    if len(_seed_rows) > 2 else ""
-                )
-                _HTH_NARRATIVES[league_id] = {
-                    "sleeper_pick": (
-                        f"Dave has been insisting all season that {_sleeper} is criminally underrated "
-                        f"and deserves more recognition."
-                    ),
-                    "fraud_call": (
-                        f"Tony has been calling {_top_team} a 'paper tiger' since day one — "
-                        f"great record, no real test, waiting to collapse."
-                    ),
-                    "rivalry": (
-                        f"Dave and Tony have been tracking the {_rivalry_teams} rivalry — "
-                        f"{_rivalry_a} vs {_rivalry_b} — all season, arguing who's the better player."
-                    ) if _rivalry_a and _rivalry_b else None,
-                }
-                log.info(f"HTH narratives seeded for league {league_id}: {_HTH_NARRATIVES[league_id]}")
-            except Exception as _hth_exc:
-                log.warning(f"HTH narrative seeding failed: {_hth_exc}")
-                _HTH_NARRATIVES[league_id] = {}
+        await _seed_or_revalidate_hth_narratives(pool, league_id, season)
 
-        # Inject non-None narratives into context.
-        _active_narratives = {k: v for k, v in _HTH_NARRATIVES.get(league_id, {}).items() if v}
+        # Inject non-None narratives into context (text only — the structured
+        # identifying fields on each slot are for revalidation, not the prompt).
+        _active_narratives = {
+            k: v["text"] for k, v in _HTH_NARRATIVES.get(league_id, {}).items() if v
+        }
         if _active_narratives:
             columnist_context["hth_season_narratives"] = _active_narratives
     if persona_id == "pat_chen":
@@ -1397,7 +1656,9 @@ async def _maybe_post_columnist(
         else:
             dc_article = None
             try:
-                # Build bottom-5 context for Darius Cole.
+                # Build bottom-5 context for Darius Cole from the full lottery pool
+                # (mirrors the real NBA's ~14-team non-playoff field) so lottery_odds_pct
+                # is computed from actual record gaps, not just rank position.
                 _all_standings = await pool.fetch(
                     """
                     SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
@@ -1405,19 +1666,18 @@ async def _maybe_post_columnist(
                     JOIN teams t ON t.id = sc.team_id
                     WHERE sc.league_id = $1 AND sc.season = $2
                     ORDER BY sc.wins ASC, sc.losses DESC
-                    LIMIT 5
+                    LIMIT $3
                     """,
-                    league_id, season,
+                    league_id, season, _LOTTERY_POOL_SIZE,
                 )
-                # Approximate lottery odds: last-place gets ~14%, decreasing by ~2% per slot.
-                _lottery_base = [14.0, 13.4, 12.7, 12.0, 10.5]
+                _lottery_odds = _compute_lottery_odds(_all_standings)
                 _bottom5 = []
                 _bottom5_team_ids: list[int] = []
-                for _idx, _row in enumerate(_all_standings):
+                for _row in _all_standings[:5]:
                     _bottom5.append({
                         "team": _row["nba_team_code"],
                         "record": f"{_row['wins']}-{_row['losses']}",
-                        "lottery_odds_pct": _lottery_base[_idx] if _idx < len(_lottery_base) else 9.0,
+                        "lottery_odds_pct": _lottery_odds.get(_row["team_id"], 0.0),
                     })
                     _bottom5_team_ids.append(_row["team_id"])
                 _dc_context = dict(batch_context)

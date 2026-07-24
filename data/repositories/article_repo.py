@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import asyncpg
+
+
+def _parse_row(row: dict) -> dict:
+    """asyncpg returns JSONB columns as raw strings; decode structured_data
+    to a Python dict/list so callers never have to know it's stored as JSONB."""
+    out = dict(row)
+    raw = out.get("structured_data")
+    if isinstance(raw, str):
+        out["structured_data"] = json.loads(raw)
+    return out
 
 
 async def insert(
@@ -17,16 +28,24 @@ async def insert(
     subject_player_ids: Optional[list[int]] = None,
     posted_channel_role: Optional[str] = None,
     posted_message_id: Optional[int] = None,
+    structured_data: Optional[dict] = None,
 ) -> int:
-    """Insert a new article and return its id."""
+    """Insert a new article and return its id.
+
+    structured_data is an optional machine-readable payload (e.g. The Power
+    List's team-code-to-rank mapping) stored alongside the rendered article
+    text -- callers that need to read back real data (rank deltas, etc.)
+    should use this instead of re-parsing the rendered body prose.
+    """
     return await pool.fetchval(
         """
         INSERT INTO league_articles (
             league_id, season, persona_id, category,
             headline, body,
             subject_team_ids, subject_player_ids,
-            posted_channel_role, posted_message_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            posted_channel_role, posted_message_id,
+            structured_data
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
         RETURNING id
         """,
         league_id,
@@ -39,6 +58,7 @@ async def insert(
         subject_player_ids or [],
         posted_channel_role,
         posted_message_id,
+        json.dumps(structured_data) if structured_data is not None else None,
     )
 
 
@@ -85,7 +105,7 @@ async def recent_by_persona(
             persona_id,
             limit,
         )
-    return [dict(r) for r in rows]
+    return [_parse_row(r) for r in rows]
 
 
 async def recent_about_team(
@@ -108,7 +128,7 @@ async def recent_about_team(
         team_id,
         limit,
     )
-    return [dict(r) for r in rows]
+    return [_parse_row(r) for r in rows]
 
 
 async def update_message_id(

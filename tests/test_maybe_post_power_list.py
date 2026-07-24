@@ -69,9 +69,14 @@ async def _run(league_id, initial_counter=70, standings=None, streak_rows=None,
     pool.fetch = AsyncMock(return_value=streak_rows)
 
     register_calls = []
+    generate_calls = []
 
     async def _fake_register(pool_, sent_message, **kwargs):
         register_calls.append(kwargs)
+
+    async def _fake_generate(pool_, league_id_, season_, **kwargs):
+        generate_calls.append(kwargs)
+        return article
 
     persona_patch = (
         patch.dict("services.sim_content_pipeline._PERSONAS",
@@ -85,15 +90,15 @@ async def _run(league_id, initial_counter=70, standings=None, streak_rows=None,
         persona_patch,
         patch("services.sim_content_pipeline.game_repo.get_standings", AsyncMock(return_value=standings)),
         patch("services.sim_content_pipeline.article_repo.recent_by_persona", AsyncMock(return_value=prev_articles)),
-        patch("services.sim_content_pipeline.columnist_service.generate", AsyncMock(return_value=article)),
+        patch("services.sim_content_pipeline.columnist_service.generate", _fake_generate),
         patch("services.sim_content_pipeline._feedback_log.register_columnist_post", _fake_register),
     ):
         await _maybe_post_power_list(pool, league_id, season=2025, batch_results=_batch_results(), guild=guild)
-    return analysis_channel, register_calls
+    return analysis_channel, register_calls, generate_calls
 
 
 async def test_counter_below_threshold_skips():
-    analysis_channel, register_calls = await _run(league_id=2001, initial_counter=10)
+    analysis_channel, register_calls, _ = await _run(league_id=2001, initial_counter=10)
     assert analysis_channel.sent == []
     assert register_calls == []
     assert _power_list_game_counter[2001] < 70
@@ -109,21 +114,23 @@ async def test_no_analysis_channel_skips():
 
 
 async def test_missing_persona_skips():
-    analysis_channel, register_calls = await _run(league_id=2003, persona=False)
+    analysis_channel, register_calls, _ = await _run(league_id=2003, persona=False)
     assert analysis_channel.sent == []
     assert register_calls == []
 
 
 async def test_no_standings_skips():
-    analysis_channel, register_calls = await _run(league_id=2004, standings=[])
+    analysis_channel, register_calls, _ = await _run(league_id=2004, standings=[])
     assert analysis_channel.sent == []
     assert register_calls == []
 
 
 async def test_happy_path_posts_article_with_rank_deltas():
+    """Legacy prior article (no structured_data) still yields correct deltas
+    via the regex fallback -- pre-migration articles must keep working."""
     prev_articles = [{"body": "> **1.** BOS\n> **2.** LAL\n"}]
     article = {"headline": "Lakers Surge", "body": "LAL climbs the board."}
-    analysis_channel, register_calls = await _run(
+    analysis_channel, register_calls, generate_calls = await _run(
         league_id=2005, prev_articles=prev_articles, article=article,
     )
 
@@ -137,13 +144,44 @@ async def test_happy_path_posts_article_with_rank_deltas():
     assert register_calls[0]["persona_id"] == "power_list"
     assert register_calls[0]["category"] == "power_rankings"
 
+    # BOS was #1, now #2 (delta -1); LAL was #2, now #1 (delta +1).
+    assert generate_calls[0]["context"]["rank_deltas"] == {"BOS": -1, "LAL": 1}
+
     assert _power_list_game_counter[2005] == 0
 
 
 async def test_happy_path_no_prior_ranks_all_new():
     article = {"headline": "Fresh Start", "body": "Week one power list."}
-    analysis_channel, register_calls = await _run(
+    analysis_channel, register_calls, _ = await _run(
         league_id=2006, prev_articles=[], article=article,
     )
     assert len(analysis_channel.sent) == 1
     assert len(register_calls) == 1
+
+
+async def test_rank_deltas_computed_from_structured_data_not_regex():
+    """Finding #5 — prior article's structured_data (real team->rank dict) is
+    used directly; the regex fallback must NOT fire when structured_data is present,
+    even if the rendered body's markdown wouldn't match the regex at all."""
+    prev_articles = [{
+        "body": "Totally different rendering format the regex could never parse.",
+        "structured_data": {"LAL": 2, "BOS": 1},
+    }]
+    article = {"headline": "Lakers Surge", "body": "LAL climbs the board."}
+    _, _, generate_calls = await _run(
+        league_id=2007, prev_articles=prev_articles, article=article,
+    )
+    # LAL: was #2, now #1 (streak_rows default order) -> delta +1.
+    # BOS: was #1, now #2 -> delta -1.
+    assert generate_calls[0]["context"]["rank_deltas"] == {"LAL": 1, "BOS": -1}
+
+
+async def test_current_ranking_passed_as_structured_data_for_next_post():
+    """The CURRENT ranking must be persisted as structured_data so the NEXT
+    post's rank_deltas read real data instead of the rendered prose."""
+    article = {"headline": "Fresh Start", "body": "Week one power list."}
+    _, _, generate_calls = await _run(
+        league_id=2008, prev_articles=[], article=article,
+    )
+    # streak_rows default: LAL 10-5 (rank 1), BOS 8-7 (rank 2).
+    assert generate_calls[0]["structured_data"] == {"LAL": 1, "BOS": 2}
