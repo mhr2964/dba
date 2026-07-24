@@ -453,3 +453,168 @@ def test_assemble_article_potm_passes_ctx():
     assert "Jan" in result
 
 
+# ---------------------------------------------------------------------------
+# B2 — list-style persona field parsers (_power_list_fields, _the_ledger_fields,
+# _the_race_fields, _triage_report_fields, _rookie_watch_fields)
+# ---------------------------------------------------------------------------
+# Fixtures below are each persona's own _SHAPE example body from its persona
+# module (power_list.py, the_ledger.py, the_race.py, triage_report.py,
+# rookie_watch.py) -- representative of real LLM output, not synthetic text.
+
+_POWER_LIST_BODY = (
+    "> **1.** OKC ↑2 — five-game win streak, defense locked in\n"
+    "> **2.** BOS — — still the class of the East\n"
+    "> **3.** DEN ↓1 — Jokic doing Jokic things, but road record slipping\n"
+    "> **4.** MIL ↑1 — won 4 of 5 despite Giannis missing a game\n"
+    "> **5.** PHX NEW — healthy again and it shows\n"
+    "> **6.** MEM ↓2 — young legs, never quit, but the losses are mounting\n"
+    "> **7.** ATL ↑3 — three straight wins out of nowhere\n"
+    "> **8.** CHI — — two losses to the lottery smells bad\n"
+    "> **9.** TOR ↓1 — only thing keeping them alive is schedule\n"
+    "> **10.** ORL ↓2 — lost three straight and it looks structural\n\n"
+    "**Biggest mover:** ATL (↑3)"
+)
+
+
+def test_power_list_fields_two_rank_clusters_plus_mover():
+    desc, fields = cs._power_list_fields(_POWER_LIST_BODY)
+    assert desc == ""
+    field_names = [f.name for f in fields]
+    assert field_names == ["Ranks 1-5", "Ranks 6-10", "Biggest Mover"]
+    ranks_1_5 = next(f for f in fields if f.name == "Ranks 1-5")
+    assert ranks_1_5.value.count("\n") == 4  # 5 rows -> 4 newlines
+    assert "OKC" in ranks_1_5.value
+    assert "PHX" in ranks_1_5.value
+    ranks_6_10 = next(f for f in fields if f.name == "Ranks 6-10")
+    assert "MEM" in ranks_6_10.value
+    assert "ORL" in ranks_6_10.value
+    assert next(f for f in fields if f.name == "Biggest Mover").value == "ATL (↑3)"
+
+
+def test_power_list_fields_falls_back_to_raw_body_when_unparseable():
+    desc, fields = cs._power_list_fields("Something completely off-template.")
+    assert len(fields) == 1
+    assert fields[0].name == "Rankings"
+    assert fields[0].value == "Something completely off-template."
+
+
+def test_power_list_fields_empty_body_returns_no_fields():
+    desc, fields = cs._power_list_fields("")
+    assert fields == []
+
+
+_LEDGER_BODY = (
+    "*Window: Trade Deadline*\n\n"
+    "```\n"
+    "TEAM    | MOVE                          | GRADE\n"
+    "──────  | ───────────────────────────── | ─────\n"
+    "BOS     | Traded for Harden, freed cap  | A\n"
+    "MIL     | Held at deadline, roster set  | B+\n"
+    "ORL     | Waived veteran depth          | C-\n"
+    "HOU     | Signed two G-League long shots| F\n"
+    "```\n\n"
+    "**The Verdict:** Boston is the only front office that knows what it's building. Everyone else is reacting."
+)
+
+
+def test_the_ledger_fields_one_field_per_graded_move():
+    desc, fields = cs._the_ledger_fields(_LEDGER_BODY)
+    assert desc == "Window: Trade Deadline"
+    field_names = [f.name for f in fields]
+    assert field_names == ["BOS — A", "MIL — B+", "ORL — C-", "HOU — F", "The Verdict"]
+    assert next(f for f in fields if f.name == "BOS — A").value == "Traded for Harden, freed cap"
+    assert "Boston is the only front office" in next(f for f in fields if f.name == "The Verdict").value
+
+
+def test_the_ledger_fields_falls_back_to_raw_body_when_unparseable():
+    desc, fields = cs._the_ledger_fields("No table here.")
+    assert fields[0].name == "Grades"
+    assert fields[0].value == "No table here."
+
+
+_RACE_BODY = (
+    "*MVP Race — Current Pulse*\n\n"
+    "> 🥇 **Joel Embiid** — 34/12/4 last week on 62% TS; Philly is 8-2 in his last 10 and he's the reason\n"
+    "> 🥈 **Giannis Antetokounmpo** — his case is winning percentage; MIL went 9-1 last month\n"
+    "> 🥉 **Luka Doncic** — triple-double machine but the losses are piling up against him\n\n"
+    "**Eliminated this week:** Trae Young — three bad turnover games ended his dark-horse run\n\n"
+    "**Sleeper:** Ja Morant — if Memphis makes the 3 seed, voters will have to look twice"
+)
+
+
+def test_the_race_fields_one_field_per_candidate_plus_eliminated_and_sleeper():
+    desc, fields = cs._the_race_fields(_RACE_BODY)
+    assert desc == "MVP Race — Current Pulse"
+    field_names = [f.name for f in fields]
+    assert field_names == [
+        "🥇 Joel Embiid", "🥈 Giannis Antetokounmpo", "🥉 Luka Doncic",
+        "Eliminated This Week", "Sleeper",
+    ]
+    assert "34/12/4" in next(f for f in fields if f.name == "🥇 Joel Embiid").value
+    assert "Trae Young" in next(f for f in fields if f.name == "Eliminated This Week").value
+    assert "Ja Morant" in next(f for f in fields if f.name == "Sleeper").value
+
+
+def test_the_race_fields_falls_back_to_raw_body_when_unparseable():
+    desc, fields = cs._the_race_fields("No medals here.")
+    assert fields[0].name == "Candidates"
+    assert fields[0].value == "No medals here."
+
+
+_TRIAGE_BODY = (
+    "🩹 **Marcus Williams** (LAL) — out 14 games\n\n"
+    "**Filling in:** Davis Nguyen slides into the starting two-guard slot — averaged 11.4 PPG off the bench\n\n"
+    "**Impact:** LAL loses their best corner-three shooter; team eFG% drops ~3 pts without his gravity"
+)
+
+
+def test_triage_report_fields_status_filling_in_impact():
+    desc, fields = cs._triage_report_fields(_TRIAGE_BODY)
+    assert desc == ""
+    field_names = [f.name for f in fields]
+    assert field_names == ["🩹 Marcus Williams (LAL)", "Filling In", "Impact"]
+    assert next(f for f in fields if f.name == "🩹 Marcus Williams (LAL)").value == "out 14 games"
+    assert "Davis Nguyen" in next(f for f in fields if f.name == "Filling In").value
+    assert "corner-three shooter" in next(f for f in fields if f.name == "Impact").value
+
+
+def test_triage_report_fields_falls_back_to_raw_body_when_unparseable():
+    desc, fields = cs._triage_report_fields("No injury marker here.")
+    assert fields[0].name == "Injury Report"
+    assert fields[0].value == "No injury marker here."
+
+
+_ROOKIE_BODY = (
+    "🥇 **Victor Wembanyama** (SAS) — 18.2 / 9.1 / 3.7 bpg\n"
+    "🥈 **Zach Edey** (MEM) — 16.4 / 11.0 / 1.2 bpg\n\n"
+    "Wemby on the gap, asked postgame: some banter line.\n\n"
+    "**Posterize of the week:** Edey put Sarr on a milk carton in the 3rd."
+)
+
+
+def test_rookie_watch_fields_one_field_per_rookie_plus_posterize():
+    desc, fields = cs._rookie_watch_fields(_ROOKIE_BODY)
+    assert desc == "Wemby on the gap, asked postgame: some banter line."
+    field_names = [f.name for f in fields]
+    assert field_names == ["🥇 Victor Wembanyama (SAS)", "🥈 Zach Edey (MEM)", "Posterize Of The Week"]
+    assert next(f for f in fields if f.name == "🥇 Victor Wembanyama (SAS)").value == "18.2 / 9.1 / 3.7 bpg"
+    assert "milk carton" in next(f for f in fields if f.name == "Posterize Of The Week").value
+
+
+def test_rookie_watch_fields_tolerates_missing_team_code_parens():
+    """rookie_watch.py's own worked example omits the (TEAM) parens its FORMAT
+    instructions require -- the parser must survive both shapes."""
+    body_without_team_codes = (
+        "🥇 **Victor Wembanyama** — 18.2 / 9.1 / 3.7 bpg\n"
+        "🥈 **Zach Edey** — 16.4 / 11.0 / 1.2 bpg\n\n"
+        "**Stat of the week:** Wemby's 18.2 PPG leads all rookies."
+    )
+    desc, fields = cs._rookie_watch_fields(body_without_team_codes)
+    field_names = [f.name for f in fields]
+    assert field_names == ["🥇 Victor Wembanyama", "🥈 Zach Edey", "Stat Of The Week"]
+
+
+def test_rookie_watch_fields_falls_back_to_raw_body_when_unparseable():
+    desc, fields = cs._rookie_watch_fields("No rookies mentioned here.")
+    assert fields[0].name == "Rookies"
+    assert fields[0].value == "No rookies mentioned here."

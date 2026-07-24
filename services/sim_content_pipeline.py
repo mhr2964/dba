@@ -23,6 +23,7 @@ from core.logging import get_logger
 from data.repositories import article_repo, game_repo, league_repo
 from phase.states import Phase
 from services import awards_service, columnist_service, potm_service, strategy_service, team_intel
+from services import columnist_assembly
 from services import columnist_ride_along as _columnist_ride_along
 from services import feedback_log as _feedback_log
 from services.announcer_protocol import EmbedData
@@ -269,9 +270,13 @@ async def _maybe_post_power_list(
             timeout=20.0,
         )
         if article:
+            # B2: multi-field embed (rank clusters + Biggest Mover) instead of
+            # one flat description slice.
+            _desc, _fields = columnist_assembly._power_list_fields(article["body"])
             embed_data = EmbedData(
                 title=f"🏆 {article['headline']}",
-                description=article["body"][:_description_limit("power_rankings")],
+                description=_desc,
+                fields=_fields,
                 color=_rgb_to_int((212, 175, 55)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -408,9 +413,13 @@ async def _maybe_post_rookie_watch(
             timeout=20.0,
         )
         if article:
+            # B2: one field per rookie + Posterize/Stat of the Week, instead of
+            # one flat description slice.
+            _desc, _fields = columnist_assembly._rookie_watch_fields(article["body"])
             embed_data = EmbedData(
                 title=f"🌟 {article['headline']}",
-                description=article["body"][:_description_limit("rookie_watch")],
+                description=_desc,
+                fields=_fields,
                 color=_rgb_to_int((100, 200, 120)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -639,9 +648,13 @@ async def _maybe_post_ledger(
             timeout=20.0,
         )
         if article:
+            # B2: one field per graded move + The Verdict, instead of one flat
+            # description slice.
+            _desc, _fields = columnist_assembly._the_ledger_fields(article["body"])
             embed_data = EmbedData(
                 title=f"📒 {article['headline']}",
-                description=article["body"][:_description_limit("front_office_grade")],
+                description=_desc,
+                fields=_fields,
                 color=_rgb_to_int((120, 120, 120)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -756,9 +769,13 @@ async def _maybe_post_the_race(
             timeout=20.0,
         )
         if article:
+            # B2: one field per medal candidate + Eliminated/Sleeper, instead
+            # of one flat description slice.
+            _desc, _fields = columnist_assembly._the_race_fields(article["body"])
             embed_data = EmbedData(
                 title=f"🏅 {article['headline']}",
-                description=article["body"][:_description_limit("award_race")],
+                description=_desc,
+                fields=_fields,
                 color=_rgb_to_int((200, 160, 40)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -837,9 +854,13 @@ async def _maybe_post_triage_report(
             timeout=20.0,
         )
         if article and article.get("body"):
+            # B2: Status / Filling In / Impact as separate fields, instead of
+            # one flat description slice.
+            _desc, _fields = columnist_assembly._triage_report_fields(article["body"])
             embed_data = EmbedData(
                 title=f"🩺 {article['headline']}",
-                description=article["body"][:_description_limit("injury_report")],
+                description=_desc,
+                fields=_fields,
                 color=_rgb_to_int((231, 76, 60)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )

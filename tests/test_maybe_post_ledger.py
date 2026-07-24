@@ -162,7 +162,10 @@ async def test_happy_path_posts_article_and_resets_counter():
     assert len(analysis_channel.sent) == 1
     embed = analysis_channel.sent[0]["embed"]
     assert embed.title == "📒 Grading The Deals"
-    assert embed.description == "Front office report card."
+    # B2: the fixture body doesn't match the graded-table row pattern, so it
+    # falls back to a single "Grades" field holding the raw body.
+    assert embed.fields[0].name == "Grades"
+    assert embed.fields[0].value == "Front office report card."
     assert embed.footer.text == "by Owen Marsh · Front-office desk"
 
     assert len(register_calls) == 1

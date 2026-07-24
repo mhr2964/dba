@@ -115,7 +115,10 @@ async def test_happy_path_posts_article_and_resets_counter():
     assert len(analysis_channel.sent) == 1
     embed = analysis_channel.sent[0]["embed"]
     assert embed.title == "🏅 The MVP Race Tightens"
-    assert embed.description == "Two stars separate from the pack."
+    # B2: the fixture body doesn't match the medal-line pattern, so it falls
+    # back to a single "Candidates" field holding the raw body.
+    assert embed.fields[0].name == "Candidates"
+    assert embed.fields[0].value == "Two stars separate from the pack."
     assert embed.footer.text == "by Priya Nair · Awards desk"
 
     assert len(register_calls) == 1

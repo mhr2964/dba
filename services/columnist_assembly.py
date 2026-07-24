@@ -862,6 +862,194 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------------------
+# List-style persona field parsers (Phase 1 fix B2)
+# ---------------------------------------------------------------------------
+# Power List, The Race, The Ledger, Triage Report, and Rookie Watch are all
+# format_style="passthrough" -- their LLM output is a single {headline, body}
+# JSON pair where `body` is markdown text following a fixed template each
+# persona's voice_notes spells out exactly (ranked list, graded table, medal
+# lines, etc.). _assemble_passthrough (still their live string renderer) is
+# shared with several OTHER passthrough personas (Jordan Rivera, Big Picture,
+# Coach Beat, The Prelude, Pat Chen, Keisha Williams, Carla Knox) that are
+# tight single-focus prose, not lists -- so it can't be repurposed here
+# without breaking them.
+#
+# Instead of a new format_style + _RENDERERS entry (which would hit the same
+# str-vs-EmbedData contract mismatch B1 hit), these five functions take the
+# ALREADY-ASSEMBLED passthrough body string and regex-parse it back into
+# structured EmbedFields. sim_content_pipeline.py's five _maybe_post_* call
+# sites for these categories call the matching function directly instead of
+# doing description=article["body"][:N] -- see the updated call sites.
+#
+# Each returns (description, fields) so the caller can still set its own
+# title (with the category emoji prefix) and footer exactly as before.
+# Falls back to a single field holding the raw body when the LLM deviated
+# from the required template and the row pattern doesn't match anything --
+# nothing is silently dropped, matching this module's established
+# never-blank-output convention.
+
+_POWER_LIST_ROW_RE = re.compile(r"^>\s*\*\*(\d+)\.\*\*\s+(\S+)\s+(\S+)\s+—\s+(.+)$", re.MULTILINE)
+_POWER_LIST_MOVER_RE = re.compile(r"\*\*Biggest mover:\*\*\s*(.+)", re.IGNORECASE)
+
+
+def _power_list_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """Power List (B2) — splits the fixed '> **N.** TEAM ARROW — note' rows
+    into two side-by-side rank-cluster fields (1-5, 6-10) plus a Biggest
+    Mover field, instead of one 10-line description blob."""
+    rows = _POWER_LIST_ROW_RE.findall(body or "")
+    fields: list[EmbedField] = []
+    if rows:
+        lines = [f"**{rank}.** {team} {arrow} — {note}" for rank, team, arrow, note in rows]
+        first_half, second_half = lines[:5], lines[5:]
+        if first_half:
+            fields.append(EmbedField(name="Ranks 1-5", value=_truncate_field(first_half), inline=True))
+        if second_half:
+            fields.append(EmbedField(name="Ranks 6-10", value=_truncate_field(second_half), inline=True))
+    elif body:
+        fields.append(EmbedField(name="Rankings", value=_truncate_text(body), inline=False))
+
+    mover_match = _POWER_LIST_MOVER_RE.search(body or "")
+    if mover_match:
+        fields.append(EmbedField(name="Biggest Mover", value=_truncate_text(mover_match.group(1).strip()), inline=False))
+
+    return "", fields
+
+
+_LEDGER_ROW_RE = re.compile(r"^([A-Z]{2,4})\s*\|\s*(.+?)\s*\|\s*([A-Z][+-]?)\s*$", re.MULTILINE)
+_LEDGER_VERDICT_RE = re.compile(r"\*\*The Verdict:\*\*\s*(.+)", re.IGNORECASE)
+_LEDGER_WINDOW_RE = re.compile(r"^\*(Window:.+?)\*\s*$", re.MULTILINE)
+
+
+def _the_ledger_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """The Ledger (B2) — one field per graded move (TEAM — GRADE : move text)
+    instead of the whole fenced table crammed into one description."""
+    body = body or ""
+    rows = [
+        (team, move.strip(), grade)
+        for team, move, grade in _LEDGER_ROW_RE.findall(body)
+        if team != "TEAM"  # skip the header row if it slips through the pattern
+    ]
+    fields = [
+        EmbedField(name=f"{team} — {grade}", value=_truncate_text(move), inline=True)
+        for team, move, grade in rows[:5]
+    ]
+    if not fields and body:
+        fields.append(EmbedField(name="Grades", value=_truncate_text(body), inline=False))
+
+    verdict_match = _LEDGER_VERDICT_RE.search(body)
+    if verdict_match:
+        fields.append(EmbedField(name="The Verdict", value=_truncate_text(verdict_match.group(1).strip()), inline=False))
+
+    window_match = _LEDGER_WINDOW_RE.search(body)
+    description = window_match.group(1).strip() if window_match else ""
+    return description, fields
+
+
+_RACE_MEDAL_RE = re.compile(r"^>\s*(🥇|🥈|🥉)\s*\*\*(.+?)\*\*\s*—\s*(.+)$", re.MULTILINE)
+_RACE_ELIMINATED_RE = re.compile(r"\*\*Eliminated this week:\*\*\s*(.+)", re.IGNORECASE)
+_RACE_SLEEPER_RE = re.compile(r"\*\*Sleeper:\*\*\s*(.+)", re.IGNORECASE)
+_RACE_HEADER_RE = re.compile(r"^\*(.+?Race.+?)\*\s*$", re.MULTILINE)
+
+
+def _the_race_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """The Race (B2) — one field per medal candidate, plus separate
+    Eliminated This Week / Sleeper fields, instead of one flat blob."""
+    body = body or ""
+    medals = _RACE_MEDAL_RE.findall(body)
+    fields = [
+        EmbedField(name=f"{medal} {name.strip()}", value=_truncate_text(case.strip()), inline=False)
+        for medal, name, case in medals[:3]
+    ]
+    if not fields and body:
+        fields.append(EmbedField(name="Candidates", value=_truncate_text(body), inline=False))
+
+    eliminated_match = _RACE_ELIMINATED_RE.search(body)
+    if eliminated_match:
+        fields.append(EmbedField(name="Eliminated This Week", value=_truncate_text(eliminated_match.group(1).strip()), inline=True))
+    sleeper_match = _RACE_SLEEPER_RE.search(body)
+    if sleeper_match:
+        fields.append(EmbedField(name="Sleeper", value=_truncate_text(sleeper_match.group(1).strip()), inline=True))
+
+    header_match = _RACE_HEADER_RE.search(body)
+    description = header_match.group(1).strip() if header_match else ""
+    return description, fields
+
+
+_TRIAGE_HEADER_RE = re.compile(r"🩹\s*\*\*(.+?)\*\*\s*\((\w+)\)\s*—\s*(.+)")
+_TRIAGE_FILLING_RE = re.compile(r"\*\*Filling in:\*\*\s*(.+)", re.IGNORECASE)
+_TRIAGE_IMPACT_RE = re.compile(r"\*\*Impact:\*\*\s*(.+)", re.IGNORECASE)
+
+
+def _triage_report_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """Triage Report (B2) — Status / Filling In / Impact as three separate
+    fields instead of one flat 3-line blob.
+
+    Each Triage Report post currently covers exactly ONE injury
+    (_maybe_post_triage_report fires once per injury event), so this yields
+    exactly one Status+Filling-In+Impact trio, not N per-injury fields. If a
+    future batched-injury post is added, extend this to emit one trio per
+    injury instead of restructuring the field shape.
+    """
+    body = body or ""
+    fields: list[EmbedField] = []
+
+    header_match = _TRIAGE_HEADER_RE.search(body)
+    if header_match:
+        player, team, status = header_match.groups()
+        fields.append(EmbedField(name=f"🩹 {player.strip()} ({team})", value=_truncate_text(status.strip()), inline=False))
+
+    filling_match = _TRIAGE_FILLING_RE.search(body)
+    if filling_match:
+        fields.append(EmbedField(name="Filling In", value=_truncate_text(filling_match.group(1).strip()), inline=True))
+
+    impact_match = _TRIAGE_IMPACT_RE.search(body)
+    if impact_match:
+        fields.append(EmbedField(name="Impact", value=_truncate_text(impact_match.group(1).strip()), inline=True))
+
+    if not fields and body:
+        fields.append(EmbedField(name="Injury Report", value=_truncate_text(body), inline=False))
+
+    return "", fields
+
+
+
+# Team code parens are optional in the regex even though rookie_watch.py's own
+# FORMAT instructions require them — that persona's worked _SHAPE example
+# (the "Wemby vs Edey" one) omits them, so real LLM output may follow either
+# the example or the instruction. Not this fix's job to reconcile that
+# pre-existing prompt inconsistency; the parser just needs to survive both.
+_ROOKIE_MEDAL_RE = re.compile(r"^(🥇|🥈)\s*\*\*(.+?)\*\*\s*(?:\((\w+)\)\s*)?—\s*(.+)$", re.MULTILINE)
+_ROOKIE_POSTERIZE_RE = re.compile(r"\*\*(Posterize of the week|Stat of the week):\*\*\s*(.+)", re.IGNORECASE)
+
+
+def _rookie_watch_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """Rookie Watch (B2) — one field per rookie (medal + team + stat line),
+    plus a Posterize/Stat of the Week field, instead of one flat blob. The
+    banter line between the medal lines and the closer becomes the
+    description (whatever prose is left after stripping the matched rows)."""
+    body = body or ""
+    rookies = _ROOKIE_MEDAL_RE.findall(body)
+    fields = []
+    for medal, name, team, stat in rookies[:2]:
+        field_name = f"{medal} {name.strip()}" + (f" ({team})" if team else "")
+        fields.append(EmbedField(name=field_name, value=_truncate_text(stat.strip()), inline=True))
+    if not fields and body:
+        fields.append(EmbedField(name="Rookies", value=_truncate_text(body), inline=False))
+
+    posterize_match = _ROOKIE_POSTERIZE_RE.search(body)
+    if posterize_match:
+        label, text = posterize_match.groups()
+        fields.append(EmbedField(name=label.title(), value=_truncate_text(text.strip()), inline=False))
+
+    # Whatever prose is left after removing the matched medal rows and the
+    # posterize/stat line is the banter line -- becomes the description.
+    remaining = _ROOKIE_MEDAL_RE.sub("", body)
+    remaining = _ROOKIE_POSTERIZE_RE.sub("", remaining)
+    description = "\n".join(line.strip() for line in remaining.splitlines() if line.strip())
+    return description, fields
+
+
 # Maps format_style strings to STRING-BODY renderer functions only.
 # Most renderers take (parsed: dict, persona_display: str) → str.
 # Renderers in _CTX_RENDERERS additionally accept an optional `ctx` dict for
