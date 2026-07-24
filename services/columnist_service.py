@@ -447,7 +447,7 @@ _PERSONA_WORD_TARGET: dict[str, int] = {
     "pat_chen":       130,   # pat_chen.py Observation/Evidence/Implication (POTM shape is longer but still tight per side)
     "carla_knox":     150,   # carla_knox.py: scoreboard table + 2-3 bullets + league pulse sentence
     "coach_beat":     150,   # coach_beat.py: 2 paragraphs (2-3 sentences each) + closer
-    "big_picture":    180,   # big_picture.py: "~600-800 characters of prose, plus 3 bullets" (its OWN stated target)
+    "big_picture":    160,   # big_picture.py: "~600-800 characters of prose, plus 3 bullets" -- 600-800 chars / ~5.5 chars per word = ~109-145 prose words, + 3 bullets (stated cap 15 words each) = ~140-190 total; 180 sat at the upper edge (implies ~990 chars once bullets are included, over the persona's own 800-char prose ceiling) so A5 retargets to the ~160 midpoint so voice_notes and the enforcement target actually agree
     "the_prelude":    150,   # the_prelude.py: record table + 4 short sections
     "marcus_cole":     90,   # marcus_cole.py: "1-2 sentences MAX" per team + grades
     "marcus_brooks":   90,   # marcus_brooks.py: "Keep it 3-4 sentences"
