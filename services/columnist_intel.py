@@ -28,10 +28,26 @@ Built-in providers (registered at module level below):
   "philosophy"           — coaching philosophy via team_intel.get_team_philosophy
   "recent_pivots"        — plan pivot history via team_intel.get_recent_pivots
   "recent_role_changes"  — role assignment changes via team_intel.get_recent_role_changes
+  "season_history"       — champion/MVP/Finals MVP per completed season (history_repo)
+  "hall_of_fame"         — league HOF inductees (hof_repo)
+  "all_time_records"     — current league all-time records (all_time_records_repo)
 
 "context_signals" is NOT a team-intel provider — it is sourced from the caller's
 extra_context dict (trade signals computed per player) and handled upstream in
 columnist_service.generate.
+
+League-wide providers (Phase 1 fix D1)
+---------------------------------------
+"season_history", "hall_of_fame", and "all_time_records" are LEAGUE-wide, not
+team-scoped — history_seasons/hall_of_fame/all_time_records carry no team_id
+filter that would make sense here (a champion or a career record belongs to
+the league's history, not to one of the current subject teams). To keep the
+per-team merge shape in build_columnist_intel uniform, each provider attaches
+the SAME league-wide list under every team_id in team_ids. All three are
+None-safe: a league with no completed seasons yet (season 1, nothing
+finished) gets an empty list back, never an error — a persona's voice_notes
+can check "if season_history:" before referencing it (Phase 2 concern; this
+module's job is just making the data reliably retrievable).
 """
 from __future__ import annotations
 
@@ -41,6 +57,7 @@ from typing import Any
 from core.logging import get_logger
 from services.personas.base import Persona
 from services import team_intel
+from data.repositories import history_repo, hof_repo, all_time_records_repo
 
 log = get_logger(__name__)
 
@@ -126,6 +143,41 @@ async def _provide_recent_role_changes(pool, league, season: int, team_ids: list
         pool, league, season, team_ids, include=("recent_role_changes",)
     )
     return {tid: data.get("recent_role_changes") for tid, data in raw.items()}
+
+
+@register_intel_provider("season_history")
+async def _provide_season_history(pool, league, season: int, team_ids: list[int]) -> dict[int, Any]:
+    """League-wide season history — champion/MVP/Finals MVP per completed
+    season (history_repo.get_all_seasons), newest first.
+
+    Not team-scoped (see module docstring) — the same list is attached to
+    every team_id. Returns [] per team when no season has completed yet.
+    """
+    seasons = await history_repo.get_all_seasons(pool, league.id)
+    return {tid: seasons for tid in team_ids}
+
+
+@register_intel_provider("hall_of_fame")
+async def _provide_hall_of_fame(pool, league, season: int, team_ids: list[int]) -> dict[int, Any]:
+    """League-wide Hall of Fame inductees (hof_repo.get_all), induction order.
+
+    Not team-scoped (see module docstring) — the same list is attached to
+    every team_id. Returns [] per team when nobody has been inducted yet.
+    """
+    inductees = await hof_repo.get_all(pool, league.id)
+    return {tid: inductees for tid in team_ids}
+
+
+@register_intel_provider("all_time_records")
+async def _provide_all_time_records(pool, league, season: int, team_ids: list[int]) -> dict[int, Any]:
+    """League-wide current all-time records (all_time_records_repo.get_all).
+
+    Not team-scoped (see module docstring) — the same list is attached to
+    every team_id. Returns [] per team when no all-time record has been set
+    yet (early in season 1).
+    """
+    records = await all_time_records_repo.get_all(pool, league.id)
+    return {tid: records for tid in team_ids}
 
 
 # ---------------------------------------------------------------------------

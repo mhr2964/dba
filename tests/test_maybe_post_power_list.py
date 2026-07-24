@@ -137,7 +137,10 @@ async def test_happy_path_posts_article_with_rank_deltas():
     assert len(analysis_channel.sent) == 1
     embed = analysis_channel.sent[0]["embed"]
     assert embed.title == "🏆 Lakers Surge"
-    assert embed.description == "LAL climbs the board."
+    # B2: the fixture body doesn't match the ranked-row pattern, so it falls
+    # back to a single "Rankings" field holding the raw body (never dropped).
+    assert embed.fields[0].name == "Rankings"
+    assert embed.fields[0].value == "LAL climbs the board."
     assert embed.footer.text == "by Ray Solano · Numbers guy"
 
     assert len(register_calls) == 1

@@ -109,7 +109,10 @@ async def test_happy_path_posts_article_with_subject_player_id():
     assert len(analysis_channel.sent) == 1
     embed = analysis_channel.sent[0]["embed"]
     assert embed.title == "🩺 Star Player Down"
-    assert embed.description == "A significant loss for the roster."
+    # B2: the fixture body doesn't match the 🩹 header pattern, so it falls
+    # back to a single "Injury Report" field holding the raw body.
+    assert embed.fields[0].name == "Injury Report"
+    assert embed.fields[0].value == "A significant loss for the roster."
     assert embed.footer.text == "by Dana Cross · Injury desk"
 
     assert len(register_calls) == 1

@@ -1,24 +1,79 @@
 """Pure article-body renderers and body-parsing helpers for the columnist
 system: one _assemble_* function per format_style (analytics, hot_take,
-tactical, recap, moment, verdict, index, potm, trade_report, passthrough,
-tank_watch, default), the [SENTINEL]-based body parsers they call
-(_parse_trade_body, _parse_marcus_cole_body, _parse_potm_body), and
-_assemble_article, the dispatcher that routes to the right renderer.
+recap, potm, trade_report, passthrough, tank_watch, default -- string-body
+renderers, dispatched via _RENDERERS/_assemble_article), the [SENTINEL]-based
+body parsers they call (_parse_trade_body, _parse_marcus_cole_body,
+_parse_potm_body), and _assemble_article, the dispatcher that routes to the
+right string-body renderer.
 
 No DB, no async, no LLM calls -- these take the LLM's already-parsed JSON
 dict and a persona display string, and return the final Discord-ready
-article body string.
+article body string (or, for the EmbedField-based renderers below, an
+EmbedData).
 
 Extracted from columnist_service.py (Phase 3 opportunistic split, see
 HANDOFF.md). Only called internally by columnist_service.generate via
-_assemble_article -- no external caller touches these renderers directly.
+_assemble_article -- no external caller touches the string-body renderers
+directly.
+
+EmbedField-based renderers (Phase 1 fix B1)
+--------------------------------------------
+_assemble_moment, _assemble_verdict, _assemble_index, _assemble_recap, and
+_assemble_tactical return an EmbedData with real fields: list[EmbedField]
+instead of a flat string -- they genuinely use Discord's field-grid layout
+rather than reformatting text within one description blob. They are
+DELIBERATELY NOT in _RENDERERS / reachable via _assemble_article: every
+other renderer in this module returns a plain string body that
+columnist_service.generate() stores as article_repo.body and slices into an
+EmbedData.description at the call site, and mixing an EmbedData-returning
+renderer into that same dispatch path would silently break that contract for
+whichever caller hits it. As of this fix no live persona sets format_style
+to any of these five values (grep confirmed), so they are current dead code
+by design -- revived and correctness-tested, but not yet wired to any
+persona. Phase 2 picks which persona gets which renderer and updates the
+relevant _maybe_post_* call site in sim_content_pipeline.py to build its
+embed from the returned EmbedData directly (fields=..., description=...)
+instead of the current description=body[:N] pattern.
 """
 from __future__ import annotations
 
 import logging
 import re
 
+from services.announcer_protocol import EmbedData, EmbedField
+
 log = logging.getLogger(__name__)
+
+# Discord embed field values cap at 1024 chars; staying under 950 leaves
+# headroom for markdown rendering overhead. Mirrors bot/embeds/intel_embeds.py's
+# _truncate_field pattern -- duplicated locally (not imported) because
+# columnist_assembly.py is a services module and that helper is a private
+# bot/embeds implementation detail.
+_FIELD_CHAR_LIMIT = 950
+
+
+def _truncate_field(lines: list[str], limit: int = _FIELD_CHAR_LIMIT) -> str:
+    """Join lines; if the result exceeds `limit` chars, drop trailing lines
+    and append a count of what got cut."""
+    text = "\n".join(lines)
+    if len(text) <= limit:
+        return text
+    kept: list[str] = []
+    for line in lines:
+        candidate = "\n".join(kept + [line])
+        if len(candidate) > limit:
+            break
+        kept.append(line)
+    remaining = len(lines) - len(kept)
+    return "\n".join(kept) + f"\n…({remaining} more)"
+
+
+def _truncate_text(text: str, limit: int = _FIELD_CHAR_LIMIT) -> str:
+    """Truncate a single prose blob (not a line list) to a safe field-value length."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
 
 
 def _dedupe_headline(headline: str, body: str) -> str:
@@ -259,12 +314,20 @@ def _assemble_hot_take(parsed: dict, persona_display: str) -> str:
     return "\n\n".join(parts)
 
 
-def _assemble_tactical(parsed: dict, persona_display: str) -> str:
-    """Tactical/coaching format — What Worked / What Didn't / The Adjustment sections.
+def _assemble_tactical(parsed: dict, persona_display: str) -> EmbedData:
+    """Tactical/coaching format — What Worked / What Didn't / The Adjustment.
+    Revived for B1 (see module docstring — not wired into _RENDERERS).
 
-    Used by coaching beat and film-room writers (Quinn Park, Dr. Pat Chen).
-    Stats are embedded inline in the section bodies rather than in a callout block.
+    SUITED FOR: a coaching-film-room breakdown of ONE game or matchup — the
+    format already splits cleanly into 3 named sections, which is the most
+    natural fit of the five revived renderers for Discord's field grid. NOT
+    for a season-long or multi-game arc — this is single-game analysis.
+
+    Layout: lede (+ an inline stat note built from key_stats) stays in the
+    description; What Worked / What Didn't / The Adjustment each get their
+    own field, worked/didn't set inline=True so they sit side by side.
     """
+    headline = str(parsed.get("headline", "")).strip()
     lede = str(parsed.get("lede", "")).strip()
     key_stats: list[dict] = parsed.get("key_stats", []) or []
     bullets: list[str] = parsed.get("bullets", []) or []
@@ -289,106 +352,110 @@ def _assemble_tactical(parsed: dict, persona_display: str) -> str:
     worked = clean_bullets[:mid]
     didnt = clean_bullets[mid:]
 
-    parts: list[str] = []
+    if lede and stat_note:
+        description = f"{lede} {stat_note}"
+    else:
+        description = lede or stat_note
 
-    if lede:
-        if stat_note:
-            parts.append(f"{lede} {stat_note}")
-        else:
-            parts.append(lede)
-
+    fields: list[EmbedField] = []
     if worked:
-        parts.append("## What Worked")
-        for b in worked:
-            parts.append(f"• {b}")
-
+        fields.append(EmbedField(
+            name="✅ What Worked",
+            value=_truncate_field([f"• {b}" for b in worked]),
+            inline=True,
+        ))
     if didnt:
-        parts.append("## What Didn't")
-        for b in didnt:
-            parts.append(f"• {b}")
-
+        fields.append(EmbedField(
+            name="❌ What Didn't",
+            value=_truncate_field([f"• {b}" for b in didnt]),
+            inline=True,
+        ))
     if verdict:
-        parts.append(f"## The Adjustment\n{verdict}")
+        fields.append(EmbedField(name="🔧 The Adjustment", value=_truncate_text(verdict), inline=False))
 
-    if persona_display:
-        parts.append(f"— *{persona_display}*")
-
-    return "\n\n".join(parts)
+    return EmbedData(title=headline, description=description, fields=fields, footer=persona_display)
 
 
-def _assemble_recap(parsed: dict, persona_display: str) -> str:
-    """Game recap format — tight and Twitter-paced.
+def _assemble_recap(parsed: dict, persona_display: str) -> EmbedData:
+    """Game recap format — tight and Twitter-paced. Revived for B1 (see
+    module docstring — not wired into _RENDERERS). Like the other four
+    revived renderers, format_style="recap" was ALSO not assigned to any
+    live persona before this fix (grep confirmed) — the "Used by Maya Chen,
+    Keisha Williams on recaps" note in the prior docstring described intent,
+    not actual wiring.
 
-    Used by game reporters (Maya Chen, Keisha Williams on recaps).
-    Lede → 2 game beats as bullets → verdict as a closing line.
-    No section headers. Player names in the lede/verdict stay bolded by the LLM;
-    we don't add extra markup beyond what the LLM already chose.
+    SUITED FOR: a fast, 2-beat game recap — lede, two quick highlights, a
+    closing line. NOT for anything needing more than 2 supporting points;
+    deliberately capped tight.
+
+    Layout: lede stays in the description; the two beats each get their own
+    inline field (so they sit side by side rather than reading as a run-on
+    bullet list); verdict closes as its own field.
     """
     lede = str(parsed.get("lede", "")).strip()
     bullets: list[str] = parsed.get("bullets", []) or []
     verdict = str(parsed.get("verdict", "")).strip()
 
-    parts: list[str] = []
-
-    if lede:
-        parts.append(lede)
-
-    for bullet in bullets[:2]:
+    fields: list[EmbedField] = []
+    for i, bullet in enumerate(bullets[:2], start=1):
         text = str(bullet).strip()
         if text:
-            parts.append(f"• {text}")
-
+            fields.append(EmbedField(name=f"Beat {i}", value=_truncate_text(text), inline=True))
     if verdict:
-        parts.append(f"\n{verdict}")
+        fields.append(EmbedField(name="Final Word", value=_truncate_text(verdict), inline=False))
 
-    if persona_display:
-        parts.append(f"— *{persona_display}*")
-
-    return "\n".join(parts)
+    return EmbedData(title="", description=lede, fields=fields, footer=persona_display)
 
 
-def _assemble_moment(parsed: dict, persona_display: str) -> str:
-    """Maya Chen — 'The Moment' format.
+def _assemble_moment(parsed: dict, persona_display: str) -> EmbedData:
+    """Maya Chen — 'The Moment' format. Revived for B1 (see module docstring
+    — not wired into _RENDERERS).
 
-    Vignette structure: headline → italic scene-setter → play-by-play → The why.
-    Isolates one cinematic sequence; no game summary.
-    Falls back to a single-line summary when only headline is present so
-    Discord never receives a blank post.
+    SUITED FOR: a cinematic, single-highlight vignette — one play, one
+    sequence, isolated and slowed down. NOT for anything that needs to
+    summarize multiple events or a whole game.
+
+    Layout: the italic scene-setter stays in the description as the hook;
+    the play-by-play and the "why it matters" get their own fields so the
+    play itself and its significance are visually distinct instead of
+    blurred into one paragraph.
     """
     headline = str(parsed.get("headline", "")).strip()
     scene = str(parsed.get("scene", "")).strip()
     moment = str(parsed.get("moment", "")).strip()
     meaning = str(parsed.get("meaning", "")).strip()
 
-    parts: list[str] = []
-
-    if headline:
-        parts.append(f"**{headline}**")
-
-    if scene:
-        parts.append(f"*{scene}*")
-
+    fields: list[EmbedField] = []
     if moment:
-        parts.append(moment)
-
+        fields.append(EmbedField(name="The Play", value=_truncate_text(moment), inline=False))
     if meaning:
-        parts.append(f"**The why:** {meaning}")
+        fields.append(EmbedField(name="Why It Matters", value=_truncate_text(meaning), inline=False))
+    # If only the headline came back, emit a minimal placeholder field so the
+    # embed isn't a bare title with zero fields.
+    if not fields and headline:
+        fields.append(EmbedField(name="The Moment", value=f"Maya Chen on {headline}.", inline=False))
 
-    # If only the headline came back, emit a one-liner so the post isn't empty.
-    if not scene and not moment and not meaning and headline:
-        parts.append(f"*Maya Chen on {headline}*")
-
-    if persona_display:
-        parts.append(f"— *{persona_display}*")
-
-    return "\n\n".join(parts)
+    return EmbedData(
+        title=headline,
+        description=f"*{scene}*" if scene else "",
+        fields=fields,
+        footer=persona_display,
+    )
 
 
-def _assemble_verdict(parsed: dict, persona_display: str) -> str:
-    """Jordan Rivera — 'The Verdict' format.
+def _assemble_verdict(parsed: dict, persona_display: str) -> EmbedData:
+    """Jordan Rivera — 'The Verdict' format. Revived for B1 (see module
+    docstring — not wired into _RENDERERS).
 
-    Courtroom structure: case callout → argument → receipts blockquote → verdict ruling.
-    Falls back to a single-line ruling when only headline is present.
+    SUITED FOR: an opinionated, courtroom-framed ruling on ONE player, trade,
+    or decision — case, supporting evidence, final verdict. NOT for anything
+    covering multiple subjects at once.
+
+    Layout: the argument prose stays in the description (it IS the column);
+    the case statement, the receipts (bulleted so each piece of evidence
+    reads as a distinct line, truncated via _truncate_field), and the final
+    verdict each get their own field so a reader can scan case → evidence →
+    ruling without reading the whole argument first.
     """
     headline = str(parsed.get("headline", "")).strip()
     case = str(parsed.get("case", "")).strip()
@@ -396,46 +463,41 @@ def _assemble_verdict(parsed: dict, persona_display: str) -> str:
     receipts: list = parsed.get("receipts", []) or []
     verdict = str(parsed.get("verdict", "")).strip()
 
-    parts: list[str] = []
-
-    if headline:
-        parts.append(f"**{headline}**")
-
+    fields: list[EmbedField] = []
     if case:
-        parts.append(f"> ⚖️ **The Case:** {case}")
-
-    if argument:
-        parts.append(argument)
-
-    if receipts:
-        receipt_lines = ["**THE RECEIPTS**"]
-        for r in receipts[:4]:
-            text = str(r).strip()
-            if text:
-                receipt_lines.append(f"> • {text}")
-        parts.append("\n".join(receipt_lines))
-
+        fields.append(EmbedField(name="⚖️ The Case", value=_truncate_text(case), inline=False))
+    receipt_lines = [f"• {str(r).strip()}" for r in receipts[:4] if str(r).strip()]
+    if receipt_lines:
+        fields.append(EmbedField(name="The Receipts", value=_truncate_field(receipt_lines), inline=False))
     if verdict:
-        parts.append(
-            "━" * 20 + "\n"
-            f"## VERDICT: {verdict}\n"
-            + "━" * 20
-        )
+        fields.append(EmbedField(name="🔨 VERDICT", value=_truncate_text(verdict), inline=False))
+    # If only the headline came back, emit a minimal ruling so the embed isn't bare.
+    if not fields and headline:
+        fields.append(EmbedField(
+            name="The Verdict", value=f"Jordan Rivera: the verdict is in on {headline}.", inline=False,
+        ))
 
-    # If only the headline came back, emit a minimal ruling so the post isn't empty.
-    if not case and not argument and not verdict and headline:
-        parts.append(f"*Jordan Rivera: The verdict is in on {headline}.*")
-
-    if persona_display:
-        parts.append(f"— *{persona_display}*")
-
-    return "\n\n".join(parts)
+    return EmbedData(
+        title=headline,
+        description=_truncate_text(argument, limit=2000) if argument else "",
+        fields=fields,
+        footer=persona_display,
+    )
 
 
-def _assemble_index(parsed: dict, persona_display: str) -> str:
-    """Keisha Williams — 'The Index' format.
+def _assemble_index(parsed: dict, persona_display: str) -> EmbedData:
+    """Keisha Williams — 'The Index' format. Revived for B1 (see module
+    docstring — not wired into _RENDERERS).
 
-    Analyst structure: metric code block → definition → standouts bullets → implication.
+    SUITED FOR: a single-metric analytics deep-dive — one number, one
+    definition, a handful of standout players/lineups that number
+    highlights. NOT for a general recap; deliberately stats-first.
+
+    Layout: metric name/value and the one-sentence definition stay in the
+    description (short, belongs right under the headline number). Each
+    standout gets its OWN field — genuinely using the field grid, inline
+    when there are 2+ so they sit side by side — instead of being crammed
+    into one bulleted blob; implication closes as its own field.
     """
     headline = str(parsed.get("headline", "")).strip()
     metric_name = str(parsed.get("metric_name", "THE INDEX")).strip()
@@ -444,51 +506,36 @@ def _assemble_index(parsed: dict, persona_display: str) -> str:
     standouts: list = parsed.get("standouts", []) or []
     implication = str(parsed.get("implication", "")).strip()
 
-    parts: list[str] = []
-
-    if headline:
-        parts.append(f"**{headline}**")
-
-    # Monospaced metric block
-    metric_lines = [
-        "```",
-        f"THE INDEX: {metric_name}",
-        "─────────────────────────",
-    ]
+    desc_parts = [f"**{metric_name}**"]
     if headline_value:
-        metric_lines.append(headline_value)
-    metric_lines.append("```")
-    parts.append("\n".join(metric_lines))
-
+        desc_parts.append(f"`{headline_value}`")
     if definition:
-        parts.append(definition)
+        desc_parts.append(definition)
+    description = "\n".join(desc_parts)
 
-    if standouts:
-        standout_lines = ["__Standouts__"]
-        for s in standouts[:3]:
-            name = str(s.get("name", "")).strip()
-            value = str(s.get("value", "")).strip()
-            note = str(s.get("note", "")).strip()
-            if name:
-                entry = f"> • **{name}**"
-                if value:
-                    entry += f" — {value}"
-                if note:
-                    entry += f", {note}"
-                standout_lines.append(entry)
-        parts.append("\n".join(standout_lines))
-
+    fields: list[EmbedField] = []
+    standout_entries = [s for s in standouts[:3] if str(s.get("name", "")).strip()]
+    for s in standout_entries:
+        name = str(s.get("name", "")).strip()
+        value = str(s.get("value", "")).strip()
+        note = str(s.get("note", "")).strip()
+        field_value = value or "—"
+        if note:
+            field_value += f"\n{note}"
+        fields.append(EmbedField(
+            name=name,
+            value=_truncate_text(field_value),
+            inline=len(standout_entries) > 1,
+        ))
     if implication:
-        parts.append(f"*Why it matters:* {implication}")
+        fields.append(EmbedField(name="Why It Matters", value=_truncate_text(implication), inline=False))
+    # If only the headline came back, emit a minimal stat note so the embed isn't bare.
+    if not fields and headline:
+        fields.append(EmbedField(
+            name="The Index", value=f"Keisha Williams: the numbers tell the story on {headline}.", inline=False,
+        ))
 
-    # If only the headline came back, emit a minimal stat note so the post isn't empty.
-    if not headline_value and not definition and not standouts and not implication and headline:
-        parts.append(f"*Keisha Williams: The numbers tell the story on {headline}.*")
-
-    if persona_display:
-        parts.append(f"— *{persona_display}*")
-
-    return "\n\n".join(parts)
+    return EmbedData(title=headline, description=description, fields=fields, footer=persona_display)
 
 
 def _parse_trade_body(body: str) -> tuple[str, str]:
@@ -815,19 +862,208 @@ def _assemble_potm(parsed: dict, persona_display: str, ctx: dict | None = None) 
     return "\n".join(out)
 
 
-# Maps format_style strings to renderer functions.
+# ---------------------------------------------------------------------------
+# List-style persona field parsers (Phase 1 fix B2)
+# ---------------------------------------------------------------------------
+# Power List, The Race, The Ledger, Triage Report, and Rookie Watch are all
+# format_style="passthrough" -- their LLM output is a single {headline, body}
+# JSON pair where `body` is markdown text following a fixed template each
+# persona's voice_notes spells out exactly (ranked list, graded table, medal
+# lines, etc.). _assemble_passthrough (still their live string renderer) is
+# shared with several OTHER passthrough personas (Jordan Rivera, Big Picture,
+# Coach Beat, The Prelude, Pat Chen, Keisha Williams, Carla Knox) that are
+# tight single-focus prose, not lists -- so it can't be repurposed here
+# without breaking them.
+#
+# Instead of a new format_style + _RENDERERS entry (which would hit the same
+# str-vs-EmbedData contract mismatch B1 hit), these five functions take the
+# ALREADY-ASSEMBLED passthrough body string and regex-parse it back into
+# structured EmbedFields. sim_content_pipeline.py's five _maybe_post_* call
+# sites for these categories call the matching function directly instead of
+# doing description=article["body"][:N] -- see the updated call sites.
+#
+# Each returns (description, fields) so the caller can still set its own
+# title (with the category emoji prefix) and footer exactly as before.
+# Falls back to a single field holding the raw body when the LLM deviated
+# from the required template and the row pattern doesn't match anything --
+# nothing is silently dropped, matching this module's established
+# never-blank-output convention.
+
+_POWER_LIST_ROW_RE = re.compile(r"^>\s*\*\*(\d+)\.\*\*\s+(\S+)\s+(\S+)\s+—\s+(.+)$", re.MULTILINE)
+_POWER_LIST_MOVER_RE = re.compile(r"\*\*Biggest mover:\*\*\s*(.+)", re.IGNORECASE)
+
+
+def _power_list_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """Power List (B2) — splits the fixed '> **N.** TEAM ARROW — note' rows
+    into two side-by-side rank-cluster fields (1-5, 6-10) plus a Biggest
+    Mover field, instead of one 10-line description blob."""
+    rows = _POWER_LIST_ROW_RE.findall(body or "")
+    fields: list[EmbedField] = []
+    if rows:
+        lines = [f"**{rank}.** {team} {arrow} — {note}" for rank, team, arrow, note in rows]
+        first_half, second_half = lines[:5], lines[5:]
+        if first_half:
+            fields.append(EmbedField(name="Ranks 1-5", value=_truncate_field(first_half), inline=True))
+        if second_half:
+            fields.append(EmbedField(name="Ranks 6-10", value=_truncate_field(second_half), inline=True))
+    elif body:
+        fields.append(EmbedField(name="Rankings", value=_truncate_text(body), inline=False))
+
+    mover_match = _POWER_LIST_MOVER_RE.search(body or "")
+    if mover_match:
+        fields.append(EmbedField(name="Biggest Mover", value=_truncate_text(mover_match.group(1).strip()), inline=False))
+
+    return "", fields
+
+
+_LEDGER_ROW_RE = re.compile(r"^([A-Z]{2,4})\s*\|\s*(.+?)\s*\|\s*([A-Z][+-]?)\s*$", re.MULTILINE)
+_LEDGER_VERDICT_RE = re.compile(r"\*\*The Verdict:\*\*\s*(.+)", re.IGNORECASE)
+_LEDGER_WINDOW_RE = re.compile(r"^\*(Window:.+?)\*\s*$", re.MULTILINE)
+
+
+def _the_ledger_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """The Ledger (B2) — one field per graded move (TEAM — GRADE : move text)
+    instead of the whole fenced table crammed into one description."""
+    body = body or ""
+    rows = [
+        (team, move.strip(), grade)
+        for team, move, grade in _LEDGER_ROW_RE.findall(body)
+        if team != "TEAM"  # skip the header row if it slips through the pattern
+    ]
+    fields = [
+        EmbedField(name=f"{team} — {grade}", value=_truncate_text(move), inline=True)
+        for team, move, grade in rows[:5]
+    ]
+    if not fields and body:
+        fields.append(EmbedField(name="Grades", value=_truncate_text(body), inline=False))
+
+    verdict_match = _LEDGER_VERDICT_RE.search(body)
+    if verdict_match:
+        fields.append(EmbedField(name="The Verdict", value=_truncate_text(verdict_match.group(1).strip()), inline=False))
+
+    window_match = _LEDGER_WINDOW_RE.search(body)
+    description = window_match.group(1).strip() if window_match else ""
+    return description, fields
+
+
+_RACE_MEDAL_RE = re.compile(r"^>\s*(🥇|🥈|🥉)\s*\*\*(.+?)\*\*\s*—\s*(.+)$", re.MULTILINE)
+_RACE_ELIMINATED_RE = re.compile(r"\*\*Eliminated this week:\*\*\s*(.+)", re.IGNORECASE)
+_RACE_SLEEPER_RE = re.compile(r"\*\*Sleeper:\*\*\s*(.+)", re.IGNORECASE)
+_RACE_HEADER_RE = re.compile(r"^\*(.+?Race.+?)\*\s*$", re.MULTILINE)
+
+
+def _the_race_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """The Race (B2) — one field per medal candidate, plus separate
+    Eliminated This Week / Sleeper fields, instead of one flat blob."""
+    body = body or ""
+    medals = _RACE_MEDAL_RE.findall(body)
+    fields = [
+        EmbedField(name=f"{medal} {name.strip()}", value=_truncate_text(case.strip()), inline=False)
+        for medal, name, case in medals[:3]
+    ]
+    if not fields and body:
+        fields.append(EmbedField(name="Candidates", value=_truncate_text(body), inline=False))
+
+    eliminated_match = _RACE_ELIMINATED_RE.search(body)
+    if eliminated_match:
+        fields.append(EmbedField(name="Eliminated This Week", value=_truncate_text(eliminated_match.group(1).strip()), inline=True))
+    sleeper_match = _RACE_SLEEPER_RE.search(body)
+    if sleeper_match:
+        fields.append(EmbedField(name="Sleeper", value=_truncate_text(sleeper_match.group(1).strip()), inline=True))
+
+    header_match = _RACE_HEADER_RE.search(body)
+    description = header_match.group(1).strip() if header_match else ""
+    return description, fields
+
+
+_TRIAGE_HEADER_RE = re.compile(r"🩹\s*\*\*(.+?)\*\*\s*\((\w+)\)\s*—\s*(.+)")
+_TRIAGE_FILLING_RE = re.compile(r"\*\*Filling in:\*\*\s*(.+)", re.IGNORECASE)
+_TRIAGE_IMPACT_RE = re.compile(r"\*\*Impact:\*\*\s*(.+)", re.IGNORECASE)
+
+
+def _triage_report_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """Triage Report (B2) — Status / Filling In / Impact as three separate
+    fields instead of one flat 3-line blob.
+
+    Each Triage Report post currently covers exactly ONE injury
+    (_maybe_post_triage_report fires once per injury event), so this yields
+    exactly one Status+Filling-In+Impact trio, not N per-injury fields. If a
+    future batched-injury post is added, extend this to emit one trio per
+    injury instead of restructuring the field shape.
+    """
+    body = body or ""
+    fields: list[EmbedField] = []
+
+    header_match = _TRIAGE_HEADER_RE.search(body)
+    if header_match:
+        player, team, status = header_match.groups()
+        fields.append(EmbedField(name=f"🩹 {player.strip()} ({team})", value=_truncate_text(status.strip()), inline=False))
+
+    filling_match = _TRIAGE_FILLING_RE.search(body)
+    if filling_match:
+        fields.append(EmbedField(name="Filling In", value=_truncate_text(filling_match.group(1).strip()), inline=True))
+
+    impact_match = _TRIAGE_IMPACT_RE.search(body)
+    if impact_match:
+        fields.append(EmbedField(name="Impact", value=_truncate_text(impact_match.group(1).strip()), inline=True))
+
+    if not fields and body:
+        fields.append(EmbedField(name="Injury Report", value=_truncate_text(body), inline=False))
+
+    return "", fields
+
+
+
+# Team code parens are optional in the regex even though rookie_watch.py's own
+# FORMAT instructions require them — that persona's worked _SHAPE example
+# (the "Wemby vs Edey" one) omits them, so real LLM output may follow either
+# the example or the instruction. Not this fix's job to reconcile that
+# pre-existing prompt inconsistency; the parser just needs to survive both.
+_ROOKIE_MEDAL_RE = re.compile(r"^(🥇|🥈)\s*\*\*(.+?)\*\*\s*(?:\((\w+)\)\s*)?—\s*(.+)$", re.MULTILINE)
+_ROOKIE_POSTERIZE_RE = re.compile(r"\*\*(Posterize of the week|Stat of the week):\*\*\s*(.+)", re.IGNORECASE)
+
+
+def _rookie_watch_fields(body: str) -> tuple[str, list[EmbedField]]:
+    """Rookie Watch (B2) — one field per rookie (medal + team + stat line),
+    plus a Posterize/Stat of the Week field, instead of one flat blob. The
+    banter line between the medal lines and the closer becomes the
+    description (whatever prose is left after stripping the matched rows)."""
+    body = body or ""
+    rookies = _ROOKIE_MEDAL_RE.findall(body)
+    fields = []
+    for medal, name, team, stat in rookies[:2]:
+        field_name = f"{medal} {name.strip()}" + (f" ({team})" if team else "")
+        fields.append(EmbedField(name=field_name, value=_truncate_text(stat.strip()), inline=True))
+    if not fields and body:
+        fields.append(EmbedField(name="Rookies", value=_truncate_text(body), inline=False))
+
+    posterize_match = _ROOKIE_POSTERIZE_RE.search(body)
+    if posterize_match:
+        label, text = posterize_match.groups()
+        fields.append(EmbedField(name=label.title(), value=_truncate_text(text.strip()), inline=False))
+
+    # Whatever prose is left after removing the matched medal rows and the
+    # posterize/stat line is the banter line -- becomes the description.
+    remaining = _ROOKIE_MEDAL_RE.sub("", body)
+    remaining = _ROOKIE_POSTERIZE_RE.sub("", remaining)
+    description = "\n".join(line.strip() for line in remaining.splitlines() if line.strip())
+    return description, fields
+
+
+# Maps format_style strings to STRING-BODY renderer functions only.
 # Most renderers take (parsed: dict, persona_display: str) → str.
 # Renderers in _CTX_RENDERERS additionally accept an optional `ctx` dict for
 # structural data (stats, names) that comes from the calling context
 # rather than the LLM.
+#
+# tactical/recap/moment/verdict/index are DELIBERATELY ABSENT (B1) — they now
+# return EmbedData, not str, so including them here would break
+# _assemble_article's uniform string-return contract for whichever caller
+# eventually hit them. Call them directly (see module docstring) once Phase 2
+# assigns one to a persona.
 _RENDERERS = {
     "analytics": _assemble_analytics,
     "hot_take": _assemble_hot_take,
-    "tactical": _assemble_tactical,
-    "recap": _assemble_recap,
-    "moment": _assemble_moment,
-    "verdict": _assemble_verdict,
-    "index": _assemble_index,
     "potm": _assemble_potm,
     "trade_report": _assemble_trade_report,
     "passthrough": _assemble_passthrough,
@@ -842,11 +1078,13 @@ def _assemble_article(
     format_style: str = "default",
     ctx: dict | None = None,
 ) -> str | None:
-    """Dispatch to the correct renderer based on persona format_style.
+    """Dispatch to the correct STRING-BODY renderer based on persona format_style.
 
-    Falls back to _assemble_default when the style key is unrecognised.
-    `ctx` is only consumed by renderers that need extra structural data
-    (currently just `potm`); other renderers ignore it.
+    Falls back to _assemble_default when the style key is unrecognised —
+    this includes the five EmbedData-returning renderers (tactical, recap,
+    moment, verdict, index; see module docstring), since none of them are in
+    _RENDERERS. `ctx` is only consumed by renderers that need extra
+    structural data (currently just `potm`); other renderers ignore it.
     Returns None when the renderer signals the post should be skipped
     (currently only passthrough when body is empty).
     """

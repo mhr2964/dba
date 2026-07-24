@@ -343,6 +343,149 @@ def _build_fact_check_addendum(flagged: list[str]) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-category token budgets (Phase 1 fix A1 — replaces the single global
+# max_tokens=1400 every persona/category used to share).
+# ---------------------------------------------------------------------------
+# Every persona's own voice_notes already states a length target for its
+# format (a word count, a line count, or a row count — see each persona
+# module). This table converts those stated targets into a max_tokens ceiling
+# tight enough that overshooting is expensive, while keeping a floor generous
+# enough that valid short output never gets truncated mid-JSON — that failure
+# mode already happened once at a flat max_tokens=900 (see the raised-to-1400
+# comment this table replaces below): passthrough personas wrap their whole
+# body in a single JSON string value, so escaped newlines/quotes add token
+# overhead well beyond the raw word count, even for a short body.
+#
+# Tiers, keyed by category (not format_style — several format_styles are
+# shared by personas with very different stated lengths, e.g. "passthrough"
+# covers everything from Triage Report's 4-line cap to Big Picture's
+# long-form column):
+#   500  — very short, hard word/line caps stated in voice_notes
+#          (rookie_watch: "Max ~80 words total"; injury_report: "Cap at 4
+#          short lines"; transaction: "Maximum 2 sentences total").
+#   700  — short single-take or fixed-row list formats (~100-160 stated
+#          words: power rankings 10-line list, ledger's 3-5 graded rows,
+#          award race's 3 candidates + eliminated + sleeper, tank watch's
+#          ladder + 2 stock lines + 1-sentence take, hot take hour's 4 turns
+#          at a 35-word cap each).
+#   1000 — medium prose formats (~150-300 words: trade report blurbs +
+#          grades, coach's-corner two paragraphs, Pat Chen's
+#          Observation/Evidence/Implication, the game-recap rotation, POTM,
+#          series preview table + 4 sections).
+#   1400 — long-form only. Big Picture states "~600-800 characters of prose,
+#          plus 3 bullets" as ITS OWN target, but that is still by far the
+#          longest stated target of any persona, so it alone keeps the prior
+#          global ceiling.
+_CATEGORY_MAX_TOKENS: dict[str, int] = {
+    # ~500 — hard word/line caps.
+    "rookie_watch":       500,
+    "injury_report":      500,
+    "transaction":        500,
+    # ~700 — short single-take / fixed-row list formats.
+    "power_rankings":     700,
+    "front_office_grade": 700,
+    "award_race":         700,
+    "hot_take":           700,
+    "debate":             700,
+    "draft_report":       700,
+    "tank_watch":         700,
+    "pick_analysis":      700,
+    # ~1000 — medium prose formats.
+    "trade_report":         1000,
+    "analysis":             1000,
+    "headline":             1000,
+    "game_recap":           1000,
+    "playoff_recap":        1000,
+    "coaching_beat":        1000,
+    "strategy_analysis":    1000,
+    "player_of_the_month":  1000,
+    "series_preview":       1000,
+    # ~1400 — long-form only.
+    "sunday_column": 1400,
+}
+# Fallback for any category not explicitly tuned above (new/experimental
+# categories) — matches the "medium prose" tier rather than the old global
+# 1400 so an untuned category doesn't silently get the most generous budget.
+_DEFAULT_MAX_TOKENS = 1000
+
+
+def _resolve_max_tokens(category: str) -> int:
+    """Look up the max_tokens ceiling for this article category (see table above)."""
+    return _CATEGORY_MAX_TOKENS.get(category, _DEFAULT_MAX_TOKENS)
+
+
+# ---------------------------------------------------------------------------
+# Per-persona word-count targets + code-level length enforcement (Phase 1
+# fix A3 — the most important of the 8 fixes: prompt-only length instructions
+# have already been tried and abandoned once. A documented ≤120-word cap for
+# Pat Chen was scoped, marked ready, and never actually shipped with any code
+# backing it (see Brain/Note Pad/dba/pat-chen-feedback-eval.md, theme P1).
+# This table + _count_words + the retry loop in generate() below is that
+# missing code backing, generalised to every persona instead of just Pat Chen.
+# ---------------------------------------------------------------------------
+# Values are each persona's OWN stated length target from its voice_notes,
+# converted to a word count (a stated char count like Big Picture's
+# "~600-800 characters of prose, plus 3 bullets" is divided by ~5.5 chars/word
+# and the bullets added back in). Keyed by persona_id — several personas share
+# a category (e.g. "game_recap" covers Carla Knox's tight scoreboard Wrap AND
+# Pat Chen's tactical breakdown) but each still has its own distinct stated
+# target, so persona_id is the correct granularity here (unlike the
+# category-keyed token/description tables above, which are about API/Discord
+# mechanics rather than persona voice).
+_PERSONA_WORD_TARGET: dict[str, int] = {
+    "rookie_watch":    80,   # rookie_watch.py: "Max ~80 words total body"
+    "triage_report":   70,   # triage_report.py: "Cap at 4 short lines total"
+    "ren_takahashi":   40,   # ren_takahashi.py: "Maximum 2 sentences total"
+    "power_list":      90,   # power_list.py: 10-line ranked list (≤8 words/line) + mover line
+    "the_ledger":     120,   # the_ledger.py: "Exactly 3-5 rows" graded table + one verdict sentence
+    "the_race":       120,   # the_race.py: 3 candidates + eliminated + sleeper, one line each
+    "darius_cole":     90,   # darius_cole.py: odds ladder + 2 stock lines + "EXACTLY ONE sentence" closer
+    "hot_take_hour":  140,   # hot_take_hour.py: 4 turns, hard 35-word cap each
+    "jordan_rivera":   90,   # jordan_rivera.py: take + why-it-matters + bold prediction, 1-2 sentences each
+    "keisha_williams": 110,  # keisha_williams.py: metric block + definition + 2 standouts + why-it-matters
+    "pat_chen":       130,   # pat_chen.py Observation/Evidence/Implication (POTM shape is longer but still tight per side)
+    "carla_knox":     150,   # carla_knox.py: scoreboard table + 2-3 bullets + league pulse sentence
+    "coach_beat":     150,   # coach_beat.py: 2 paragraphs (2-3 sentences each) + closer
+    "big_picture":    180,   # big_picture.py: "~600-800 characters of prose, plus 3 bullets" (its OWN stated target)
+    "the_prelude":    150,   # the_prelude.py: record table + 4 short sections
+    "marcus_cole":     90,   # marcus_cole.py: "1-2 sentences MAX" per team + grades
+    "marcus_brooks":   90,   # marcus_brooks.py: "Keep it 3-4 sentences"
+}
+# Fallback for any persona not explicitly tuned above.
+_DEFAULT_WORD_TARGET = 150
+
+# A draft exceeding its target by more than this multiplier triggers one
+# regenerate-with-correction retry (mirrors the grounding-check retry's
+# "meaningful margin, not any overage" philosophy — short drafts naturally
+# vary a little, only a real blowout is worth spending a second API call on).
+_LENGTH_OVERAGE_MULTIPLIER = 1.5
+
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def _count_words(text: str) -> int:
+    """Word count for length enforcement — more meaningful than char count
+    since it's insensitive to markdown punctuation (**, >, |, ─) that
+    inflates char counts without inflating what a reader actually reads."""
+    return len(_WORD_RE.findall(text or ""))
+
+
+def _resolve_word_target(persona_id: str) -> int:
+    """Look up this persona's own stated word-count target (see table above)."""
+    return _PERSONA_WORD_TARGET.get(persona_id, _DEFAULT_WORD_TARGET)
+
+
+def _build_length_correction_addendum(word_target: int, actual_words: int) -> str:
+    """System-prompt addendum appended before a one-time length-correction retry."""
+    return (
+        "\n\nCORRECTION NEEDED: Your previous draft ran approximately "
+        f"{actual_words} words, well over this format's ~{word_target}-word target. "
+        f"Rewrite it to come in under {word_target} words. Cut redundant clauses, "
+        "extra sentences, and restated points — do not just shorten individual words."
+    )
+
+
 async def generate(  # noqa: PLR0912, PLR0915
     pool,
     league_id: int,
@@ -564,27 +707,47 @@ async def generate(  # noqa: PLR0912, PLR0915
         "Do not invent, round, or approximate any score value.\n\n"
     )
 
-    narrative_rule = (
-        "NARRATIVE RULE: Write about the narrative of the week/round, not just a single player. "
-        "Cover team stories, matchup dynamics, and multiple players. "
-        "The best articles zoom out to team and league context, not just stat lines. "
-        "Use standings, streaks, and recent results from the context to build a wider story.\n\n"
-        "ANALYTICAL VARIETY (mandatory): Do NOT default to 'Player X had a big game but his team "
-        "needed more' or 'Y's brilliance wasn't enough.' Find a fresh angle EVERY article. "
-        "Acceptable angles: team defense at the rim/perimeter/forcing turnovers; a specific "
-        "matchup that turned the game (player vs player, scheme vs scheme); a teammate's quiet "
-        "contribution that made the star's night possible; a rivalry storyline that gives the game "
-        "extra weight; a coaching decision (rotation, late-game) that swung the result; a "
-        "pace/efficiency angle (TS%, eFG%, pace differential); a trend across the recent batch "
-        "(e.g. 'this is the third time TEAM has X'). Reference at least one OTHER player in the "
-        "game by name with a specific stat. The 'team needed more' framing is BANNED unless "
-        "explicitly named as a cliche the columnist is rejecting.\n\n"
-        "HEADLINE RULE (mandatory): The headline must convey the WHAT at a glance. A reader who "
-        "scrolls past should know what happened without opening it. Include at least ONE of: a "
-        "player's last name, a team code, a specific number, or a specific event. Generic "
-        "vibes-headlines are BANNED. Better: 'Brunson's 38 Lifts NYK Over BOS in Double-OT "
-        "Thriller' or 'LAL's Defense Holds MIA Under 90 for First Time This Season'.\n\n"
-    )
+    # A2: narrative_rule's "zoom out to team and league context, reference at
+    # least one OTHER player by name" instruction is only appropriate for
+    # categories that are actually supposed to cover multiple storylines.
+    # It used to be injected into EVERY system prompt, which directly fought
+    # personas whose own voice_notes demand tight, single-focus brevity
+    # (Jordan Rivera: "reacts to ONE specific moment"; Keisha Williams: "picks
+    # ONE metric... do NOT summarize the whole game"; Rookie Watch, The Race,
+    # Power List, Triage Report, etc. are all single-subject-per-article by
+    # design). Scoped to the two categories that are explicitly wide-angle:
+    # sunday_column (Big Picture's whole point is a league-wide arc) and
+    # game_recap (the main columnist rotation, whose task_line already asks
+    # for "multiple players and team storylines").  The HEADLINE RULE half of
+    # this block is generically useful (a vague headline is bad regardless of
+    # scope) so it stays bundled with the narrative half only for these two
+    # categories — other categories already get headline guidance from their
+    # own output_shape_rule/voice_notes.
+    _NARRATIVE_RULE_CATEGORIES = frozenset({"sunday_column", "game_recap"})
+    if _category in _NARRATIVE_RULE_CATEGORIES:
+        narrative_rule = (
+            "NARRATIVE RULE: Write about the narrative of the week/round, not just a single player. "
+            "Cover team stories, matchup dynamics, and multiple players. "
+            "The best articles zoom out to team and league context, not just stat lines. "
+            "Use standings, streaks, and recent results from the context to build a wider story.\n\n"
+            "ANALYTICAL VARIETY (mandatory): Do NOT default to 'Player X had a big game but his team "
+            "needed more' or 'Y's brilliance wasn't enough.' Find a fresh angle EVERY article. "
+            "Acceptable angles: team defense at the rim/perimeter/forcing turnovers; a specific "
+            "matchup that turned the game (player vs player, scheme vs scheme); a teammate's quiet "
+            "contribution that made the star's night possible; a rivalry storyline that gives the game "
+            "extra weight; a coaching decision (rotation, late-game) that swung the result; a "
+            "pace/efficiency angle (TS%, eFG%, pace differential); a trend across the recent batch "
+            "(e.g. 'this is the third time TEAM has X'). Reference at least one OTHER player in the "
+            "game by name with a specific stat. The 'team needed more' framing is BANNED unless "
+            "explicitly named as a cliche the columnist is rejecting.\n\n"
+            "HEADLINE RULE (mandatory): The headline must convey the WHAT at a glance. A reader who "
+            "scrolls past should know what happened without opening it. Include at least ONE of: a "
+            "player's last name, a team code, a specific number, or a specific event. Generic "
+            "vibes-headlines are BANNED. Better: 'Brunson's 38 Lifts NYK Over BOS in Double-OT "
+            "Thriller' or 'LAL's Defense Holds MIA Under 90 for First Time This Season'.\n\n"
+        )
+    else:
+        narrative_rule = ""
 
     # Prevent hallucination of 3-team trades: only describe a trade as 3-team
     # when the context explicitly shows 3 distinct team names as parties.
@@ -633,6 +796,10 @@ async def generate(  # noqa: PLR0912, PLR0915
         persona.voice_notes
     )
 
+    # Per-category token budget (A1) — replaces the old flat 1400 for every
+    # persona/category. See _CATEGORY_MAX_TOKENS above for the tier rationale.
+    _max_tokens = _resolve_max_tokens(_category)
+
     # _capture_prompt is a ride-along-only internal hook (see services/columnist_ride_along.py).
     # Populate it before the API call so the full prompt is preserved even if the call fails.
     # Default None is a no-op — production callers pay zero cost.
@@ -640,7 +807,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         _capture_prompt["system"] = system_prompt
         _capture_prompt["user"] = user_content
         _capture_prompt["model"] = "claude-haiku-4-5-20251001"
-        _capture_prompt["max_tokens"] = 1400
+        _capture_prompt["max_tokens"] = _max_tokens
 
     try:
         import anthropic
@@ -654,15 +821,25 @@ async def generate(  # noqa: PLR0912, PLR0915
         # the main structured shape) — parse-failure and missing-field fallbacks
         # already produce degraded placeholder text that isn't worth fact-checking
         # or re-rolling, so they keep returning immediately as before.
+        #
+        # Length-check retry (A3) shares this exact loop shape: at most one
+        # regeneration when the first draft blows past this persona's own
+        # stated word-count target by more than _LENGTH_OVERAGE_MULTIPLIER.
+        # Both checks can fire on the same attempt — their correction notes
+        # are appended together for the retry rather than spending two API
+        # calls on two separate re-rolls.
         _fact_check_addendum = ""
+        _length_correction_addendum = ""
         _final_headline: str | None = None
         _final_body: str | None = None
+        _word_target = _resolve_word_target(_persona_id)
+        _first_attempt_word_count: int | None = None
 
         for _attempt in range(2):
             message = await client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1400,  # raised from 900 — passthrough personas produce longer bodies; truncation broke JSON parse
-                system=system_prompt + _fact_check_addendum,
+                max_tokens=_max_tokens,  # per-category budget (A1) — see _CATEGORY_MAX_TOKENS
+                system=system_prompt + _fact_check_addendum + _length_correction_addendum,
                 messages=[{"role": "user", "content": user_content}],
             )
             raw = message.content[0].text.strip()
@@ -778,6 +955,14 @@ async def generate(  # noqa: PLR0912, PLR0915
                 # personas (output_shape_override set) only need headline to be valid.
                 # Personas with a named format_style that has its own renderer also pass
                 # with headline alone — the renderer handles empty optional fields.
+                # NOTE (B1): "moment", "verdict", "index", "tactical", "recap" are listed
+                # here for forward-compat, but as of B1 those five renderers return
+                # EmbedData (not str) and are NOT in columnist_assembly._RENDERERS — a
+                # persona whose format_style is one of these would still pass this
+                # leniency check, but _assemble_article() below would silently fall back
+                # to _assemble_default instead of calling the EmbedData renderer. Phase 2
+                # must add explicit dispatch for these five before assigning one to a
+                # live persona (see columnist_assembly.py's module docstring).
                 headline = str(parsed.get("headline", "")).strip()
                 lede = str(parsed.get("lede", "")).strip()
                 _uses_custom_shape = bool(_effective_shape)
@@ -837,18 +1022,41 @@ async def generate(  # noqa: PLR0912, PLR0915
             # draft has ungrounded numeric claims; post whatever we have after
             # the retry rather than dropping the article entirely.
             _ungrounded = _find_ungrounded_claims(_final_headline, _final_body, _context)
-            if _ungrounded and _attempt == 0:
-                log.warning(
-                    "columnist_service: %s/%s draft had ungrounded numeric claim(s) %r — retrying once",
-                    _persona_id, _category, _ungrounded[:5],
-                )
-                _fact_check_addendum = _build_fact_check_addendum(_ungrounded)
+
+            # ── Length check (A3) ─────────────────────────────────────────────
+            # Code-level enforcement of this persona's own stated word-count
+            # target — prompt-only length instructions were tried and dropped
+            # once already (see _PERSONA_WORD_TARGET's docstring above).
+            _word_count = _count_words(_final_body)
+            if _attempt == 0:
+                _first_attempt_word_count = _word_count
+            _over_target = _word_count > _word_target * _LENGTH_OVERAGE_MULTIPLIER
+
+            if (_ungrounded or _over_target) and _attempt == 0:
+                if _ungrounded:
+                    log.warning(
+                        "columnist_service: %s/%s draft had ungrounded numeric claim(s) %r — retrying once",
+                        _persona_id, _category, _ungrounded[:5],
+                    )
+                    _fact_check_addendum = _build_fact_check_addendum(_ungrounded)
+                if _over_target:
+                    log.warning(
+                        "columnist_service: %s/%s draft ran %d words (target ~%d) — retrying once",
+                        _persona_id, _category, _word_count, _word_target,
+                    )
+                    _length_correction_addendum = _build_length_correction_addendum(_word_target, _word_count)
                 _final_headline = _final_body = None
                 continue
             if _ungrounded:
                 log.warning(
                     "columnist_service: %s/%s still has ungrounded numeric claim(s) %r after retry — posting anyway",
                     _persona_id, _category, _ungrounded[:5],
+                )
+            if _over_target:
+                log.warning(
+                    "columnist_service: %s/%s still over length after retry (first=%d, retry=%d words, target ~%d) "
+                    "— posting anyway",
+                    _persona_id, _category, _first_attempt_word_count, _word_count, _word_target,
                 )
             break
 

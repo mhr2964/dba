@@ -18,12 +18,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from services import columnist_service
 from services.personas.base import Persona
 
-pytestmark = pytest.mark.asyncio
+# asyncio_mode = auto (pytest.ini) already covers the async tests below --
+# no blanket pytestmark, since this file also has plain sync tests for the
+# pure-function helpers (_count_words, _resolve_word_target).
 
 
 def _persona(**overrides) -> Persona:
@@ -148,6 +148,209 @@ async def test_ungrounded_claim_persists_after_retry_still_posts():
 
     assert result is not None
     assert "72.9" in result["headline"]
+    assert len(insert_calls) == 1
+
+
+async def test_resolve_max_tokens_short_form_category():
+    """A1: rookie_watch states '~80 words total' in its own voice_notes — gets
+    the tightest tier, well below the old flat 1400."""
+    assert columnist_service._resolve_max_tokens("rookie_watch") == 500
+
+
+async def test_resolve_max_tokens_long_form_category_keeps_high_budget():
+    """A1: sunday_column (Big Picture) is the one long-form category that keeps
+    the prior generous ceiling."""
+    assert columnist_service._resolve_max_tokens("sunday_column") == 1400
+
+
+async def test_resolve_max_tokens_unknown_category_uses_medium_default():
+    assert columnist_service._resolve_max_tokens("some_new_category") == 1000
+
+
+async def test_generate_uses_per_category_max_tokens_in_api_call():
+    """The actual messages.create() call must receive the category's resolved
+    budget, not a flat constant — pins A1 end-to-end through generate()."""
+    persona = _persona()
+    context = {"team": "OKC"}
+    body_json = json.dumps({
+        "headline": "OKC Wins",
+        "lede": "Thunder win.",
+        "key_stats": [{"label": "Score", "value": "100-90"}],
+        "bullets": ["OKC led wire to wire."],
+        "verdict": "Statement win.",
+    })
+
+    fake_anthropic_module = SimpleNamespace(
+        AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+    )
+    pool = MagicMock()
+
+    async def _fake_insert(pool_, **insert_kwargs):
+        return 1
+
+    with (
+        patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+        patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+        patch("services.columnist_ride_along.should_fire_for", return_value=True),
+        patch("data.repositories.article_repo.insert", _fake_insert),
+        patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+    ):
+        await columnist_service.generate(
+            pool, league_id=1, season=2025,
+            persona_id=persona.id, category="rookie_watch", context=context,
+        )
+
+    fake_client = fake_anthropic_module.AsyncAnthropic.return_value
+    _, call_kwargs = fake_client.messages.create.call_args
+    assert call_kwargs["max_tokens"] == 500
+
+
+async def test_narrative_rule_included_for_sunday_column_and_game_recap():
+    """A2: the 'zoom out to team and league context' rule should reach the
+    system prompt only for the two wide-angle categories."""
+    persona = _persona(voice_notes="Tight single-focus voice.")
+    for category in ("sunday_column", "game_recap"):
+        captured: dict = {}
+        body_json = json.dumps({
+            "headline": "H", "lede": "L", "key_stats": [], "bullets": ["b"], "verdict": "V",
+        })
+        fake_anthropic_module = SimpleNamespace(
+            AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+        )
+        pool = MagicMock()
+
+        async def _fake_insert(pool_, **insert_kwargs):
+            return 1
+
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+            patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+            patch("services.columnist_ride_along.should_fire_for", return_value=True),
+            patch("data.repositories.article_repo.insert", _fake_insert),
+            patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+        ):
+            await columnist_service.generate(
+                pool, league_id=1, season=2025,
+                persona_id=persona.id, category=category, context={},
+                _capture_prompt=captured,
+            )
+        assert "NARRATIVE RULE" in captured["system"], f"expected NARRATIVE RULE for {category}"
+
+
+async def test_narrative_rule_omitted_for_tight_single_focus_categories():
+    """A2: single-focus categories (e.g. rookie_watch, award_race, hot_take)
+    must NOT get the wide-angle instruction — it directly fights their
+    voice_notes' brevity requirements."""
+    persona = _persona(voice_notes="Tight single-focus voice.")
+    for category in ("rookie_watch", "award_race", "hot_take", "power_rankings"):
+        captured: dict = {}
+        body_json = json.dumps({
+            "headline": "H", "lede": "L", "key_stats": [], "bullets": ["b"], "verdict": "V",
+        })
+        fake_anthropic_module = SimpleNamespace(
+            AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+        )
+        pool = MagicMock()
+
+        async def _fake_insert(pool_, **insert_kwargs):
+            return 1
+
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+            patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+            patch("services.columnist_ride_along.should_fire_for", return_value=True),
+            patch("data.repositories.article_repo.insert", _fake_insert),
+            patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+        ):
+            await columnist_service.generate(
+                pool, league_id=1, season=2025,
+                persona_id=persona.id, category=category, context={},
+                _capture_prompt=captured,
+            )
+        assert "NARRATIVE RULE" not in captured["system"], f"unexpected NARRATIVE RULE for {category}"
+
+
+def test_count_words_ignores_markdown_punctuation():
+    text = "**Bold** > blockquote line ─────────── `code` | table | cell"
+    # Words: Bold, blockquote, line, code, table, cell = 6
+    assert columnist_service._count_words(text) == 6
+
+
+def test_resolve_word_target_known_persona():
+    assert columnist_service._resolve_word_target("rookie_watch") == 80
+
+
+def test_resolve_word_target_unknown_persona_uses_default():
+    assert columnist_service._resolve_word_target("some_new_persona") == 150
+
+
+async def test_over_length_draft_triggers_one_retry_then_posts_trimmed_draft():
+    """A3: a draft that blows past rookie_watch's 80-word target by >50% should
+    trigger exactly one retry with a trim-to-N-words correction; the trimmed
+    second draft is what gets posted."""
+    persona = _persona(id="rookie_watch")
+    context = {"team": "OKC"}
+    long_words = " ".join(["word"] * 200)
+    long_body = json.dumps({
+        "headline": "Rookie Battle",
+        "body": f"🥇 **A** — stats\n🥈 **B** — stats\n\n{long_words}",
+    })
+    short_body = json.dumps({
+        "headline": "Rookie Battle",
+        "body": "🥇 **A** — stats\n🥈 **B** — stats\n\nShort banter line.",
+    })
+    result, insert_calls = await _run_generate(persona, context, [long_body, short_body])
+
+    assert result is not None
+    assert "word word word" not in result["body"]
+    assert len(insert_calls) == 1
+
+
+async def test_length_never_exceeded_no_retry_single_api_call():
+    """A3: a draft already within the target's overage threshold should NOT
+    trigger a retry — exactly one API call."""
+    persona = _persona(id="rookie_watch")
+    context = {"team": "OKC"}
+    body_json = json.dumps({
+        "headline": "Rookie Battle",
+        "body": "🥇 **A** — stats\n🥈 **B** — stats\n\nShort banter line.",
+    })
+    fake_anthropic_module = SimpleNamespace(
+        AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+    )
+    pool = MagicMock()
+
+    async def _fake_insert(pool_, **insert_kwargs):
+        return 1
+
+    with (
+        patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+        patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+        patch("services.columnist_ride_along.should_fire_for", return_value=True),
+        patch("data.repositories.article_repo.insert", _fake_insert),
+        patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+    ):
+        await columnist_service.generate(
+            pool, league_id=1, season=2025,
+            persona_id=persona.id, category="game_recap", context=context,
+        )
+    fake_client = fake_anthropic_module.AsyncAnthropic.return_value
+    assert fake_client.messages.create.call_count == 1
+
+
+async def test_still_over_length_after_retry_still_posts():
+    """A3: both attempts blow past the target — grounding never clears, but the
+    article still posts (graceful fallback) after exactly 2 API calls."""
+    persona = _persona(id="rookie_watch")
+    context = {"team": "OKC"}
+    long_words_1 = " ".join(["word"] * 200)
+    long_words_2 = " ".join(["term"] * 200)
+    bad_1 = json.dumps({"headline": "Rookie Battle", "body": f"Intro. {long_words_1}"})
+    bad_2 = json.dumps({"headline": "Rookie Battle", "body": f"Intro. {long_words_2}"})
+    result, insert_calls = await _run_generate(persona, context, [bad_1, bad_2])
+
+    assert result is not None
+    assert "term term term" in result["body"]
     assert len(insert_calls) == 1
 
 
