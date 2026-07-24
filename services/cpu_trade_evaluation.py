@@ -258,6 +258,16 @@ async def _cpu_evaluate(
     assets_receiving = proposer_asset_dicts + proposer_pick_dicts
     assets_giving = counterparty_asset_dicts + counterparty_pick_dicts
 
+    # CPU's current full roster — feeds the B6 archetype-redundancy check inside
+    # cpu_should_accept (finding #1: B6 was never checked on the accept path).
+    # Best-effort: a fetch failure just means B6 is silently skipped for this trade,
+    # same as any other optional context input here.
+    try:
+        _counterparty_roster = await player_repo.get_roster(pool, league.id, counterparty_team.id)
+    except Exception as _roster_exc:
+        log.warning(f"[trade] roster fetch failed, B6 accept-path check skipped: {_roster_exc}")
+        _counterparty_roster = []
+
     # Fetch role map for the players the CPU is giving up (counterparty_players).
     # Used by Guard 2 in cpu_should_accept to detect lead-role give-ups that lack
     # a starter-quality or 1st-round-pick return.
@@ -308,6 +318,7 @@ async def _cpu_evaluate(
         current_cap_used=cpu_cap_used,
         giving_role_map=_giving_role_map or None,
         pool=pool,
+        receiving_team_roster=_counterparty_roster or None,
         context_kwargs={
             "league_id": league.id,
             "season": league.current_season,

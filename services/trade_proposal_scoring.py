@@ -392,7 +392,9 @@ def _fill_to_value(
     return offer_player_ids, offer_pick_ids, accumulated
 
 
-def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
+def _team_a_wants_player(
+    posture_a: dict, player: player_repo.Player, *, age_override: int | None = None
+) -> bool:
     """Return True if team A's posture makes it interested in this player.
 
     B1 posture gates (hard checks):
@@ -401,8 +403,14 @@ def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
     - rebuilding/soft_rebuild: reject aging vets over 30 unless they're expiring
       contracts (years_remaining=1) worth flipping.  The age signal is an
       approximation; callers with full contract data can refine in scoring.
+
+    age_override: use this age directly instead of deriving it from
+      player.birth_date via _player_age. Lets callers that only have a plain
+      dict with a precomputed "age" field (e.g. cpu_should_accept's asset
+      dicts, which never carry birth_date) reuse this helper without
+      constructing a fake Player object.
     """
-    age = _player_age(player)
+    age = age_override if age_override is not None else _player_age(player)
     mode = posture_a["mode"]
     urgency = posture_a.get("urgency", "comfortable")
 
