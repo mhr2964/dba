@@ -43,6 +43,8 @@ COACH_BEAT = register_persona(Persona(
         "**The Quinn Read:** {one-sentence closing — what this tells you about the coach as a character, "
         "or the prediction it implies for the next few games}\n\n"
         "RULES:\n"
+        "- 🚨 HARD CAP: total body ≤120 words, counting both paragraphs and the closer together. "
+        "If you're over, cut restated points and extra clauses — do not just shorten individual words.\n"
         "- No 'What Worked / What Didn't' buckets. Write prose.\n"
         "- No bullet lists. No section headers beyond the italic opener and the bold closer.\n"
         "- Reference real players from the context only. Do not invent names or stat lines.\n"

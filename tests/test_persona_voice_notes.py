@@ -59,6 +59,14 @@ def test_pat_chen_has_player_detail_rules():
     assert "name at least one teammate" in voice_notes
 
 
+def test_coach_beat_has_explicit_word_cap_in_prompt_text():
+    """A5: coach_beat had no firm code-enforced cap pre-Phase-1 (only an
+    inferred estimate from its stated 2-paragraphs-plus-closer format) — this
+    pins an explicit hard word count now stated in the prompt text itself."""
+    voice_notes = PERSONAS["coach_beat"].voice_notes.lower()
+    assert "120 words" in voice_notes
+
+
 def test_keisha_williams_has_a_stated_standing_bias():
     voice_notes = PERSONAS["keisha_williams"].voice_notes.lower()
     assert "standing bias" in voice_notes

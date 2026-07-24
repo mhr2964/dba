@@ -290,6 +290,12 @@ def test_resolve_word_target_pat_chen_matches_prompt_hard_cap():
     assert columnist_service._resolve_word_target("pat_chen") == 120
 
 
+def test_resolve_word_target_coach_beat_matches_prompt_hard_cap():
+    """A5: code-side target tightened from 150 to 120 to match the explicit
+    "Hard cap: total body <=120 words" instruction now in coach_beat's voice_notes."""
+    assert columnist_service._resolve_word_target("coach_beat") == 120
+
+
 async def test_over_length_draft_triggers_one_retry_then_posts_trimmed_draft():
     """A3: a draft that blows past rookie_watch's 80-word target by >50% should
     trigger exactly one retry with a trim-to-N-words correction; the trimmed
