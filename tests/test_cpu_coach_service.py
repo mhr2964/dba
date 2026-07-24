@@ -11,12 +11,12 @@ from __future__ import annotations
 import random
 from unittest.mock import AsyncMock
 
-import pytest
-
 from services import cpu_coach_service as ccs
 from services import team_intel
 
-pytestmark = pytest.mark.asyncio
+# asyncio_mode = auto (pytest.ini) already covers the async tests below --
+# no blanket pytestmark, since this file also has plain sync tests for the
+# pure-function helpers (_analyze_roster, _decide_strategy).
 
 
 # ---------------------------------------------------------------------------
