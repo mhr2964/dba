@@ -25,6 +25,28 @@ def test_pat_chen_ships_no_arms_race_rule():
     assert "first season" in voice_notes
 
 
+def test_pat_chen_has_explicit_word_cap_in_prompt_text():
+    """A4: the ~120-word target lives in the LLM-facing prompt text itself,
+    not just the code-side _PERSONA_WORD_TARGET enforcement table."""
+    voice_notes = PERSONAS["pat_chen"].voice_notes.lower()
+    assert "120 words" in voice_notes
+
+
+def test_pat_chen_has_no_sidebar_field():
+    """P1a: the sidebar was already removed before this pass — pin that it
+    stays gone (no sidebar field/reference anywhere in the persona shape)."""
+    voice_notes = PERSONAS["pat_chen"].voice_notes.lower()
+    assert "sidebar" not in voice_notes
+
+
+def test_pat_chen_has_player_detail_rules():
+    """P4: name the defender(s) on a defensive failure and a teammate who
+    benefited from playmaking, with a stat — never shipped until now."""
+    voice_notes = PERSONAS["pat_chen"].voice_notes.lower()
+    assert "name the defender" in voice_notes
+    assert "name at least one teammate" in voice_notes
+
+
 def test_keisha_williams_has_a_stated_standing_bias():
     voice_notes = PERSONAS["keisha_williams"].voice_notes.lower()
     assert "standing bias" in voice_notes
