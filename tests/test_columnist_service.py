@@ -151,6 +151,60 @@ async def test_ungrounded_claim_persists_after_retry_still_posts():
     assert len(insert_calls) == 1
 
 
+async def test_resolve_max_tokens_short_form_category():
+    """A1: rookie_watch states '~80 words total' in its own voice_notes — gets
+    the tightest tier, well below the old flat 1400."""
+    assert columnist_service._resolve_max_tokens("rookie_watch") == 500
+
+
+async def test_resolve_max_tokens_long_form_category_keeps_high_budget():
+    """A1: sunday_column (Big Picture) is the one long-form category that keeps
+    the prior generous ceiling."""
+    assert columnist_service._resolve_max_tokens("sunday_column") == 1400
+
+
+async def test_resolve_max_tokens_unknown_category_uses_medium_default():
+    assert columnist_service._resolve_max_tokens("some_new_category") == 1000
+
+
+async def test_generate_uses_per_category_max_tokens_in_api_call():
+    """The actual messages.create() call must receive the category's resolved
+    budget, not a flat constant — pins A1 end-to-end through generate()."""
+    persona = _persona()
+    context = {"team": "OKC"}
+    body_json = json.dumps({
+        "headline": "OKC Wins",
+        "lede": "Thunder win.",
+        "key_stats": [{"label": "Score", "value": "100-90"}],
+        "bullets": ["OKC led wire to wire."],
+        "verdict": "Statement win.",
+    })
+
+    fake_anthropic_module = SimpleNamespace(
+        AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+    )
+    pool = MagicMock()
+
+    async def _fake_insert(pool_, **insert_kwargs):
+        return 1
+
+    with (
+        patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+        patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+        patch("services.columnist_ride_along.should_fire_for", return_value=True),
+        patch("data.repositories.article_repo.insert", _fake_insert),
+        patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+    ):
+        await columnist_service.generate(
+            pool, league_id=1, season=2025,
+            persona_id=persona.id, category="rookie_watch", context=context,
+        )
+
+    fake_client = fake_anthropic_module.AsyncAnthropic.return_value
+    _, call_kwargs = fake_client.messages.create.call_args
+    assert call_kwargs["max_tokens"] == 500
+
+
 async def test_old_shape_headline_body_also_gets_grounding_checked():
     """The legacy {"headline","body"} shape (no 'lede') goes through the same
     grounding gate as the structured shape."""

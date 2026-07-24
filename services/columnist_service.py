@@ -343,6 +343,78 @@ def _build_fact_check_addendum(flagged: list[str]) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-category token budgets (Phase 1 fix A1 — replaces the single global
+# max_tokens=1400 every persona/category used to share).
+# ---------------------------------------------------------------------------
+# Every persona's own voice_notes already states a length target for its
+# format (a word count, a line count, or a row count — see each persona
+# module). This table converts those stated targets into a max_tokens ceiling
+# tight enough that overshooting is expensive, while keeping a floor generous
+# enough that valid short output never gets truncated mid-JSON — that failure
+# mode already happened once at a flat max_tokens=900 (see the raised-to-1400
+# comment this table replaces below): passthrough personas wrap their whole
+# body in a single JSON string value, so escaped newlines/quotes add token
+# overhead well beyond the raw word count, even for a short body.
+#
+# Tiers, keyed by category (not format_style — several format_styles are
+# shared by personas with very different stated lengths, e.g. "passthrough"
+# covers everything from Triage Report's 4-line cap to Big Picture's
+# long-form column):
+#   500  — very short, hard word/line caps stated in voice_notes
+#          (rookie_watch: "Max ~80 words total"; injury_report: "Cap at 4
+#          short lines"; transaction: "Maximum 2 sentences total").
+#   700  — short single-take or fixed-row list formats (~100-160 stated
+#          words: power rankings 10-line list, ledger's 3-5 graded rows,
+#          award race's 3 candidates + eliminated + sleeper, tank watch's
+#          ladder + 2 stock lines + 1-sentence take, hot take hour's 4 turns
+#          at a 35-word cap each).
+#   1000 — medium prose formats (~150-300 words: trade report blurbs +
+#          grades, coach's-corner two paragraphs, Pat Chen's
+#          Observation/Evidence/Implication, the game-recap rotation, POTM,
+#          series preview table + 4 sections).
+#   1400 — long-form only. Big Picture states "~600-800 characters of prose,
+#          plus 3 bullets" as ITS OWN target, but that is still by far the
+#          longest stated target of any persona, so it alone keeps the prior
+#          global ceiling.
+_CATEGORY_MAX_TOKENS: dict[str, int] = {
+    # ~500 — hard word/line caps.
+    "rookie_watch":       500,
+    "injury_report":      500,
+    "transaction":        500,
+    # ~700 — short single-take / fixed-row list formats.
+    "power_rankings":     700,
+    "front_office_grade": 700,
+    "award_race":         700,
+    "hot_take":           700,
+    "debate":             700,
+    "draft_report":       700,
+    "tank_watch":         700,
+    "pick_analysis":      700,
+    # ~1000 — medium prose formats.
+    "trade_report":         1000,
+    "analysis":             1000,
+    "headline":             1000,
+    "game_recap":           1000,
+    "playoff_recap":        1000,
+    "coaching_beat":        1000,
+    "strategy_analysis":    1000,
+    "player_of_the_month":  1000,
+    "series_preview":       1000,
+    # ~1400 — long-form only.
+    "sunday_column": 1400,
+}
+# Fallback for any category not explicitly tuned above (new/experimental
+# categories) — matches the "medium prose" tier rather than the old global
+# 1400 so an untuned category doesn't silently get the most generous budget.
+_DEFAULT_MAX_TOKENS = 1000
+
+
+def _resolve_max_tokens(category: str) -> int:
+    """Look up the max_tokens ceiling for this article category (see table above)."""
+    return _CATEGORY_MAX_TOKENS.get(category, _DEFAULT_MAX_TOKENS)
+
+
 async def generate(  # noqa: PLR0912, PLR0915
     pool,
     league_id: int,
@@ -633,6 +705,10 @@ async def generate(  # noqa: PLR0912, PLR0915
         persona.voice_notes
     )
 
+    # Per-category token budget (A1) — replaces the old flat 1400 for every
+    # persona/category. See _CATEGORY_MAX_TOKENS above for the tier rationale.
+    _max_tokens = _resolve_max_tokens(_category)
+
     # _capture_prompt is a ride-along-only internal hook (see services/columnist_ride_along.py).
     # Populate it before the API call so the full prompt is preserved even if the call fails.
     # Default None is a no-op — production callers pay zero cost.
@@ -640,7 +716,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         _capture_prompt["system"] = system_prompt
         _capture_prompt["user"] = user_content
         _capture_prompt["model"] = "claude-haiku-4-5-20251001"
-        _capture_prompt["max_tokens"] = 1400
+        _capture_prompt["max_tokens"] = _max_tokens
 
     try:
         import anthropic
@@ -661,7 +737,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         for _attempt in range(2):
             message = await client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1400,  # raised from 900 — passthrough personas produce longer bodies; truncation broke JSON parse
+                max_tokens=_max_tokens,  # per-category budget (A1) — see _CATEGORY_MAX_TOKENS
                 system=system_prompt + _fact_check_addendum,
                 messages=[{"role": "user", "content": user_content}],
             )
