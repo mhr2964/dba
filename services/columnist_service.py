@@ -415,6 +415,77 @@ def _resolve_max_tokens(category: str) -> int:
     return _CATEGORY_MAX_TOKENS.get(category, _DEFAULT_MAX_TOKENS)
 
 
+# ---------------------------------------------------------------------------
+# Per-persona word-count targets + code-level length enforcement (Phase 1
+# fix A3 — the most important of the 8 fixes: prompt-only length instructions
+# have already been tried and abandoned once. A documented ≤120-word cap for
+# Pat Chen was scoped, marked ready, and never actually shipped with any code
+# backing it (see Brain/Note Pad/dba/pat-chen-feedback-eval.md, theme P1).
+# This table + _count_words + the retry loop in generate() below is that
+# missing code backing, generalised to every persona instead of just Pat Chen.
+# ---------------------------------------------------------------------------
+# Values are each persona's OWN stated length target from its voice_notes,
+# converted to a word count (a stated char count like Big Picture's
+# "~600-800 characters of prose, plus 3 bullets" is divided by ~5.5 chars/word
+# and the bullets added back in). Keyed by persona_id — several personas share
+# a category (e.g. "game_recap" covers Carla Knox's tight scoreboard Wrap AND
+# Pat Chen's tactical breakdown) but each still has its own distinct stated
+# target, so persona_id is the correct granularity here (unlike the
+# category-keyed token/description tables above, which are about API/Discord
+# mechanics rather than persona voice).
+_PERSONA_WORD_TARGET: dict[str, int] = {
+    "rookie_watch":    80,   # rookie_watch.py: "Max ~80 words total body"
+    "triage_report":   70,   # triage_report.py: "Cap at 4 short lines total"
+    "ren_takahashi":   40,   # ren_takahashi.py: "Maximum 2 sentences total"
+    "power_list":      90,   # power_list.py: 10-line ranked list (≤8 words/line) + mover line
+    "the_ledger":     120,   # the_ledger.py: "Exactly 3-5 rows" graded table + one verdict sentence
+    "the_race":       120,   # the_race.py: 3 candidates + eliminated + sleeper, one line each
+    "darius_cole":     90,   # darius_cole.py: odds ladder + 2 stock lines + "EXACTLY ONE sentence" closer
+    "hot_take_hour":  140,   # hot_take_hour.py: 4 turns, hard 35-word cap each
+    "jordan_rivera":   90,   # jordan_rivera.py: take + why-it-matters + bold prediction, 1-2 sentences each
+    "keisha_williams": 110,  # keisha_williams.py: metric block + definition + 2 standouts + why-it-matters
+    "pat_chen":       130,   # pat_chen.py Observation/Evidence/Implication (POTM shape is longer but still tight per side)
+    "carla_knox":     150,   # carla_knox.py: scoreboard table + 2-3 bullets + league pulse sentence
+    "coach_beat":     150,   # coach_beat.py: 2 paragraphs (2-3 sentences each) + closer
+    "big_picture":    180,   # big_picture.py: "~600-800 characters of prose, plus 3 bullets" (its OWN stated target)
+    "the_prelude":    150,   # the_prelude.py: record table + 4 short sections
+    "marcus_cole":     90,   # marcus_cole.py: "1-2 sentences MAX" per team + grades
+    "marcus_brooks":   90,   # marcus_brooks.py: "Keep it 3-4 sentences"
+}
+# Fallback for any persona not explicitly tuned above.
+_DEFAULT_WORD_TARGET = 150
+
+# A draft exceeding its target by more than this multiplier triggers one
+# regenerate-with-correction retry (mirrors the grounding-check retry's
+# "meaningful margin, not any overage" philosophy — short drafts naturally
+# vary a little, only a real blowout is worth spending a second API call on).
+_LENGTH_OVERAGE_MULTIPLIER = 1.5
+
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def _count_words(text: str) -> int:
+    """Word count for length enforcement — more meaningful than char count
+    since it's insensitive to markdown punctuation (**, >, |, ─) that
+    inflates char counts without inflating what a reader actually reads."""
+    return len(_WORD_RE.findall(text or ""))
+
+
+def _resolve_word_target(persona_id: str) -> int:
+    """Look up this persona's own stated word-count target (see table above)."""
+    return _PERSONA_WORD_TARGET.get(persona_id, _DEFAULT_WORD_TARGET)
+
+
+def _build_length_correction_addendum(word_target: int, actual_words: int) -> str:
+    """System-prompt addendum appended before a one-time length-correction retry."""
+    return (
+        "\n\nCORRECTION NEEDED: Your previous draft ran approximately "
+        f"{actual_words} words, well over this format's ~{word_target}-word target. "
+        f"Rewrite it to come in under {word_target} words. Cut redundant clauses, "
+        "extra sentences, and restated points — do not just shorten individual words."
+    )
+
+
 async def generate(  # noqa: PLR0912, PLR0915
     pool,
     league_id: int,
@@ -750,15 +821,25 @@ async def generate(  # noqa: PLR0912, PLR0915
         # the main structured shape) — parse-failure and missing-field fallbacks
         # already produce degraded placeholder text that isn't worth fact-checking
         # or re-rolling, so they keep returning immediately as before.
+        #
+        # Length-check retry (A3) shares this exact loop shape: at most one
+        # regeneration when the first draft blows past this persona's own
+        # stated word-count target by more than _LENGTH_OVERAGE_MULTIPLIER.
+        # Both checks can fire on the same attempt — their correction notes
+        # are appended together for the retry rather than spending two API
+        # calls on two separate re-rolls.
         _fact_check_addendum = ""
+        _length_correction_addendum = ""
         _final_headline: str | None = None
         _final_body: str | None = None
+        _word_target = _resolve_word_target(_persona_id)
+        _first_attempt_word_count: int | None = None
 
         for _attempt in range(2):
             message = await client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=_max_tokens,  # per-category budget (A1) — see _CATEGORY_MAX_TOKENS
-                system=system_prompt + _fact_check_addendum,
+                system=system_prompt + _fact_check_addendum + _length_correction_addendum,
                 messages=[{"role": "user", "content": user_content}],
             )
             raw = message.content[0].text.strip()
@@ -933,18 +1014,41 @@ async def generate(  # noqa: PLR0912, PLR0915
             # draft has ungrounded numeric claims; post whatever we have after
             # the retry rather than dropping the article entirely.
             _ungrounded = _find_ungrounded_claims(_final_headline, _final_body, _context)
-            if _ungrounded and _attempt == 0:
-                log.warning(
-                    "columnist_service: %s/%s draft had ungrounded numeric claim(s) %r — retrying once",
-                    _persona_id, _category, _ungrounded[:5],
-                )
-                _fact_check_addendum = _build_fact_check_addendum(_ungrounded)
+
+            # ── Length check (A3) ─────────────────────────────────────────────
+            # Code-level enforcement of this persona's own stated word-count
+            # target — prompt-only length instructions were tried and dropped
+            # once already (see _PERSONA_WORD_TARGET's docstring above).
+            _word_count = _count_words(_final_body)
+            if _attempt == 0:
+                _first_attempt_word_count = _word_count
+            _over_target = _word_count > _word_target * _LENGTH_OVERAGE_MULTIPLIER
+
+            if (_ungrounded or _over_target) and _attempt == 0:
+                if _ungrounded:
+                    log.warning(
+                        "columnist_service: %s/%s draft had ungrounded numeric claim(s) %r — retrying once",
+                        _persona_id, _category, _ungrounded[:5],
+                    )
+                    _fact_check_addendum = _build_fact_check_addendum(_ungrounded)
+                if _over_target:
+                    log.warning(
+                        "columnist_service: %s/%s draft ran %d words (target ~%d) — retrying once",
+                        _persona_id, _category, _word_count, _word_target,
+                    )
+                    _length_correction_addendum = _build_length_correction_addendum(_word_target, _word_count)
                 _final_headline = _final_body = None
                 continue
             if _ungrounded:
                 log.warning(
                     "columnist_service: %s/%s still has ungrounded numeric claim(s) %r after retry — posting anyway",
                     _persona_id, _category, _ungrounded[:5],
+                )
+            if _over_target:
+                log.warning(
+                    "columnist_service: %s/%s still over length after retry (first=%d, retry=%d words, target ~%d) "
+                    "— posting anyway",
+                    _persona_id, _category, _first_attempt_word_count, _word_count, _word_target,
                 )
             break
 

@@ -18,12 +18,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from services import columnist_service
 from services.personas.base import Persona
 
-pytestmark = pytest.mark.asyncio
+# asyncio_mode = auto (pytest.ini) already covers the async tests below --
+# no blanket pytestmark, since this file also has plain sync tests for the
+# pure-function helpers (_count_words, _resolve_word_target).
 
 
 def _persona(**overrides) -> Persona:
@@ -268,6 +268,90 @@ async def test_narrative_rule_omitted_for_tight_single_focus_categories():
                 _capture_prompt=captured,
             )
         assert "NARRATIVE RULE" not in captured["system"], f"unexpected NARRATIVE RULE for {category}"
+
+
+def test_count_words_ignores_markdown_punctuation():
+    text = "**Bold** > blockquote line ─────────── `code` | table | cell"
+    # Words: Bold, blockquote, line, code, table, cell = 6
+    assert columnist_service._count_words(text) == 6
+
+
+def test_resolve_word_target_known_persona():
+    assert columnist_service._resolve_word_target("rookie_watch") == 80
+
+
+def test_resolve_word_target_unknown_persona_uses_default():
+    assert columnist_service._resolve_word_target("some_new_persona") == 150
+
+
+async def test_over_length_draft_triggers_one_retry_then_posts_trimmed_draft():
+    """A3: a draft that blows past rookie_watch's 80-word target by >50% should
+    trigger exactly one retry with a trim-to-N-words correction; the trimmed
+    second draft is what gets posted."""
+    persona = _persona(id="rookie_watch")
+    context = {"team": "OKC"}
+    long_words = " ".join(["word"] * 200)
+    long_body = json.dumps({
+        "headline": "Rookie Battle",
+        "body": f"🥇 **A** — stats\n🥈 **B** — stats\n\n{long_words}",
+    })
+    short_body = json.dumps({
+        "headline": "Rookie Battle",
+        "body": "🥇 **A** — stats\n🥈 **B** — stats\n\nShort banter line.",
+    })
+    result, insert_calls = await _run_generate(persona, context, [long_body, short_body])
+
+    assert result is not None
+    assert "word word word" not in result["body"]
+    assert len(insert_calls) == 1
+
+
+async def test_length_never_exceeded_no_retry_single_api_call():
+    """A3: a draft already within the target's overage threshold should NOT
+    trigger a retry — exactly one API call."""
+    persona = _persona(id="rookie_watch")
+    context = {"team": "OKC"}
+    body_json = json.dumps({
+        "headline": "Rookie Battle",
+        "body": "🥇 **A** — stats\n🥈 **B** — stats\n\nShort banter line.",
+    })
+    fake_anthropic_module = SimpleNamespace(
+        AsyncAnthropic=MagicMock(return_value=_fake_client(body_json))
+    )
+    pool = MagicMock()
+
+    async def _fake_insert(pool_, **insert_kwargs):
+        return 1
+
+    with (
+        patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+        patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+        patch("services.columnist_ride_along.should_fire_for", return_value=True),
+        patch("data.repositories.article_repo.insert", _fake_insert),
+        patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+    ):
+        await columnist_service.generate(
+            pool, league_id=1, season=2025,
+            persona_id=persona.id, category="game_recap", context=context,
+        )
+    fake_client = fake_anthropic_module.AsyncAnthropic.return_value
+    assert fake_client.messages.create.call_count == 1
+
+
+async def test_still_over_length_after_retry_still_posts():
+    """A3: both attempts blow past the target — grounding never clears, but the
+    article still posts (graceful fallback) after exactly 2 API calls."""
+    persona = _persona(id="rookie_watch")
+    context = {"team": "OKC"}
+    long_words_1 = " ".join(["word"] * 200)
+    long_words_2 = " ".join(["term"] * 200)
+    bad_1 = json.dumps({"headline": "Rookie Battle", "body": f"Intro. {long_words_1}"})
+    bad_2 = json.dumps({"headline": "Rookie Battle", "body": f"Intro. {long_words_2}"})
+    result, insert_calls = await _run_generate(persona, context, [bad_1, bad_2])
+
+    assert result is not None
+    assert "term term term" in result["body"]
+    assert len(insert_calls) == 1
 
 
 async def test_old_shape_headline_body_also_gets_grounding_checked():
