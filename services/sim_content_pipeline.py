@@ -272,6 +272,61 @@ async def _maybe_post_power_list(
 # fires every ~70 games (weekly)
 _rookie_watch_game_counter: dict[int, int] = {}
 
+# Recency-weighting knobs for rookie_watch (Finding #6) — the most recent
+# _RECENCY_WINDOW games count _RECENCY_WEIGHT times as much as the rest of the
+# season-to-date sample, so an October hot streak doesn't dominate a stat line
+# the column frames as "current form" once the rookie has cooled off.
+_RECENCY_WINDOW = 15
+_RECENCY_WEIGHT = 2.0
+
+
+def _recency_weighted_avg(games: list[dict], stat_key: str) -> float:
+    """Weighted average of stat_key across games (assumed sorted most-recent-first),
+    with the first _RECENCY_WINDOW entries weighted _RECENCY_WEIGHT times as heavily."""
+    if not games:
+        return 0.0
+    total_weight = 0.0
+    total_value = 0.0
+    for i, g in enumerate(games):
+        w = _RECENCY_WEIGHT if i < _RECENCY_WINDOW else 1.0
+        total_weight += w
+        total_value += (g.get(stat_key) or 0) * w
+    return total_value / total_weight if total_weight else 0.0
+
+
+def _build_rookie_watch_stats(box_rows: list[dict]) -> list[dict]:
+    """Group per-game rookie box scores by player and compute recency-weighted
+    PPG/RPG/APG (Finding #6) instead of a flat season-to-date average.
+
+    Previously the SQL query pulled the whole season with no recency window,
+    so a rookie who was excellent in October and has since cooled off still
+    showed a stat line dominated by early performance, which the column then
+    framed as current form. box_rows is one row per (rookie, game) this
+    season, each with player_id/name/team/points/rebounds/assists/game_index;
+    game_index orders games chronologically within a season so "most recent"
+    is well-defined even mid-season.
+    """
+    by_player: dict[int, dict] = {}
+    for row in box_rows:
+        pid = row["player_id"]
+        entry = by_player.setdefault(pid, {"name": row["name"], "team": row["team"], "games": []})
+        entry["games"].append(row)
+
+    out: list[dict] = []
+    for pid, entry in by_player.items():
+        games = sorted(entry["games"], key=lambda g: g.get("game_index") or 0, reverse=True)
+        out.append({
+            "id": pid,
+            "name": entry["name"],
+            "team": entry["team"],
+            "ppg": round(_recency_weighted_avg(games, "points"), 1),
+            "rpg": round(_recency_weighted_avg(games, "rebounds"), 1),
+            "apg": round(_recency_weighted_avg(games, "assists"), 1),
+            "gp": len(games),
+        })
+    out.sort(key=lambda r: r["ppg"], reverse=True)
+    return out[:10]
+
 
 async def _maybe_post_rookie_watch(
     pool,
@@ -299,27 +354,26 @@ async def _maybe_post_rookie_watch(
     try:
         context = await _build_batch_game_context(batch_results)
 
-        # Fetch rookie players and their recent stat averages.
-        rookie_rows = await pool.fetch(
+        # Fetch one row per (rookie, game) this season — game_index orders them
+        # chronologically so _build_rookie_watch_stats can recency-weight the
+        # averages instead of flattening the whole season into one number.
+        rookie_box_rows = await pool.fetch(
             """
-            SELECT p.id, p.first_name || ' ' || p.last_name AS name,
+            SELECT p.id AS player_id, p.first_name || ' ' || p.last_name AS name,
                    t.nba_team_code AS team,
-                   ROUND(AVG(b.points)::numeric, 1) AS ppg,
-                   ROUND(AVG(b.rebounds_off + b.rebounds_def)::numeric, 1) AS rpg,
-                   ROUND(AVG(b.assists)::numeric, 1) AS apg,
-                   COUNT(b.id) AS gp
+                   b.points AS points,
+                   b.rebounds_off + b.rebounds_def AS rebounds,
+                   b.assists AS assists,
+                   g.game_index AS game_index
             FROM players p
             JOIN teams t ON t.id = p.team_id
-            LEFT JOIN game_box_scores b ON b.player_id = p.id
-            LEFT JOIN games g ON g.id = b.game_id AND g.season = $2
+            JOIN game_box_scores b ON b.player_id = p.id
+            JOIN games g ON g.id = b.game_id AND g.season = $2
             WHERE p.league_id = $1 AND p.is_rookie = true
-            GROUP BY p.id, t.nba_team_code
-            ORDER BY AVG(b.points) DESC NULLS LAST
-            LIMIT 10
             """,
             league_id, season,
         )
-        rookies = [dict(r) for r in rookie_rows]
+        rookies = _build_rookie_watch_stats([dict(r) for r in rookie_box_rows])
         if not rookies:
             log.info("_maybe_post_rookie_watch: no rookies found — skipping")
             return
