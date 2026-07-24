@@ -246,7 +246,17 @@ async def test_years_pro_incremented(db_pool):
 async def test_high_potential_grows_more(db_pool):
     """
     High-potential young player accumulates more OVR gain than a low-potential
-    peer over many progression runs (10 iterations, reset between runs).
+    peer over many progression runs (reset between runs).
+
+    Uses real (unseeded) randomness rather than a fixed seed, so the sample
+    size has to be large enough to make the expected-mean gap (~2.0 vs ~1.5
+    OVR/run from _potential_growth_weight) survive sampling noise. At 10
+    iterations the two distributions' means were only ~1.65 std devs apart,
+    giving a ~5% chance of a spurious flip on any given run (confirmed: this
+    test failed once across many green suite runs, then passed in isolation
+    and on retry — not a real regression). 50 iterations pushes that
+    false-failure rate below 0.05% while keeping runtime negligible (each
+    iteration is a couple of lightweight DB round-trips).
     """
     league_id, team_id = await _create_test_league_and_team(db_pool)
 
@@ -255,7 +265,7 @@ async def test_high_potential_grows_more(db_pool):
 
     high_gains: list[int] = []
     low_gains: list[int] = []
-    iterations = 10
+    iterations = 50
 
     for _ in range(iterations):
         # Insert fresh pair of players each iteration (DB is truncated per test
