@@ -54,6 +54,25 @@ def _rgb_to_int(rgb: tuple[int, int, int]) -> int:
     return (r << 16) | (g << 8) | b
 
 
+# ---------------------------------------------------------------------------
+# Per-category Discord description truncation ceiling (Phase 1 fix A6).
+# ---------------------------------------------------------------------------
+# Every embed description used to slice to a flat [:2000] regardless of
+# category — far too generous for a "concise" scannable Discord embed (2000
+# chars is close to the platform's 4096 description hard-cap, i.e. this was
+# barely a limit at all). Only sunday_column (Big Picture) is actually
+# long-form by design; everything else gets a tighter, scannable ceiling.
+_DESCRIPTION_CHAR_LIMIT: dict[str, int] = {
+    "sunday_column": 2000,  # the one genuinely long-form category — unchanged
+}
+_DEFAULT_DESCRIPTION_CHAR_LIMIT = 800
+
+
+def _description_limit(category: str) -> int:
+    """Discord embed description truncation ceiling for this article category."""
+    return _DESCRIPTION_CHAR_LIMIT.get(category, _DEFAULT_DESCRIPTION_CHAR_LIMIT)
+
+
 async def _build_batch_game_context(batch_results: list[dict]) -> dict:
     """Build a minimal context dict from batch game results for specialty personas.
 
@@ -252,7 +271,7 @@ async def _maybe_post_power_list(
         if article:
             embed_data = EmbedData(
                 title=f"🏆 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("power_rankings")],
                 color=_rgb_to_int((212, 175, 55)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -391,7 +410,7 @@ async def _maybe_post_rookie_watch(
         if article:
             embed_data = EmbedData(
                 title=f"🌟 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("rookie_watch")],
                 color=_rgb_to_int((100, 200, 120)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -476,7 +495,7 @@ async def _maybe_post_big_picture(
         if article:
             embed_data = EmbedData(
                 title=f"🔭 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("sunday_column")],
                 color=_rgb_to_int((70, 90, 160)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -622,7 +641,7 @@ async def _maybe_post_ledger(
         if article:
             embed_data = EmbedData(
                 title=f"📒 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("front_office_grade")],
                 color=_rgb_to_int((120, 120, 120)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -739,7 +758,7 @@ async def _maybe_post_the_race(
         if article:
             embed_data = EmbedData(
                 title=f"🏅 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("award_race")],
                 color=_rgb_to_int((200, 160, 40)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -820,7 +839,7 @@ async def _maybe_post_triage_report(
         if article and article.get("body"):
             embed_data = EmbedData(
                 title=f"🩺 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("injury_report")],
                 color=_rgb_to_int((231, 76, 60)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -1593,7 +1612,7 @@ async def _maybe_post_columnist(
                 body = body.replace("DAVE:", "**Dave:**").replace("TONY:", "**Tony:**")
                 embed_data = EmbedData(
                     title=f"🔥 {article['headline']}",
-                    description=body[:2000],
+                    description=body[:_description_limit("game_recap")],
                     color=_rgb_to_int((231, 76, 60)),
                     footer="Dave Collier & Tony Reyes · DBA Sports Debate",
                 )
@@ -1602,7 +1621,7 @@ async def _maybe_post_columnist(
                 rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
                 embed_data = EmbedData(
                     title=article["headline"],
-                    description=article["body"][:2000],
+                    description=article["body"][:_description_limit("game_recap")],
                     color=_rgb_to_int(rgb),
                     footer=f"by {persona.display_name} · {persona.byline}" if persona else None,
                 )
@@ -1713,7 +1732,7 @@ async def _maybe_post_columnist(
             if dc_article:
                 dc_embed_data = EmbedData(
                     title=f"📋 {dc_article['headline']}",
-                    description=dc_article["body"][:2000],
+                    description=dc_article["body"][:_description_limit("tank_watch")],
                     color=_rgb_to_int((34, 139, 34)),
                     footer=f"by {dc_persona.display_name} · {dc_persona.byline}",
                 )
@@ -1785,7 +1804,7 @@ async def _maybe_post_columnist(
         if mb_article:
             embed_data = EmbedData(
                 title=mb_article["headline"],
-                description=mb_article["body"][:2000],
+                description=mb_article["body"][:_description_limit("power_rankings")],
                 color=_rgb_to_int((0, 128, 255)),
                 footer=f"by {mb_persona.display_name} · {mb_persona.byline}" if mb_persona else None,
             )
@@ -1858,7 +1877,7 @@ async def _maybe_post_prelude(
         if article:
             embed_data = EmbedData(
                 title=f"🎬 {article['headline']}",
-                description=article["body"][:2000],
+                description=article["body"][:_description_limit("series_preview")],
                 color=_rgb_to_int((80, 40, 120)),
                 footer=f"by {persona.display_name} · {persona.byline}",
             )
@@ -1925,7 +1944,7 @@ async def _maybe_post_playoff_columnist(
     rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
     embed_data = EmbedData(
         title=article["headline"],
-        description=article["body"][:2000],
+        description=article["body"][:_description_limit("playoff_recap")],
         color=_rgb_to_int(rgb),
         footer=f"by {persona.display_name} · {persona.byline}",
     )
@@ -2037,7 +2056,7 @@ async def _maybe_post_potm(
             if article:
                 embed_data = EmbedData(
                     title=f"\U0001F3C6 {article['headline']}",
-                    description=article["body"][:2000],
+                    description=article["body"][:_description_limit("player_of_the_month")],
                     color=_rgb_to_int(_PERSONA_COLORS.get("pat_chen", (100, 100, 100))),
                     footer=f"by {pat.display_name} · {pat.byline}",
                 )
@@ -2213,7 +2232,7 @@ async def _maybe_post_coach_beat(
         if cb_article:
             embed_data = EmbedData(
                 title=f"\U0001F3A4 {cb_article['headline']}",
-                description=cb_article["body"][:2000],
+                description=cb_article["body"][:_description_limit("coaching_beat")],
                 color=_rgb_to_int((160, 82, 45)),
                 footer=f"by {cb_persona.display_name} · {cb_persona.byline}",
             )
