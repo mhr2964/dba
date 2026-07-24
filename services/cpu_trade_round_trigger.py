@@ -18,6 +18,7 @@ from data.repositories import league_repo, team_repo, trade_repo
 from services import columnist_ride_along as _columnist_ride_along
 from services import columnist_service, cpu_trade_service
 from services import feedback_log as _feedback_log
+from services import trade_magnitude as _trade_magnitude_service
 from services.announcer_protocol import EmbedData, EmbedField
 from services.personas import PERSONAS as _PERSONAS
 from services.sim_channel_announcer import _BoundChannelAnnouncer, _get_transactions_channel
@@ -372,6 +373,35 @@ async def _run_cpu_trades_inner(
             except Exception as _sig_exc:
                 log.warning(f"Marcus Cole signal enrichment failed: {_sig_exc}")
 
+            # D2: how big is this trade against team/league history, so Marcus
+            # Cole can truthfully call it "the biggest trade this franchise has
+            # made" -- only wired here (context), never invented by the LLM.
+            trade_magnitude: dict | None = None
+            try:
+                _league_row_tm = await pool.fetchrow(
+                    "SELECT salary_cap FROM leagues WHERE id = $1", league_id
+                )
+                if _league_row_tm and _league_row_tm["salary_cap"]:
+                    _salary_cap = _league_row_tm["salary_cap"]
+                    _league_rank = await _trade_magnitude_service.rank_trade_in_league_history(
+                        pool, league_id, trade_id, _salary_cap, season,
+                    )
+                    _proposer_rank = await _trade_magnitude_service.rank_trade_in_team_history(
+                        pool, league_id, proposer_id, trade_id, _salary_cap, season,
+                    )
+                    _counterparty_rank = await _trade_magnitude_service.rank_trade_in_team_history(
+                        pool, league_id, counterparty_id, trade_id, _salary_cap, season,
+                    )
+                    trade_magnitude = {
+                        "league": _league_rank,
+                        "team_ranks": {
+                            proposer_code: _proposer_rank,
+                            counterparty_code: _counterparty_rank,
+                        },
+                    }
+            except Exception as _tm_exc:
+                log.warning(f"Marcus Cole trade magnitude computation failed: {_tm_exc}")
+
             trade_context = {
                 "proposer_team": proposer_code,
                 "counterparty_team": counterparty_code,
@@ -395,6 +425,11 @@ async def _run_cpu_trades_inner(
                         "gets": _asset_items(proposer_id),
                     },
                 ],
+                # {"league": {rank, total_trades, magnitude, is_biggest} | None,
+                #  "team_ranks": {team_code: {...} | None}} -- see
+                # services/trade_magnitude.py. None/absent when the league has
+                # no salary_cap row or the ranking lookup failed.
+                "trade_magnitude": trade_magnitude,
             }
             _mc_ra_capture: dict | None = (
                 {} if (

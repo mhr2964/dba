@@ -255,6 +255,88 @@ async def test_blockbuster_approved_trade_posts_marcus_cole_article():
     assert register_calls[0]["subject_trade_id"] == 3
 
 
+async def test_blockbuster_trade_wires_trade_magnitude_into_context(): # D2
+    """When the league has a real salary_cap, trade_magnitude ranking (league +
+    both teams) is computed and attached to the context dict Marcus Cole's
+    columnist_service.generate call receives, under the key 'trade_magnitude'."""
+    new_trades = [_trade_row(4, 10, 20, "approved")]
+    team_rows = [{"id": 10, "nba_team_code": "LAL"}, {"id": 20, "nba_team_code": "BOS"}]
+    player_rows = [
+        {"id": 500, "first_name": "Star", "last_name": "Guy", "overall": 90, "position": "C", "age": 26},
+    ]
+
+    class _Asset:
+        def __init__(self, asset_type, from_team_id, to_team_id, player_id=None):
+            self.asset_type = asset_type
+            self.from_team_id = from_team_id
+            self.to_team_id = to_team_id
+            self.player_id = player_id
+
+    assets = [_Asset("player", 10, 20, player_id=500)]
+
+    league_rank = {"rank": 1, "total_trades": 12, "magnitude": 55.5, "is_biggest": True}
+    lal_rank = {"rank": 1, "total_trades": 3, "magnitude": 55.5, "is_biggest": True}
+    bos_rank = {"rank": 2, "total_trades": 5, "magnitude": 55.5, "is_biggest": False}
+
+    async def _fake_league_rank(pool_, league_id_, trade_id_, salary_cap, season_):
+        return league_rank
+
+    async def _fake_team_rank(pool_, league_id_, team_id_, trade_id_, salary_cap, season_):
+        return lal_rank if team_id_ == 10 else bos_rank
+
+    with (
+        patch("services.cpu_trade_round_trigger.trade_repo.get_assets", AsyncMock(return_value=assets)),
+        patch(
+            "services.cpu_trade_round_trigger._trade_magnitude_service.rank_trade_in_league_history",
+            _fake_league_rank,
+        ),
+        patch(
+            "services.cpu_trade_round_trigger._trade_magnitude_service.rank_trade_in_team_history",
+            _fake_team_rank,
+        ),
+    ):
+        _transactions_channel, _analysis_channel, _trade_calls, columnist_calls = await _run(
+            new_trades, team_rows, player_rows=player_rows,
+            league_row={"salary_cap": 140_000_000},
+        )
+
+    generate_calls = [c for c in columnist_calls if isinstance(c, tuple) and c[0] == "generate"]
+    assert len(generate_calls) == 1
+    trade_magnitude = generate_calls[0][1]["context"]["trade_magnitude"]
+    assert trade_magnitude == {
+        "league": league_rank,
+        "team_ranks": {"LAL": lal_rank, "BOS": bos_rank},
+    }
+
+
+async def test_blockbuster_trade_without_salary_cap_leaves_trade_magnitude_none():
+    """No usable league row (salary_cap missing/None) -- trade_magnitude stays
+    None rather than crashing the post."""
+    new_trades = [_trade_row(5, 10, 20, "approved")]
+    team_rows = [{"id": 10, "nba_team_code": "LAL"}, {"id": 20, "nba_team_code": "BOS"}]
+    player_rows = [
+        {"id": 600, "first_name": "Star", "last_name": "Two", "overall": 85, "position": "SF", "age": 24},
+    ]
+
+    class _Asset:
+        def __init__(self, asset_type, from_team_id, to_team_id, player_id=None):
+            self.asset_type = asset_type
+            self.from_team_id = from_team_id
+            self.to_team_id = to_team_id
+            self.player_id = player_id
+
+    assets = [_Asset("player", 10, 20, player_id=600)]
+
+    with patch("services.cpu_trade_round_trigger.trade_repo.get_assets", AsyncMock(return_value=assets)):
+        _transactions_channel, _analysis_channel, _trade_calls, columnist_calls = await _run(
+            new_trades, team_rows, player_rows=player_rows, league_row=None,
+        )
+
+    generate_calls = [c for c in columnist_calls if isinstance(c, tuple) and c[0] == "generate"]
+    assert len(generate_calls) == 1
+    assert generate_calls[0][1]["context"]["trade_magnitude"] is None
+
+
 async def test_no_transactions_channel_is_noop():
     """transactions_channel resolves to None: function returns early, no crash."""
     pool = _make_pool([], [])
