@@ -926,6 +926,39 @@ async def _seed_or_revalidate_hth_narratives(pool, league_id: int, season: int) 
 
     _HTH_NARRATIVES[league_id] = current
 
+
+# Size of the lottery odds pool _compute_lottery_odds normalizes across —
+# mirrors the real NBA's ~14-team non-playoff lottery field so odds reflect
+# actual record gaps across the whole tanking race, not just the 5 rows shown.
+_LOTTERY_POOL_SIZE = 14
+
+
+def _compute_lottery_odds(pool_rows: list[dict]) -> dict[int, float]:
+    """Compute real, record-gap-sensitive draft lottery odds from actual
+    standings (Finding #4) instead of a hardcoded rank-position array.
+
+    Weights each team in the lottery pool by inverse win percentage (worse
+    record = more ping-pong balls), normalized so the pool sums to 100%.
+    Unlike a fixed rank-only spread (14.0/13.4/12.7/12.0/10.5 regardless of
+    how bunched or spread the bottom standings actually are), two teams with
+    a real multi-game gap now get visibly different odds while two teams a
+    half-game apart land close together.
+    """
+    if not pool_rows:
+        return {}
+    weights: dict[int, float] = {}
+    for row in pool_rows:
+        wins = row.get("wins", 0) or 0
+        losses = row.get("losses", 0) or 0
+        games = wins + losses
+        win_pct = (wins / games) if games > 0 else 0.0
+        # Floor keeps a still-undefeated-but-untested team (games=0, early
+        # season) from producing a zero-weight edge case.
+        weights[row["team_id"]] = max(0.02, 1.0 - win_pct)
+    total = sum(weights.values()) or 1.0
+    return {tid: round(w / total * 100.0, 1) for tid, w in weights.items()}
+
+
 # Columnist force-mode cadence: minimum game-index gap between articles when
 # force=True.  70 games ~= 7 game-days of 10 games each.
 _COLUMNIST_FORCE_MIN_GAP: int = 70
@@ -1553,7 +1586,9 @@ async def _maybe_post_columnist(
         else:
             dc_article = None
             try:
-                # Build bottom-5 context for Darius Cole.
+                # Build bottom-5 context for Darius Cole from the full lottery pool
+                # (mirrors the real NBA's ~14-team non-playoff field) so lottery_odds_pct
+                # is computed from actual record gaps, not just rank position.
                 _all_standings = await pool.fetch(
                     """
                     SELECT sc.team_id, t.nba_team_code, sc.wins, sc.losses
@@ -1561,19 +1596,18 @@ async def _maybe_post_columnist(
                     JOIN teams t ON t.id = sc.team_id
                     WHERE sc.league_id = $1 AND sc.season = $2
                     ORDER BY sc.wins ASC, sc.losses DESC
-                    LIMIT 5
+                    LIMIT $3
                     """,
-                    league_id, season,
+                    league_id, season, _LOTTERY_POOL_SIZE,
                 )
-                # Approximate lottery odds: last-place gets ~14%, decreasing by ~2% per slot.
-                _lottery_base = [14.0, 13.4, 12.7, 12.0, 10.5]
+                _lottery_odds = _compute_lottery_odds(_all_standings)
                 _bottom5 = []
                 _bottom5_team_ids: list[int] = []
-                for _idx, _row in enumerate(_all_standings):
+                for _row in _all_standings[:5]:
                     _bottom5.append({
                         "team": _row["nba_team_code"],
                         "record": f"{_row['wins']}-{_row['losses']}",
-                        "lottery_odds_pct": _lottery_base[_idx] if _idx < len(_lottery_base) else 9.0,
+                        "lottery_odds_pct": _lottery_odds.get(_row["team_id"], 0.0),
                     })
                     _bottom5_team_ids.append(_row["team_id"])
                 _dc_context = dict(batch_context)
