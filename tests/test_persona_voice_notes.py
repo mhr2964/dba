@@ -19,6 +19,7 @@ were otherwise flavors of the same analytics viewpoint).
 """
 from __future__ import annotations
 
+from services import columnist_service
 from services.personas import PERSONAS
 
 
@@ -75,6 +76,27 @@ def test_coach_beat_has_scheme_history_awareness():
     voice_notes = PERSONAS["coach_beat"].voice_notes.lower()
     assert "scheme_history" in voice_notes
     assert "w-l record" in voice_notes
+
+
+def test_marcus_brooks_has_real_stat_computation_mechanic():
+    """C1: Marcus Brooks was one of the two thinnest personas (near-generic
+    voice, no domain-specific mechanics) — this pins the added eFG%/margin
+    computation rule that backs his "hot/struggling" claims with real math."""
+    voice_notes = PERSONAS["marcus_brooks"].voice_notes
+    assert "REAL MECHANICS" in voice_notes
+    assert "eFG%" in voice_notes
+    assert "average scoring margin" in voice_notes
+
+
+def test_ren_takahashi_has_real_transaction_mechanic():
+    """C1: Ren Takahashi was the other thinnest persona — this pins the added
+    rental-vs-commitment / roster-fit heuristic, scoped to fit his tight
+    2-sentence/40-word cap (ren_takahashi is NOT in the word-target edit
+    exception list — only voice_notes text changed, target stays 40)."""
+    voice_notes = PERSONAS["ren_takahashi"].voice_notes.lower()
+    assert "rental" in voice_notes
+    assert "logjam" in voice_notes
+    assert columnist_service._resolve_word_target("ren_takahashi") == 40
 
 
 def test_keisha_williams_has_a_stated_standing_bias():
