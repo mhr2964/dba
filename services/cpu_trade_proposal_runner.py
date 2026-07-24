@@ -29,7 +29,6 @@ from services.cpu_trade_posture import (
 from services.trade_block_builder import _get_franchise_plan
 from services.trade_gates import _apply_final_trade_gates
 from services.trade_proposal_scoring import (
-    _asset_upside_modifier,
     _derive_cap_state,
     _get_trade_target_positions,
     _is_stacked_without_upgrade,
@@ -1027,14 +1026,15 @@ async def _run_incoming_first_for_team(
                 log.debug("context modifier for candidate ranking failed pid=%d: %s", pid, _ctx_rank_exc)
 
             # B3: asset upside modifier — boosts young/pedigree/award-race players
-            # so they don't get ranked as filler or offered away cheaply.
-            _upside_mod = _asset_upside_modifier(
-                p,
-                draft_year=getattr(p, "draft_year", None),
+            # so they don't get ranked as filler or offered away cheaply. Lives in
+            # trade_value_math now (moved for #5 — trade_grading.evaluate_trade
+            # needed to call it too, and importing trade_proposal_scoring from
+            # trade_grading would be circular).
+            _upside_mod = trade_value_math.asset_upside_modifier(
+                {"age": _age_p},
                 current_season=season,
                 # Award ranks not available at proposal-rank time without an
-                # extra DB call per candidate. Skip here; B3 in cpu_should_accept
-                # handles the accept-side valuation via player_trade_value modifiers.
+                # extra DB call per candidate.
             )
 
             # Pass 1: score WITHOUT arch penalty — arch check deferred to pass 2
@@ -1146,6 +1146,7 @@ async def _run_incoming_first_for_team(
                 recently_signed_ids,
                 counterparty_mode=_cand_posture_b.get("mode", "developing"),
                 plan_a=_plan_a,
+                live_mode_a=mode_a,
             )
 
             # Compute exact post-trade archetype counts:

@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from collections import Counter
 
-from services.trade_value_math import pick_trade_value, player_team_specific_value, player_trade_value
+from services.trade_value_math import (
+    asset_upside_modifier,
+    pick_trade_value,
+    player_team_specific_value,
+    player_trade_value,
+)
 
 
 def evaluate_trade(
@@ -45,25 +50,36 @@ def evaluate_trade(
         "rationale": str,
     }
     """
+    # #5: B3's upside modifier previously only reached pass-1 proposal-rank
+    # scoring (trade_proposal_scoring._run_incoming_first_for_team) — grading
+    # never saw it, so a young/pedigree/award-race centerpiece could get graded
+    # as a lopsided loss by the sim's own narrative layer. Applied here to both
+    # the team-specific and abstract-market values so score_a/score_b (which
+    # grade_trade and the fleecing-floor/B5 math downstream consume) and the
+    # market_score_a/b fields agree with the same "this asset is worth more
+    # than raw OVR" adjustment the search side already applies.
     def _player_val(p: dict, context: dict | None) -> float:
         if context is not None:
-            return player_team_specific_value(
+            base = player_team_specific_value(
                 p["player"], p["contract"], context, salary_cap,
                 p.get("season_stats"),
                 p.get("form_modifier", 1.0),
             )
-        return player_trade_value(
-            p["player"], p["contract"], salary_cap,
-            p.get("season_stats"),
-            p.get("form_modifier", 1.0),
-        )
+        else:
+            base = player_trade_value(
+                p["player"], p["contract"], salary_cap,
+                p.get("season_stats"),
+                p.get("form_modifier", 1.0),
+            )
+        return base * asset_upside_modifier(p["player"], current_season)
 
     def _market_val(p: dict) -> float:
-        return player_trade_value(
+        base = player_trade_value(
             p["player"], p["contract"], salary_cap,
             p.get("season_stats"),
             p.get("form_modifier", 1.0),
         )
+        return base * asset_upside_modifier(p["player"], current_season)
 
     # Team-specific scores: side_a valued from team_b's perspective (they receive it)
     score_a = sum(_player_val(p, receiving_team_context_b) for p in side_a_players)

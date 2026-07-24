@@ -547,62 +547,6 @@ def _team_a_wants_player(
     return player.overall >= 73
 
 
-def _asset_upside_modifier(
-    player: player_repo.Player,
-    draft_year: int | None,
-    current_season: int,
-    roy_rank: int | None = None,
-    mvp_rank: int | None = None,
-    dpoy_rank: int | None = None,
-) -> float:
-    """B3: Return an upside multiplier for young/pedigree/award-race players.
-
-    Layers on top of trade_value_math.player_trade_value's existing age curve.
-    The intent is to make the PROPOSAL GENERATOR value these players more so
-    they don't get offered as filler or accepted as headline return on vet swaps.
-
-    Modifiers (compound, cap at 1.25):
-    - Age ≤ 22: +0.10 (strong premium — still ceiling-building)
-    - Age 23-24: +0.05 (fading premium — emerging but not proven)
-    - Age 25: +0.02 (minimal — development window closing)
-    - Top-10 draft pick within last 2 seasons: +0.08 (pedigree)
-    - ROY top-3: +0.10 / top-5: +0.06 (in-season production signal)
-    - MVP top-5: +0.06
-    - DPOY top-5: +0.05
-
-    Example — Kel'el Ware (age 22, OVR 77, ROY top-3): modifier ≈ 1.28 → capped
-    at 1.25, putting him closer to OVR-83 trade value than his raw 77.
-    """
-    age = _player_age(player)
-    modifier = 1.0
-
-    # Age premium
-    if age is not None:
-        if age <= 22:
-            modifier += 0.10
-        elif age <= 24:
-            modifier += 0.05
-        elif age == 25:
-            modifier += 0.02
-
-    # TODO B3+1: wire draft_year/draft_pick via plumbing pass once Player schema includes them.
-    # The Player dataclass has no draft_year, draft_pick, or draft_position field — every
-    # getattr(..., None) returned None and the pedigree branch was unreachable.  The age
-    # premium above already covers most of the Ware case (age 22 → +0.10).  Removing the
-    # dead branch makes the gap explicit rather than silently returning 1.0 via None checks.
-    # (draft_year param kept in signature for future wire-up; callers still pass it as None)
-
-    # Award race
-    if roy_rank is not None and roy_rank <= 5:
-        modifier += 0.10 if roy_rank <= 3 else 0.06
-    if mvp_rank is not None and mvp_rank <= 5:
-        modifier += 0.06
-    if dpoy_rank is not None and dpoy_rank <= 5:
-        modifier += 0.05
-
-    return min(1.25, modifier)
-
-
 def _team_archetype_counts(
     roster_players: list,
 ) -> dict[str, int]:
