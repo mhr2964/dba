@@ -238,6 +238,41 @@ async def transfer_pick(pool: asyncpg.Pool, pick_id: int, to_team_id: int) -> No
     )
 
 
+async def get_cooldown_team_pairs(
+    pool: asyncpg.Pool, league_id: int, cooldown_days: float
+) -> list[tuple[int, int]]:
+    """Return (team_id, team_id) pairs (min, max order) with a completed trade
+    between them within the last `cooldown_days`, anchored to the league's most
+    recently simmed game (not wall-clock time) — same anchoring approach as
+    the 60-day sign-and-trade restriction.
+
+    Used to keep two complementary-timeline teams from re-surfacing as each
+    other's best-fit trade partner every round (finding #6, trade-logic-rules.md).
+    Returns an empty list if there's no simmed-game data yet (season hasn't
+    started) so callers can safely skip the cooldown check.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT proposer_team_id, counterparty_team_id
+        FROM trades
+        WHERE league_id = $1
+          AND status = 'approved'
+          AND resolved_at IS NOT NULL
+          AND resolved_at > (
+              SELECT MAX(scheduled_date) FROM games
+              WHERE league_id = $1 AND status = 'simmed'
+          )::timestamp - ($2 * INTERVAL '1 day')
+        """,
+        league_id,
+        cooldown_days,
+    )
+    return [
+        (min(r["proposer_team_id"], r["counterparty_team_id"]),
+         max(r["proposer_team_id"], r["counterparty_team_id"]))
+        for r in rows
+    ]
+
+
 async def get_team_trade_history(
     pool: asyncpg.Pool, league_id: int, team_id: int, limit: int = 10
 ) -> list[dict]:

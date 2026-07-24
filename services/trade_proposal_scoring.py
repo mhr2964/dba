@@ -38,12 +38,41 @@ def _derive_cap_state(
     return "under"
 
 
+def _weighted_mode_choice(
+    team_id: int,
+    round_seed: int | None,
+    weighted_options: list[tuple[list[str], float]],
+) -> list[str]:
+    """Weighted-random pick among several plausible mode lists for a posture/goal
+    state that doesn't have one single objectively-correct answer (finding #7:
+    pick_proposal_modes was a pure function of team state with zero variety —
+    a team in a given state ran the identical mode every round until its state
+    changed).
+
+    Seeded off `round_seed ^ team_id` — same pattern as
+    cpu_coach_service._compute_cpu_gameplan's `rng = random.Random(game_row["id"] ^ team_id)`
+    — so the choice is reproducible for a given round but varies round to round.
+
+    When round_seed is None (caller hasn't opted in — every existing decision-table
+    unit test calls pick_proposal_modes without it), always returns the first
+    (primary/highest-weight) option, preserving the pre-#7 deterministic behavior
+    exactly. weighted_options[0] must be the primary/majority choice by convention.
+    """
+    if round_seed is None:
+        return weighted_options[0][0]
+    rng = random.Random(round_seed ^ team_id)
+    choices, weights = zip(*weighted_options)
+    return rng.choices(choices, weights=weights, k=1)[0]
+
+
 def pick_proposal_modes(
     team,
     posture: str,
     plan: dict,
     cap_state: str,
     roster_size: int,
+    *,
+    round_seed: int | None = None,
 ) -> list[str]:
     """Return ordered list of modes to attempt for a team's trade proposal.
 
@@ -58,6 +87,15 @@ def pick_proposal_modes(
           optionally derived_from_record.shop_intent (added in PR 3).
     cap_state: one of "under", "near_cap", "over_luxury" (from _derive_cap_state).
     roster_size: current roster size (sanity check — unused in routing for PR 1).
+    round_seed: opt-in variety-injection seed (#7) — pass a value that changes
+        call to call (e.g. current_game_index combined with an offer index) so
+        the handful of rules below that are genuinely a coaching-philosophy
+        judgment call (not a hard requirement) occasionally pick a plausible
+        alternative mode list instead of the same one every single round.
+        Rules with a hard requirement (cap-dump/flip-asset shop_intent,
+        over_luxury, rebuild two-way, win_now consolidation) are NOT varied —
+        those aren't a matter of taste. Omit to get the original fully
+        deterministic behavior (default for all existing callers/tests).
     """
     goal: str = (plan.get("goal") or "") if plan else ""
     surplus: list = (plan.get("surplus_player_ids") or []) if plan else []
@@ -98,9 +136,14 @@ def pick_proposal_modes(
     if cap_state == "over_luxury":
         return ["outgoing_first"]
 
-    # Rule 3: tank posture with surplus → dump assets.
+    # Rule 3: tank posture with surplus → dump assets (usually outgoing-only, but
+    # occasionally a tanking team still opportunistically shops for cheap youth —
+    # #7 variety, not a hard requirement).
     if is_tank and surplus_nonempty:
-        return ["outgoing_first"]
+        return _weighted_mode_choice(
+            team.id, round_seed,
+            [(["outgoing_first"], 0.85), (["outgoing_first", "incoming_first"], 0.15)],
+        )
 
     # Rule 4: rebuild goal with surplus AND asset targets → two-way (sell and buy).
     if is_rebuild_goal and surplus_nonempty and assets_nonempty:
@@ -110,13 +153,24 @@ def pick_proposal_modes(
     if is_win_now and surplus_nonempty:
         return ["incoming_first", "outgoing_first"]
 
-    # Rule 6: soft_rebuild with any surplus → outgoing first.
+    # Rule 6: soft_rebuild with any surplus → usually outgoing-only (selling vets),
+    # but a soft-rebuild team occasionally also looks to add young pieces in the
+    # same round (#7 variety — a plausible alternative, not a hard requirement).
     if is_soft_rebuild and surplus_nonempty:
-        return ["outgoing_first"]
+        return _weighted_mode_choice(
+            team.id, round_seed,
+            [(["outgoing_first"], 0.80), (["outgoing_first", "incoming_first"], 0.20)],
+        )
 
-    # Rule 7: play_in_fringe or developing → incoming first.
+    # Rule 7: play_in_fringe or developing → usually incoming-first (seeking an
+    # upgrade), but occasionally these borderline teams also shop surplus depth
+    # in the same round (#7 variety — a plausible alternative, not a hard
+    # requirement).
     if _p in ("play_in_fringe", "developing"):
-        return ["incoming_first"]
+        return _weighted_mode_choice(
+            team.id, round_seed,
+            [(["incoming_first"], 0.75), (["incoming_first", "outgoing_first"], 0.25)],
+        )
 
     # Default fallback.
     return ["incoming_first"]
@@ -166,6 +220,112 @@ def _position_matches_need(player_position: str, target_positions: list[str]) ->
         if player_position in _adjacency.get(need, []):
             return True
     return False
+
+
+def _is_stacked_without_upgrade(
+    position: str,
+    incoming_overall: int,
+    pos_count_map: dict[str, int],
+    roster: list,
+    stacked_floor: int = 3,
+    upgrade_margin: int = 3,
+) -> bool:
+    """#2: True when `position` is already stacked (>= stacked_floor rostered
+    players) AND the incoming player isn't a clear value upgrade over the
+    weakest player the team already has at that position.
+
+    Before this, only contending/play_in_fringe modes had a hard positional
+    skip (via _get_trade_target_positions/_position_matches_need) — every
+    other mode (the majority of CPU proposals: rebuilding, soft_rebuild,
+    developing) had zero positional targeting, so a team with four centers
+    would keep adding a fifth. Applies to all modes at the call site; the
+    upgrade_margin escape hatch keeps this a soft-adjacent gate rather than
+    an absolute ban — a genuine upgrade still goes through, mirroring the
+    B5 "strict upgrade" precedent used for consolidation trades elsewhere.
+    """
+    if pos_count_map.get(position, 0) < stacked_floor:
+        return False
+    _same_pos_ovrs = [
+        getattr(rp, "overall", 0) for rp in roster
+        if getattr(rp, "position", None) == position
+    ]
+    if not _same_pos_ovrs:
+        return False
+    _weakest_ovr = min(_same_pos_ovrs)
+    return incoming_overall < _weakest_ovr + upgrade_margin
+
+
+_CORE_POSITIONS: tuple[str, ...] = ("PG", "SG", "SF", "PF", "C")
+
+# Posture modes where a roster hole doesn't matter — a genuine tear-down moves
+# talent regardless of what it leaves behind at any one position.
+_DEEP_TANK_MODES: frozenset[str] = frozenset({"rebuilding", "tanking"})
+
+
+def _roster_hole_penalty(
+    roster: list,
+    outgoing_player_ids: set[int],
+    incoming_players: list,
+    posture_mode: str,
+    hole_floor: int = 2,
+    surplus_floor: int = 3,
+    penalty: float = 0.75,
+) -> tuple[float, list[str]]:
+    """B9 (#4): Soft downweight when a trade leaves the team's post-trade
+    roster with a position-group hole.
+
+    B4 in docs/design/trade-logic-rules.md was pure documentation with zero
+    implementation before this — nothing checked whether a trade left an
+    obvious gap (e.g. a big-man hole) with no plausible followup. This ships
+    the "downweight the original trade" half of B4's two documented options
+    (queueing a same-batch followup proposal is a larger change, left for a
+    future pass) — matching B6's soft-penalty precedent (a value multiplier
+    the caller compares against its own threshold) rather than B1/B5's hard
+    reject, per the finding's own guidance.
+
+    Returns (penalty_multiplier, hole_positions). penalty_multiplier is 1.0
+    (no-op) unless a hole is found, in which case it's `penalty` (0.75 by
+    default — a real but non-fatal downweight, distinct from B6's 0.65/0.85
+    archetype tiers so the two signals aren't confusable in logs).
+
+    A "hole" is a core position (PG/SG/SF/PF/C) where the post-trade count
+    (current roster - outgoing + incoming) drops below hole_floor (2), UNLESS
+    the team was already deep in surplus there pre-trade (>= surplus_floor,
+    matching #2's _is_stacked_without_upgrade stacked_floor convention) --
+    losing a 4th center down to 3 isn't a hole.
+
+    Skipped entirely (always returns (1.0, [])) when posture_mode is
+    rebuilding/tanking — B4's own carve-out: holes don't matter when the team
+    is genuinely tearing down.
+    """
+    if posture_mode in _DEEP_TANK_MODES:
+        return 1.0, []
+
+    _pre_counts: dict[str, int] = dict.fromkeys(_CORE_POSITIONS, 0)
+    for p in roster:
+        pos = getattr(p, "position", None)
+        if pos in _pre_counts:
+            _pre_counts[pos] += 1
+
+    _post_counts: dict[str, int] = dict.fromkeys(_CORE_POSITIONS, 0)
+    for p in roster:
+        if getattr(p, "id", None) in outgoing_player_ids:
+            continue
+        pos = getattr(p, "position", None)
+        if pos in _post_counts:
+            _post_counts[pos] += 1
+    for p in incoming_players:
+        pos = getattr(p, "position", None)
+        if pos in _post_counts:
+            _post_counts[pos] += 1
+
+    _holes = [
+        pos for pos in _CORE_POSITIONS
+        if _post_counts[pos] < hole_floor and _pre_counts[pos] < surplus_floor
+    ]
+    if _holes:
+        return penalty, _holes
+    return 1.0, []
 
 
 def _score_outgoing_pair(
@@ -392,7 +552,9 @@ def _fill_to_value(
     return offer_player_ids, offer_pick_ids, accumulated
 
 
-def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
+def _team_a_wants_player(
+    posture_a: dict, player: player_repo.Player, *, age_override: int | None = None
+) -> bool:
     """Return True if team A's posture makes it interested in this player.
 
     B1 posture gates (hard checks):
@@ -401,8 +563,14 @@ def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
     - rebuilding/soft_rebuild: reject aging vets over 30 unless they're expiring
       contracts (years_remaining=1) worth flipping.  The age signal is an
       approximation; callers with full contract data can refine in scoring.
+
+    age_override: use this age directly instead of deriving it from
+      player.birth_date via _player_age. Lets callers that only have a plain
+      dict with a precomputed "age" field (e.g. cpu_should_accept's asset
+      dicts, which never carry birth_date) reuse this helper without
+      constructing a fake Player object.
     """
-    age = _player_age(player)
+    age = age_override if age_override is not None else _player_age(player)
     mode = posture_a["mode"]
     urgency = posture_a.get("urgency", "comfortable")
 
@@ -450,62 +618,6 @@ def _team_a_wants_player(posture_a: dict, player: player_repo.Player) -> bool:
         # Older developing team — starting to lean contending, want proven players
         return player.overall >= 76
     return player.overall >= 73
-
-
-def _asset_upside_modifier(
-    player: player_repo.Player,
-    draft_year: int | None,
-    current_season: int,
-    roy_rank: int | None = None,
-    mvp_rank: int | None = None,
-    dpoy_rank: int | None = None,
-) -> float:
-    """B3: Return an upside multiplier for young/pedigree/award-race players.
-
-    Layers on top of trade_value_math.player_trade_value's existing age curve.
-    The intent is to make the PROPOSAL GENERATOR value these players more so
-    they don't get offered as filler or accepted as headline return on vet swaps.
-
-    Modifiers (compound, cap at 1.25):
-    - Age ≤ 22: +0.10 (strong premium — still ceiling-building)
-    - Age 23-24: +0.05 (fading premium — emerging but not proven)
-    - Age 25: +0.02 (minimal — development window closing)
-    - Top-10 draft pick within last 2 seasons: +0.08 (pedigree)
-    - ROY top-3: +0.10 / top-5: +0.06 (in-season production signal)
-    - MVP top-5: +0.06
-    - DPOY top-5: +0.05
-
-    Example — Kel'el Ware (age 22, OVR 77, ROY top-3): modifier ≈ 1.28 → capped
-    at 1.25, putting him closer to OVR-83 trade value than his raw 77.
-    """
-    age = _player_age(player)
-    modifier = 1.0
-
-    # Age premium
-    if age is not None:
-        if age <= 22:
-            modifier += 0.10
-        elif age <= 24:
-            modifier += 0.05
-        elif age == 25:
-            modifier += 0.02
-
-    # TODO B3+1: wire draft_year/draft_pick via plumbing pass once Player schema includes them.
-    # The Player dataclass has no draft_year, draft_pick, or draft_position field — every
-    # getattr(..., None) returned None and the pedigree branch was unreachable.  The age
-    # premium above already covers most of the Ware case (age 22 → +0.10).  Removing the
-    # dead branch makes the gap explicit rather than silently returning 1.0 via None checks.
-    # (draft_year param kept in signature for future wire-up; callers still pass it as None)
-
-    # Award race
-    if roy_rank is not None and roy_rank <= 5:
-        modifier += 0.10 if roy_rank <= 3 else 0.06
-    if mvp_rank is not None and mvp_rank <= 5:
-        modifier += 0.06
-    if dpoy_rank is not None and dpoy_rank <= 5:
-        modifier += 0.05
-
-    return min(1.25, modifier)
 
 
 def _team_archetype_counts(

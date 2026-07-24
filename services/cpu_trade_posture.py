@@ -57,7 +57,12 @@ def _default_posture(team: team_repo.Team) -> dict:
     }
 
 
-def is_cornerstone(team: team_repo.Team, player: player_repo.Player, roster: list[player_repo.Player]) -> bool:
+def is_cornerstone(
+    team: team_repo.Team,
+    player: player_repo.Player,
+    roster: list[player_repo.Player],
+    live_mode: str | None = None,
+) -> bool:
     """
     Return True when this player is untouchable for their team.
 
@@ -69,9 +74,17 @@ def is_cornerstone(team: team_repo.Team, player: player_repo.Player, roster: lis
 
     Exception: rebuilding/tanking teams only protect the first case (true OVR 92+
     superstars).  A genuine tear-down will move almost everyone else.
+
+    live_mode: the team's live posture mode (e.g. from `postures`/`_compute_team_posture`
+      or a caller-computed `posture_a`), used in preference to the static `team.cpu_mode`
+      column. `team.cpu_mode` can go stale relative to the B7 live-posture fix (see
+      docs/design/trade-logic-rules.md B7) — callers that already have a live posture
+      string in scope should pass it here instead of leaving this untouchable-player
+      backstop reading a potentially outdated mode. Falls back to `team.cpu_mode` when
+      omitted, for callers that haven't been updated yet.
     """
     ovr = player.overall
-    mode = team.cpu_mode or "default"
+    mode = live_mode if live_mode is not None else (team.cpu_mode or "default")
     is_rebuilding = mode in ("rebuilding", "soft_rebuild")
 
     # OVR 92+ is always untouchable, every mode.

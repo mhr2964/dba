@@ -1,8 +1,8 @@
 # Trade Logic Rules — CPU Trade Evaluator & Proposal Generator
 
-Durable rule specs for the CPU trade evaluator (split 2026-07-22 into `services/trade_value_math.py`, `services/trade_context_builder.py`, `services/trade_grading.py`, `services/cpu_trade_acceptance.py`, and `services/trade_ai_reasoning.py` — see `docs/design/architecture.md`'s Split status for the breakdown) and `services/cpu_trade_proposals.py`. Each rule (B1-B8) records the observed problem, the evidence that justified it, and the proposed/actual fix — so a future change to trade logic can be checked against *why* the rule exists, not just *that* it exists.
+Durable rule specs for the CPU trade evaluator (split 2026-07-22 into `services/trade_value_math.py`, `services/trade_context_builder.py`, `services/trade_grading.py`, `services/cpu_trade_acceptance.py`, and `services/trade_ai_reasoning.py` — see `docs/design/architecture.md`'s Split status for the breakdown) and `services/cpu_trade_proposals.py`. Each rule (B1-B9) records the observed problem, the evidence that justified it, and the proposed/actual fix — so a future change to trade logic can be checked against *why* the rule exists, not just *that* it exists.
 
-**Current implementation status (as of 2026-07-22):** B1, B3, B6, B7 partially shipped via the trade-proposal restructure (`762a950`, `087a249`, `4be6242`, `803e24d`). B8 (gate parity on the outgoing-first path) is the highest-leverage unshipped item — ride-along run 4 showed all three surfaced problem trades (LAC, NYK, DEN) share the same root cause: `_attempt_outgoing_first_offer` doesn't call the same final-pass gates `_run_incoming_first_for_team` does. B2, B4 remain single-case / deferred. See `Brain/Note Pad/dba/marcus-cole-feedback-eval.md` for the columnist-side (Marcus Cole prompt) companion themes and ongoing ride-along evidence tracking.
+**Current implementation status (as of 2026-07-24):** B1, B3, B5, B6, B7, B8, B9 shipped. B8 (gate parity on the outgoing-first path) is already live — `_attempt_outgoing_first_offer` calls `_apply_final_trade_gates` plus an inline B6 hard-reject before submitting; see B8's Status line below for exactly where. B9 (roster-hole downweight, the former "B4") ships as a soft-penalty check in both the incoming-first and outgoing-first proposal paths. B2 remains single-case / deferred (not enough corroborating evidence to ship). A realism audit on 2026-07-24 additionally closed 9 gaps that existed *outside* the B1-B8 rule set entirely — several only guarded the proposal-generation/search side of the pipeline, not the accept side every trade (human- or CPU-initiated) funnels through. See individual git commits (`[claude-sonnet-5]` prefix, 2026-07-24) for the fix-by-fix detail: archetype redundancy + posture-fit dedup on the accept path, live-posture threading into `is_cornerstone`, positional-need gating for non-contender modes, mode-selection variety injection, the roster positional-floor hard gate, the season-long trade-partner cooldown, and B3's upside modifier reaching `trade_grading.evaluate_trade`. See `Brain/Note Pad/dba/marcus-cole-feedback-eval.md` for the columnist-side (Marcus Cole prompt) companion themes and ongoing ride-along evidence tracking.
 
 ---
 
@@ -40,7 +40,7 @@ Durable rule specs for the CPU trade evaluator (split 2026-07-22 into `services/
 
 ## B4. Multi-step strategy: don't leave a team mid-pivot with no plan
 
-**Status:** READY (4+ cases across 3 runs) — hardest of the trade-logic changes; may ship after B1-B3.
+**Status:** SHIPPED as B9 (2026-07-24) — see B9 below. This section is kept for the original evidence trail; B9 documents the actual implementation.
 
 **Evidence:** Trades that leave an obvious roster gap (e.g. a big-man hole) without a plausible followup read as incomplete/unrealistic.
 
@@ -81,11 +81,22 @@ Durable rule specs for the CPU trade evaluator (split 2026-07-22 into `services/
 
 ## B8. Safety gates (B1, B5, B6, B7) must fire on the outgoing-first path too
 
-**Status:** READY — highest-leverage unshipped item as of this writing.
+**Status:** SHIPPED — `_attempt_outgoing_first_offer` in `cpu_trade_proposal_runner.py` calls `_apply_final_trade_gates` (`services/trade_gates.py`) for each candidate before submitting, plus an inline B6 hard-reject ahead of that call (B6 is intentionally NOT inside the shared gate helper — see the helper's own docstring: incoming-first applies B6 as a soft pass-2 scoring penalty, outgoing-first as a hard reject, by design). Doc corrected 2026-07-24 — a realism audit found this doc's own Status line was stale relative to the shipped code (finding #11); `_apply_final_trade_gates` and its B6-parity split were already covered by `tests/test_apply_final_trade_gates.py` before the correction.
 
-**Evidence:** Run 4's three problem trades (LAC/TOR Poeltl, GSW/NYK Kuminga, DEN/HOU Brooks) all plausibly went through the outgoing-first path, which does not call the same final-pass gates the incoming-first path does. `_attempt_outgoing_first_offer` was shipped as "intentional minimal-viable" without B1/B5/B6/sanity-floor checks; ride-along evidence shows the cost.
+**Evidence:** Run 4's three problem trades (LAC/TOR Poeltl, GSW/NYK Kuminga, DEN/HOU Brooks) all plausibly went through the outgoing-first path, which did not call the same final-pass gates the incoming-first path does. `_attempt_outgoing_first_offer` was shipped as "intentional minimal-viable" without B1/B5/B6/sanity-floor checks; ride-along evidence showed the cost.
 
 **Rule:**
 - After `_score_outgoing_pair` picks the winning `(counterparty, return)` pair in `_attempt_outgoing_first_offer`, run the same final-pass gates incoming-first applies before `trade_service.propose`: B1 posture gate, B5 asymmetric rejection, B6 archetype redundancy on the receiving side, and the sanity-floor/lopsided ratio check.
 - These gates should be extracted into a single shared helper (`_apply_final_trade_gates`, already extracted in `cpu_trade_proposals.py` — target home is `services/trade_gates.py` once the Phase 2 file split lands, see `architecture.md`) callable from both code paths — never duplicated logic.
 - Land B8 before retuning B5 thresholds — tightening a threshold that only runs on one of two code paths doesn't fix the outgoing-first regressions.
+
+## B9. Roster-hole follow-up check (ships B4's "downweight" option)
+
+**Status:** SHIPPED (2026-07-24) — implements B4's rule using the "downweight the original trade" branch of its two documented options. Queueing a same-batch followup proposal (B4's other branch) is a larger change, deliberately left for a future pass.
+
+**Evidence:** Same as B4 above — trades that leave an obvious roster gap (e.g. a big-man hole) without a plausible followup read as incomplete/unrealistic. B4 had been pure documentation with zero implementation since it was written.
+
+**Rule:**
+- After the final-pass gates (`_apply_final_trade_gates`) approve a candidate — in both `_run_incoming_first_for_team` (incoming-first) and `_attempt_outgoing_first_offer`'s candidate loop (outgoing-first) — check whether the outgoing side leaves team A with fewer than 2 rostered players at any core position (PG/SG/SF/PF/C) it wasn't already deep in surplus at pre-trade (>= 3 rostered, matching B6-adjacent finding #2's "stacked" convention). `services/trade_proposal_scoring.py::_roster_hole_penalty` implements the check as a pure function.
+- Skipped entirely when team posture is `rebuilding`/`tanking` — B4's own carve-out: holes don't matter when the team is genuinely tearing down. `soft_rebuild` is NOT exempted (it's a lighter rebuild, not the "deep tank" the carve-out targets).
+- Soft penalty, not a hard reject (matching B6's precedent, not B1/B5's): a hole applies a 0.75× downweight to the package/target ratio. The candidate is only actually skipped if the downweighted ratio would ALSO fail the same sanity floor `_apply_final_trade_gates` Gate 1 already enforces (`services/trade_gates.py::_sanity_floor_for_mode`) — a trade with enough value cushion still goes through with the hole noted in logs. Outgoing-first's candidate loop tries the next-best candidate on a B9 skip, same as a real gate rejection; incoming-first (no candidate loop) aborts the proposal for that team that round.

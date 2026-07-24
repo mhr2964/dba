@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 
 from services.trade_grading import _player_archetype, _team_primary_scheme
+from services.trade_proposal_scoring import _team_a_wants_player, _team_archetype_counts
 from services.trade_value_math import (
     REBUILD_BUYS_YOUNG_FLOOR,
     _ELITE_OVR_FLOOR,
@@ -64,6 +66,7 @@ async def cpu_should_accept(
     giving_role_map: dict[int, str] | None = None,
     pool=None,
     context_kwargs: dict | None = None,
+    receiving_team_roster: list | None = None,
 ) -> tuple[bool, str]:
     """
     Returns (accept: bool, reason: str).
@@ -78,9 +81,27 @@ async def cpu_should_accept(
     - Never give up a player with overall >= 88 unless rebuilding AND getting 2+ first-rounders.
     - Buy-low fit bonus: underperforming player (form_modifier < 0.92) gets a value bump
       from the receiving team's perspective when archetype fits their scheme or mode.
+
+    receiving_team_roster: the accepting team's current full roster (player_repo.Player
+        objects or dicts), used for the B6 archetype-redundancy check below. Optional —
+        when omitted (e.g. existing unit tests / the propose-side self-check in
+        trade_gates._apply_final_trade_gates) the B6 check is silently skipped, matching
+        the giving_role_map precedent. Real callers (cpu_trade_evaluation._cpu_evaluate,
+        the accept path every trade funnels through) always pass this.
+
+    context_kwargs may include a "posture" key (the accepting team's full live-posture
+    dict — mode/urgency/avg_age/etc, same shape trade_context_builder / team_intel
+    produce). When present, the shared B1 "does this team want this player" check
+    (trade_proposal_scoring._team_a_wants_player — the SAME helper the propose-side
+    self-check in trade_gates.py Gate 4 uses) runs against every incoming player here
+    too, so accept-side and propose-side agree instead of drifting independently (#9).
     """
     # Normalize mode string defensively — callers may pass un-stripped or mixed-case values.
     cpu_team_mode = (cpu_team_mode or "").lower().strip()
+
+    # Live posture dict for the shared B1 check (#9) — read here (not inside the
+    # pool-gated context block below) so it's available even when pool is None.
+    _posture_dict_a: dict = (context_kwargs or {}).get("posture") or {}
 
     score_a = evaluation["score_a"]
     score_b = evaluation["score_b"]
@@ -282,6 +303,60 @@ async def cpu_should_accept(
     giving_players = [a for a in assets_giving if a.get("asset_type") == "player"]
     receiving_picks = [a for a in assets_receiving if a.get("asset_type") == "pick"]
     receiving_players = [a for a in assets_receiving if a.get("asset_type") == "player"]
+
+    # ── B1 dedup (#9): shared "does this team want this player" check ────────
+    # Reuses trade_proposal_scoring._team_a_wants_player instead of maintaining a
+    # second, independently-drifting set of age/OVR cutoffs here. This is the
+    # same per-player hard check trade_gates._apply_final_trade_gates Gate 4 runs
+    # on the propose side — running it here too closes the gap where a human GM
+    # could offer a contender a raw developmental throw-in that the propose-side
+    # self-check would have rejected. Only enforced when a live posture dict is
+    # supplied (real accept-path callers always pass one); silently skipped for
+    # callers that only pass a bare mode string.
+    if _posture_dict_a.get("mode") and receiving_players:
+        for _rp in receiving_players:
+            _rp_player = _rp.get("player", {})
+            _rp_stub = SimpleNamespace(overall=_rp_player.get("overall", 0))
+            if not _team_a_wants_player(
+                _posture_dict_a, _rp_stub, age_override=_rp_player.get("age")
+            ):
+                _rp_name = f"{_rp_player.get('first_name', '?')} {_rp_player.get('last_name', '?')}"
+                return False, (
+                    f"B1: {cpu_team_mode} team does not want incoming {_rp_name} "
+                    f"(age {_rp_player.get('age', '?')}, OVR {_rp_player.get('overall', '?')}) "
+                    f"— fails shared posture-fit check"
+                )
+    # ── End B1 dedup ─────────────────────────────────────────────────────────
+
+    # ── B6: Archetype redundancy in the accept path ───────────────────────────
+    # B6's soft-penalty scoring already lives in trade_proposal_scoring (search
+    # side), but nothing checked archetype redundancy on the actual accept
+    # decision every trade funnels through — a human GM could offer fair value
+    # for a 3rd same-archetype piece and it would slide through. Hard-reject,
+    # mirroring the outgoing-first B6 hard-reject threshold (pre-existing count
+    # >= 2 on the post-trade roster, before the incoming player is added).
+    # Silently skipped when receiving_team_roster isn't supplied (see docstring).
+    if receiving_team_roster and receiving_players:
+        _giving_player_ids_b6 = {
+            a.get("player", {}).get("id")
+            for a in assets_giving if a.get("asset_type") == "player"
+        }
+        _post_trade_roster_b6 = [
+            p for p in receiving_team_roster
+            if getattr(p, "id", None) not in _giving_player_ids_b6
+        ]
+        _pre_arch_counts_b6 = _team_archetype_counts(_post_trade_roster_b6)
+        for _rp in receiving_players:
+            _rp_player = _rp.get("player", {})
+            _rp_arch = _player_archetype(_rp_player)
+            if _rp_arch and _pre_arch_counts_b6.get(_rp_arch, 0) >= 2:
+                _rp_name = f"{_rp_player.get('first_name', '?')} {_rp_player.get('last_name', '?')}"
+                return False, (
+                    f"B6: incoming {_rp_name} archetype '{_rp_arch}' already has "
+                    f"{_pre_arch_counts_b6[_rp_arch]} on the roster post-trade — "
+                    f"archetype redundancy"
+                )
+    # ── End B6 accept-path check ──────────────────────────────────────────────
 
     # ── B5 sub-rule 1: Pick parity for contenders ─────────────────────────────
     # A contender-tier team should not give away any pick on a lateral or

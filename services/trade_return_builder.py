@@ -222,8 +222,9 @@ async def _derive_return_from_b(
         # Never send core players.
         if p.id in _plan_b_core:
             continue
-        # Cornerstone backstop.
-        if is_cornerstone(team_b, p, full_roster_b):
+        # Cornerstone backstop. posture_b is the live posture mode already threaded
+        # into this function (B7) — use it instead of team_b.cpu_mode's static column.
+        if is_cornerstone(team_b, p, full_roster_b, live_mode=posture_b):
             continue
 
         contract = await player_repo.get_active_contract(pool, p.id)
@@ -348,10 +349,16 @@ async def _build_return_package(
     recently_signed_ids: set[int] | None = None,
     counterparty_mode: str = "default",
     plan_a: dict | None = None,
+    live_mode_a: str | None = None,
 ) -> tuple[list[int], list[int], float]:
     """
     Build a return package from team A's trade block players and picks that
     roughly matches target_value (within 25%).
+
+    live_mode_a: team A's live posture mode (B7), threaded into the is_cornerstone
+    backstop check below so it doesn't read the potentially-stale team_a.cpu_mode
+    column. Falls back to that column when the caller doesn't have a live mode
+    handy yet.
 
     Returns (player_ids, pick_ids, total_value).
     Prefer picks over players when possible to keep rosters intact.
@@ -403,7 +410,7 @@ async def _build_return_package(
             continue
 
         # Cornerstone protection — backstop when no plan or OVR 92+.
-        if is_cornerstone(team_a, p, full_roster):
+        if is_cornerstone(team_a, p, full_roster, live_mode=live_mode_a):
             log.info(
                 f"[CPU] cornerstone skipped from return package: "
                 f"{p.first_name} {p.last_name} OVR {p.overall} "

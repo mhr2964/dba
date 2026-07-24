@@ -116,6 +116,33 @@ async def propose(
         pool, counterparty_pick_ids, counterparty_team.id, league.id, "the other team's"
     )
 
+    # ── #3: Hard positional-floor check — reject before the trade is finalized ──
+    # Nothing previously blocked trading away a team's only center (etc.);
+    # _rebalance_starters would just silently fall back to best-remaining-player-
+    # regardless-of-position. Checked here (propose time) rather than at approve
+    # time so a doomed trade is never even created.
+    proposer_roster = await player_repo.get_roster(pool, league.id, proposer_team.id)
+    counterparty_roster = await player_repo.get_roster(pool, league.id, counterparty_team.id)
+    _proposer_outgoing_ids = {p.id for p in proposer_players}
+    _counterparty_outgoing_ids = {p.id for p in counterparty_players}
+    _proposer_empty = _empty_positions_after_trade(
+        proposer_roster, _proposer_outgoing_ids, counterparty_players
+    )
+    _counterparty_empty = _empty_positions_after_trade(
+        counterparty_roster, _counterparty_outgoing_ids, proposer_players
+    )
+    if _proposer_empty or _counterparty_empty:
+        _violations: list[str] = []
+        if _proposer_empty:
+            _violations.append(f"{proposer_team.nba_team_code}: {'/'.join(_proposer_empty)}")
+        if _counterparty_empty:
+            _violations.append(f"{counterparty_team.nba_team_code}: {'/'.join(_counterparty_empty)}")
+        raise DBAError(
+            "Trade rejected — would leave a team with zero rostered players at a "
+            "core position (" + "; ".join(_violations) + ")."
+        )
+    # ── End positional-floor check ───────────────────────────────────────────────
+
     trade = await trade_repo.create_trade(
         pool,
         league_id=league.id,
@@ -497,6 +524,33 @@ async def get_pending_queue(pool, league_id: int) -> list[dict]:
             "counterparty_team": counterparty_team,
         })
     return result
+
+
+_CORE_POSITIONS: tuple[str, ...] = ("PG", "SG", "SF", "PF", "C")
+
+
+def _empty_positions_after_trade(
+    current_roster: list[player_repo.Player],
+    outgoing_player_ids: set[int],
+    incoming_players: list[player_repo.Player],
+) -> list[str]:
+    """#3: Return the core positions (PG/SG/SF/PF/C) a team would have ZERO
+    rostered players at after this trade — current roster minus outgoing plus
+    incoming. Nothing previously enforced a roster-shape floor; trade_service
+    (and _rebalance_starters downstream of it) would silently fall back to
+    "best remaining player regardless of position" rather than the trade being
+    blocked. Empty list means the trade is safe for this team.
+    """
+    counts: dict[str, int] = dict.fromkeys(_CORE_POSITIONS, 0)
+    for p in current_roster:
+        if p.id in outgoing_player_ids:
+            continue
+        if p.position in counts:
+            counts[p.position] += 1
+    for p in incoming_players:
+        if p.position in counts:
+            counts[p.position] += 1
+    return [pos for pos in _CORE_POSITIONS if counts[pos] == 0]
 
 
 async def _fetch_and_validate_players(

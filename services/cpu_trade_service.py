@@ -8,7 +8,7 @@ from typing import Optional
 import discord
 
 from core.logging import get_logger
-from data.repositories import league_repo, player_repo, team_repo, trade_block_repo
+from data.repositories import league_repo, player_repo, team_repo, trade_block_repo, trade_repo
 from services import cpu_block_service
 from services.cpu_trade_posture import _compute_team_posture, _default_posture
 from services.cpu_trade_proposal_runner import _attempt_one_offer, _attempt_three_team_deal
@@ -52,6 +52,17 @@ _MODE_N_OFFERS: dict[str, int] = {
     "soft_rebuild": 3,
     "rebuilding": 4,
 }
+
+# #6: After two teams complete a trade, exclude that pair from re-trading for
+# this many games — without it, deterministic best-fit counterparty ranking
+# (trade_return_builder._score_counterparty_for_target) structurally re-surfaces
+# the same two complementary-timeline teams as each other's #1 partner every
+# round. 20 games is a judgment call: long enough to stop rapid-fire repeat
+# trading within a short stretch, short enough that two teams can legitimately
+# trade again later in the same season if circumstances change.
+_TRADE_PARTNER_COOLDOWN_GAMES = 20
+# Same games→days conversion _get_recently_signed_player_ids uses (~2.4 days/game).
+_TRADE_PARTNER_COOLDOWN_DAYS = _TRADE_PARTNER_COOLDOWN_GAMES * 2.4
 
 
 async def _get_recently_signed_player_ids(pool, league_id: int) -> set[int]:
@@ -294,7 +305,20 @@ async def maybe_initiate_round(
     used_pairs: set[tuple[int, int]] = set()
     taken_player_ids: set[int] = {row["player_id"] for row in already_committed_rows}
 
-    for _ in range(n_offers):
+    # #6: Season-long trade-partner cooldown — exclude team pairs with a completed
+    # trade in the last _TRADE_PARTNER_COOLDOWN_GAMES games. Seeding used_pairs (the
+    # existing skip-pair mechanism every search path already checks) rather than
+    # adding a second, parallel exclusion set. Best-effort: a lookup failure just
+    # means the cooldown is skipped for this round, same as other optional context.
+    try:
+        _cooldown_pairs = await trade_repo.get_cooldown_team_pairs(
+            pool, league_id, _TRADE_PARTNER_COOLDOWN_DAYS
+        )
+        used_pairs.update(_cooldown_pairs)
+    except Exception as exc:
+        log.debug(f"trade-partner cooldown lookup failed (skipping): {exc}")
+
+    for _offer_idx in range(n_offers):
         try:
             # 10% chance at high pressure: attempt a 3-team deal instead of a
             # standard 2-team offer.  Only fires when pressure >= 0.6 so it's
@@ -312,6 +336,10 @@ async def maybe_initiate_round(
                 pool, league, season, cpu_teams, block_by_team,
                 used_pairs, taken_player_ids, deadline_game_index, recently_signed_ids, guild,
                 postures=postures,
+                # Varies per offer attempt within the round (and across rounds via
+                # current_game_index) so pick_proposal_modes' #7 variety injection
+                # doesn't pick the same alternative every time. See _weighted_mode_choice.
+                round_seed=current_game_index * 1000 + _offer_idx,
             )
             proposed_count += count
         except Exception as exc:

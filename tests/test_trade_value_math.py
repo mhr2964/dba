@@ -101,3 +101,94 @@ def test_near_term_more_valuable():
     near = trade_value_math.pick_trade_value(current + 1, 1, current)
     far = trade_value_math.pick_trade_value(current + 4, 1, current)
     assert near > far, f"Near-term pick ({near}) should be worth more than distant pick ({far})"
+
+
+# ---------------------------------------------------------------------------
+# _star_leverage_modifier / player_trade_value star-power premium (#8)
+# ---------------------------------------------------------------------------
+
+
+def test_star_leverage_modifier_thresholds():
+    assert trade_value_math._star_leverage_modifier(None) == 1.0
+    assert trade_value_math._star_leverage_modifier(30) == 1.0
+    assert trade_value_math._star_leverage_modifier(69) == 1.0
+    assert trade_value_math._star_leverage_modifier(70) == 1.02
+    assert trade_value_math._star_leverage_modifier(84) == 1.02
+    assert trade_value_math._star_leverage_modifier(85) == 1.05
+    assert trade_value_math._star_leverage_modifier(95) == 1.05
+
+
+def test_player_trade_value_star_leverage_breaks_fungibility():
+    """Two statistically-identical players (same OVR/age/contract) differ in
+    value once star_leverage diverges — the exact gap #8 flags."""
+    contract = {"salary": int(SALARY_CAP * 0.20), "years_remaining": 2}
+    low_leverage = {"overall": 85, "age": 27, "star_leverage": 30}
+    high_leverage = {"overall": 85, "age": 27, "star_leverage": 90}
+
+    low_value = trade_value_math.player_trade_value(low_leverage, contract, SALARY_CAP)
+    high_value = trade_value_math.player_trade_value(high_leverage, contract, SALARY_CAP)
+
+    assert high_value > low_value, (
+        f"Higher star_leverage should produce a higher value: low={low_value}, high={high_value}"
+    )
+    # Modest premium — 1.05/1.0 = 5%, not a valuation driver.
+    assert high_value <= low_value * 1.06
+
+
+def test_player_trade_value_missing_star_leverage_defaults_neutral():
+    """Player dicts without a star_leverage key (e.g. older callers/tests) get
+    the neutral 1.0 modifier — invisible, no crash."""
+    contract = {"salary": int(SALARY_CAP * 0.20), "years_remaining": 2}
+    player = {"overall": 85, "age": 27}
+    value = trade_value_math.player_trade_value(player, contract, SALARY_CAP)
+    assert value > 0
+
+
+# ---------------------------------------------------------------------------
+# asset_upside_modifier (#5 — moved here from trade_proposal_scoring.py so
+# trade_grading.evaluate_trade can call it without an import cycle)
+# ---------------------------------------------------------------------------
+
+
+def test_asset_upside_modifier_no_signals_is_neutral():
+    assert trade_value_math.asset_upside_modifier({"age": 28}, current_season=2025) == 1.0
+    assert trade_value_math.asset_upside_modifier({}, current_season=2025) == 1.0
+
+
+def test_asset_upside_modifier_age_brackets():
+    assert trade_value_math.asset_upside_modifier({"age": 22}, current_season=2025) == 1.10
+    assert trade_value_math.asset_upside_modifier({"age": 23}, current_season=2025) == 1.05
+    assert trade_value_math.asset_upside_modifier({"age": 24}, current_season=2025) == 1.05
+    assert trade_value_math.asset_upside_modifier({"age": 25}, current_season=2025) == 1.02
+    assert trade_value_math.asset_upside_modifier({"age": 26}, current_season=2025) == 1.0
+
+
+def test_asset_upside_modifier_award_race_bonuses():
+    base = trade_value_math.asset_upside_modifier(
+        {"age": 28}, current_season=2025, roy_rank=3,
+    )
+    assert base == 1.10, f"ROY top-3 should add +0.10; got {base}"
+
+    base = trade_value_math.asset_upside_modifier(
+        {"age": 28}, current_season=2025, roy_rank=5,
+    )
+    assert round(base, 2) == 1.06, f"ROY top-5 (not top-3) should add +0.06; got {base}"
+
+    base = trade_value_math.asset_upside_modifier(
+        {"age": 28}, current_season=2025, mvp_rank=4,
+    )
+    assert round(base, 2) == 1.06, f"MVP top-5 should add +0.06; got {base}"
+
+    base = trade_value_math.asset_upside_modifier(
+        {"age": 28}, current_season=2025, dpoy_rank=2,
+    )
+    assert round(base, 2) == 1.05, f"DPOY top-5 should add +0.05; got {base}"
+
+
+def test_asset_upside_modifier_caps_at_1_25():
+    """Kel'el Ware case — age 22 (+0.10) + ROY top-3 (+0.10) = 1.20, still under
+    cap; stacking more signals must still clamp at 1.25."""
+    modifier = trade_value_math.asset_upside_modifier(
+        {"age": 22}, current_season=2025, roy_rank=1, mvp_rank=1, dpoy_rank=1,
+    )
+    assert modifier == 1.25, f"Expected hard cap at 1.25; got {modifier}"

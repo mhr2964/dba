@@ -27,12 +27,13 @@ from services.cpu_trade_posture import (
     is_cornerstone,
 )
 from services.trade_block_builder import _get_franchise_plan
-from services.trade_gates import _apply_final_trade_gates
+from services.trade_gates import _apply_final_trade_gates, _sanity_floor_for_mode
 from services.trade_proposal_scoring import (
-    _asset_upside_modifier,
     _derive_cap_state,
     _get_trade_target_positions,
+    _is_stacked_without_upgrade,
     _position_matches_need,
+    _roster_hole_penalty,
     _score_outgoing_pair,
     _team_a_wants_player,
     _team_archetype_counts,
@@ -131,7 +132,7 @@ async def _attempt_three_team_deal(
                 _plan_a_candidate = await _get_franchise_plan(pool, league.id, a.id, season)
                 offer_pids, offer_pkids, pkg_val = await _build_return_package(
                     pool, league, a, a_block, target_value, taken_player_ids, recently_signed_ids,
-                    plan_a=_plan_a_candidate,
+                    plan_a=_plan_a_candidate, live_mode_a=posture_a["mode"],
                 )
                 if not offer_pids and not offer_pkids:
                     continue
@@ -416,7 +417,7 @@ async def _attempt_three_team_deal(
         a_block_updated = block_by_team.get(team_a.id, [])
         offer2_pids, _, pkg2_val = await _build_return_package(
             pool, league, team_a, a_block_updated, target_value, taken_player_ids, recently_signed_ids,
-            plan_a=_plan_a_3team,
+            plan_a=_plan_a_3team, live_mode_a=posture_a["mode"],
         )
         # Force include the filler pick.
         offer2_pick_ids = [filler_pick["id"]]
@@ -473,9 +474,14 @@ async def _attempt_one_offer(
     recently_signed_ids: set[int] | None = None,
     guild: Optional[discord.Guild] = None,
     postures: dict[int, dict] | None = None,
+    round_seed: int | None = None,
 ) -> int:
     """Mode dispatcher: picks a mode list per team A and routes to the appropriate
     proposal function.  Returns 1 if any proposal was produced, 0 otherwise.
+
+    round_seed: forwarded to pick_proposal_modes' opt-in #7 variety injection —
+    a value that changes call to call (see maybe_initiate_round) so the handful
+    of "coaching philosophy" mode rules aren't identical every single round.
 
     The V2 mode dispatcher is now unconditional — DBA_PROPOSAL_DISPATCHER_V2 no
     longer exists.  pick_proposal_modes runs for every team every cycle.
@@ -551,6 +557,7 @@ async def _attempt_one_offer(
             plan=_disp_plan_a or {},
             cap_state=_disp_cap_state,
             roster_size=len(_disp_roster_a),
+            round_seed=round_seed,
         )
 
         _disp_proposed = 0
@@ -860,6 +867,11 @@ async def _run_incoming_first_for_team(
             if mode_a in ("contending", "play_in_fringe"):
                 if not _position_matches_need(p.position, target_positions):
                     continue
+            # All other modes (#2): skip piling onto an already-stacked position
+            # (3+ rostered) unless the incoming player is a clear value upgrade
+            # over the weakest player already there.
+            elif _is_stacked_without_upgrade(p.position, p.overall, pos_count_map, roster_a_cache):
+                continue
 
             # Positional need multiplier: deprioritize if A already has 3+
             # at this position; boost if A has 0-1.
@@ -1015,14 +1027,15 @@ async def _run_incoming_first_for_team(
                 log.debug("context modifier for candidate ranking failed pid=%d: %s", pid, _ctx_rank_exc)
 
             # B3: asset upside modifier — boosts young/pedigree/award-race players
-            # so they don't get ranked as filler or offered away cheaply.
-            _upside_mod = _asset_upside_modifier(
-                p,
-                draft_year=getattr(p, "draft_year", None),
+            # so they don't get ranked as filler or offered away cheaply. Lives in
+            # trade_value_math now (moved for #5 — trade_grading.evaluate_trade
+            # needed to call it too, and importing trade_proposal_scoring from
+            # trade_grading would be circular).
+            _upside_mod = trade_value_math.asset_upside_modifier(
+                {"age": _age_p},
                 current_season=season,
                 # Award ranks not available at proposal-rank time without an
-                # extra DB call per candidate. Skip here; B3 in cpu_should_accept
-                # handles the accept-side valuation via player_trade_value modifiers.
+                # extra DB call per candidate.
             )
 
             # Pass 1: score WITHOUT arch penalty — arch check deferred to pass 2
@@ -1134,6 +1147,7 @@ async def _run_incoming_first_for_team(
                 recently_signed_ids,
                 counterparty_mode=_cand_posture_b.get("mode", "developing"),
                 plan_a=_plan_a,
+                live_mode_a=mode_a,
             )
 
             # Compute exact post-trade archetype counts:
@@ -1293,6 +1307,7 @@ async def _run_incoming_first_for_team(
             target_team,
             target_value,
             package_value,
+            live_mode=mode_a,
         )
         if _sw_pid is not None:
             offer_player_ids = list(offer_player_ids) + [_sw_pid]
@@ -1382,6 +1397,35 @@ async def _run_incoming_first_for_team(
                 pass
         return 0
     # ── End final gates ───────────────────────────────────────────────────────
+
+    # ── B9 (#4): roster-hole soft downweight ──────────────────────────────────
+    # After gates approve, check whether the outgoing side leaves team A with a
+    # position-group hole (skipped for rebuilding/tanking — B4's own carve-out).
+    # Soft penalty, not a hard reject: only abandons the proposal if the
+    # downweighted ratio would ALSO fail the same sanity floor gates already
+    # enforce, matching B6's soft-penalty precedent rather than B1/B5's hard one.
+    _b9_incoming_players = [target_player] + ([secondary_target] if secondary_target else [])
+    _b9_penalty, _b9_holes = _roster_hole_penalty(
+        roster_a_cache, set(offer_player_ids), _b9_incoming_players, _mode_a_floor,
+    )
+    if _b9_holes:
+        _b9_adjusted_ratio = (package_value * _b9_penalty) / max(target_value, 1)
+        _b9_floor = _sanity_floor_for_mode(_mode_a_floor)
+        if _b9_adjusted_ratio < _b9_floor:
+            log.info(
+                "[CPU] %s abandoning proposal to %s: B9 roster-hole downweight "
+                "(holes=%s, adjusted ratio %.2f below %.2f)",
+                team_a.nba_team_code, target_team.nba_team_code,
+                _b9_holes, _b9_adjusted_ratio, _b9_floor,
+            )
+            return 0
+        log.info(
+            "[CPU] %s → %s: B9 roster-hole downweight noted but ratio still clears "
+            "floor (holes=%s, adjusted ratio %.2f >= %.2f) — proceeding",
+            team_a.nba_team_code, target_team.nba_team_code,
+            _b9_holes, _b9_adjusted_ratio, _b9_floor,
+        )
+    # ── End B9 ───────────────────────────────────────────────────────────────
 
     log.info(
         f"Trade check: target={target_value:.1f} package={package_value:.1f} "
@@ -1667,7 +1711,7 @@ async def _run_incoming_first_for_team(
             try:
                 _full_roster_a = await player_repo.get_roster(pool, league.id, team_a.id)
                 for _cp in _full_roster_a:
-                    if is_cornerstone(team_a, _cp, _full_roster_a) and _cp.id not in offer_player_ids:
+                    if is_cornerstone(team_a, _cp, _full_roster_a, live_mode=mode_a) and _cp.id not in offer_player_ids:
                         _cornerstone_notes.append(
                             f"{_cp.first_name} {_cp.last_name} OVR {_cp.overall} (untouchable)"
                         )
@@ -2348,10 +2392,12 @@ async def _attempt_outgoing_first_offer(
         _cand_post_trade_roster_b6 = [p for p in _roster_a if p.id not in _cand_outgoing_set_b6]
         _cand_arch_counts_b6 = _team_archetype_counts(_cand_post_trade_roster_b6)
         _b6_rejected = False
+        _cand_ret_players: list = []  # populated for B9's roster-hole check below
         for _rpid in _cand_ret_player_ids:
             _rp_b6 = await player_repo.get_by_id(pool, _rpid)
             if not _rp_b6:
                 continue
+            _cand_ret_players.append(_rp_b6)
             _rp_arch = trade_grading._player_archetype({
                 "position": _rp_b6.position,
                 "tendency_3pt": getattr(_rp_b6, "tendency_3pt", 50) or 50,
@@ -2422,6 +2468,32 @@ async def _attempt_outgoing_first_offer(
                     pass
             continue
         # ── End final gates ───────────────────────────────────────────────────
+
+        # ── B9 (#4): roster-hole soft downweight ──────────────────────────────
+        # Mirrors the incoming-first wiring: soft penalty, not a hard reject —
+        # only skips this candidate (try the next one, loop continues) if the
+        # downweighted ratio would ALSO fail the same sanity floor gates enforce.
+        _b9_penalty, _b9_holes = _roster_hole_penalty(
+            _roster_a, {_cand_pid}, _cand_ret_players, _mode_a,
+        )
+        if _b9_holes:
+            _b9_adjusted_ratio = (_cand_package_value * _b9_penalty) / max(_cand_target_value, 1)
+            _b9_floor = _sanity_floor_for_mode(_mode_a)
+            if _b9_adjusted_ratio < _b9_floor:
+                log.info(
+                    "[CPU outgoing-first] %s → %s: B9 roster-hole downweight reject "
+                    "(candidate pid=%d, holes=%s, adjusted ratio %.2f below %.2f)",
+                    team_a.nba_team_code, _cand_team_b.nba_team_code, _cand_pid,
+                    _b9_holes, _b9_adjusted_ratio, _b9_floor,
+                )
+                continue
+            log.info(
+                "[CPU outgoing-first] %s → %s: B9 roster-hole downweight noted but ratio "
+                "still clears floor (candidate pid=%d, holes=%s, adjusted ratio %.2f >= %.2f)",
+                team_a.nba_team_code, _cand_team_b.nba_team_code, _cand_pid,
+                _b9_holes, _b9_adjusted_ratio, _b9_floor,
+            )
+        # ── End B9 ───────────────────────────────────────────────────────────
 
         # Candidate approved — capture and break.
         best_score = _cand_score
@@ -2791,6 +2863,7 @@ async def _pick_sweetener(
     counterparty_team: team_repo.Team,
     target_value: float,
     package_value: float,
+    live_mode: str | None = None,
 ) -> tuple[int | None, int | None, float]:
     """
     Find the smallest sweetener that pushes package_value / target_value to >= 1.05.
@@ -2800,6 +2873,10 @@ async def _pick_sweetener(
        first-round protection rules as _build_return_package).
     2. R2 picks not already in package.
     3. Low-OVR (<=75) role players not in the package whose removal won't break rotation.
+
+    live_mode: team A's live posture mode (B7), threaded into the is_cornerstone
+    backstop check on the role-player sweetener path below. Falls back to
+    team_a.cpu_mode when the caller doesn't have a live mode handy yet.
 
     Returns (player_id_or_None, pick_id_or_None, added_value).
     Exactly one of player_id / pick_id will be set (or both None if nothing found).
@@ -2864,7 +2941,7 @@ async def _pick_sweetener(
         p for p in roster
         if p.id not in current_package_player_ids
         and p.overall <= 75
-        and not is_cornerstone(team_a, p, roster)
+        and not is_cornerstone(team_a, p, roster, live_mode=live_mode)
     ]
     if not expendable:
         return None, None, 0.0

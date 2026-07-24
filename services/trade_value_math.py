@@ -361,6 +361,101 @@ def defensive_impact_modifier(
     return 1.08
 
 
+def _star_leverage_modifier(star_leverage: int | None) -> float:
+    """#8: Small, explicit marketability/star-power premium.
+
+    Before this, player_trade_value compounded OVR × age × upside-tier ×
+    contract × form × experience × defense — no fan/media-pull signal at all,
+    so two statistically-identical players (same OVR, age, contract) were
+    perfectly fungible. star_leverage already exists on the Player dataclass
+    (data/repositories/player_repo.py, 0-100 scale, default 30 — see
+    import_service._star_leverage for the OVR-correlated generation range:
+    ~80-95 for OVR>=88, ~50-70 for OVR 80-89, ~10-40 below that).
+
+    Deliberately modest — this is a tiebreaker signal, not a valuation driver:
+      star_leverage >= 85 → 1.05
+      star_leverage >= 70 → 1.02
+      otherwise            → 1.0 (invisible to everyone else)
+    """
+    if star_leverage is None:
+        return 1.0
+    if star_leverage >= 85:
+        return 1.05
+    if star_leverage >= 70:
+        return 1.02
+    return 1.0
+
+
+def asset_upside_modifier(
+    player: dict,
+    current_season: int,
+    draft_year: int | None = None,
+    roy_rank: int | None = None,
+    mvp_rank: int | None = None,
+    dpoy_rank: int | None = None,
+) -> float:
+    """B3 (#5): Return an upside multiplier for young/pedigree/award-race players.
+
+    Layers on top of player_trade_value's existing age curve. The intent is to
+    make young/high-ceiling players price above their raw OVR wherever trade
+    value is computed — both the proposal generator's ranking (originally the
+    only caller) and trade_grading.evaluate_trade's grade/narrative math (#5:
+    previously this modifier only reached pass-1 proposal-rank scoring, so a
+    ROY-caliber young player moving as centerpiece return could get graded as a
+    lopsided loss by the sim's own narrative layer, contradicting B3's point).
+
+    Moved here (from trade_proposal_scoring.py) so trade_grading.py can call it
+    without an import cycle — trade_proposal_scoring already imports
+    trade_grading, so the reverse direction would be circular; this module has
+    no imports of either and both already depend on it for other value math.
+
+    Takes a plain player dict (matching every other function in this module)
+    instead of a player_repo.Player object — the only real input is "age",
+    which every caller already has as a dict key.
+
+    Modifiers (compound, cap at 1.25):
+    - Age ≤ 22: +0.10 (strong premium — still ceiling-building)
+    - Age 23-24: +0.05 (fading premium — emerging but not proven)
+    - Age 25: +0.02 (minimal — development window closing)
+    - Top-10 draft pick within last 2 seasons: +0.08 (pedigree) — NOT WIRED,
+      see inline note below.
+    - ROY top-3: +0.10 / top-5: +0.06 (in-season production signal)
+    - MVP top-5: +0.06
+    - DPOY top-5: +0.05
+
+    Example — Kel'el Ware (age 22, OVR 77, ROY top-3): modifier ≈ 1.28 → capped
+    at 1.25, putting him closer to OVR-83 trade value than his raw 77.
+
+    draft_year/current_season kept in the signature for future wire-up (callers
+    already pass them) but currently unused — the Player dataclass has no
+    draft_year/draft_pick/draft_position field, so the pedigree branch has
+    always been dead code (see original TODO at trade_proposal_scoring.py's
+    former home of this function). Removing the dead branch makes the gap
+    explicit rather than silently returning 1.0 via None checks.
+    """
+    age = player.get("age")
+    modifier = 1.0
+
+    # Age premium
+    if age is not None:
+        if age <= 22:
+            modifier += 0.10
+        elif age <= 24:
+            modifier += 0.05
+        elif age == 25:
+            modifier += 0.02
+
+    # Award race
+    if roy_rank is not None and roy_rank <= 5:
+        modifier += 0.10 if roy_rank <= 3 else 0.06
+    if mvp_rank is not None and mvp_rank <= 5:
+        modifier += 0.06
+    if dpoy_rank is not None and dpoy_rank <= 5:
+        modifier += 0.05
+
+    return min(1.25, modifier)
+
+
 def _contract_modifier(salary: int, years_remaining: int, salary_cap: int) -> float:
     salary_ratio = salary / (salary_cap * 0.25)
 
@@ -411,13 +506,18 @@ def player_trade_value(
       Pass the value from compute_form_map to include in-season form in the final value.
       Now capped at 1.30 (was 1.15) for elite production.
 
-    Formula: base × age_mult × upside_mod × contract_mod × form_modifier × exp_premium × defensive_impact_mod.
+    Formula: base × age_mult × upside_mod × contract_mod × form_modifier × exp_premium
+             × defensive_impact_mod × star_leverage_mod.
 
     defensive_impact_mod (1.0–1.20): bumps elite defenders whose value isn't
     captured in PPG/APG.  Two paths: tendency gate (defense_tendency >= 75 AND
     avg(blk,stl) >= 70) OR static-attribute gate (player.defense >= 85).
     Attribute tier: >=92→1.20, 88-91→1.15, 85-87→1.10.
     Returns 1.0 for all other players — invisible to them.
+
+    star_leverage_mod (1.0–1.05, #8): small marketability premium from the
+    player's existing star_leverage field (0-100). See _star_leverage_modifier.
+    Returns 1.0 (invisible) unless star_leverage >= 70.
 
     Example — VanVleet (OVR 81, age 32, 66 GP, 8.2 APG, PG, form_modifier=1.15):
       base ≈ 47.9; age_mult = 0.8; upside_mod = 1.0 (age 32 → veteran tier)
@@ -442,8 +542,9 @@ def player_trade_value(
     upside_mod = _upside_modifier(age, overall)
     contract_mod = _contract_modifier(salary, years_remaining, salary_cap)
     def_mod = defensive_impact_modifier(player, season_stats)
+    star_mod = _star_leverage_modifier(player.get("star_leverage"))
 
-    value = base * age_mult * upside_mod * contract_mod * form_modifier * def_mod
+    value = base * age_mult * upside_mod * contract_mod * form_modifier * def_mod * star_mod
 
     # Apply proven-veteran experience premium when season stats are available.
     if season_stats is not None:
