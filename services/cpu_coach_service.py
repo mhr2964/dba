@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import os
 import random
+from types import SimpleNamespace
 
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
@@ -126,19 +127,8 @@ async def _compute_cpu_gameplan(
     form = await _get_form(pool, league_id, season, team_id)
     win_streak: int = form.get("win_streak", 0) or 0
     loss_streak: int = form.get("loss_streak", 0) or 0
-    wins: int = form.get("wins", 0) or 0
-    losses: int = form.get("losses", 0) or 0
-    win_pct: float = wins / (wins + losses) if (wins + losses) > 0 else 0.0
 
-    total_games = await pool.fetchval(
-        "SELECT COUNT(*) FROM games WHERE league_id = $1 AND season = $2 AND season_type = 'regular'",
-        league_id,
-        season,
-    ) or 82
-    game_index: int = game_row.get("game_index", 0) or 0
-    pct_complete: float = game_index / total_games if total_games > 0 else 0.0
-
-    posture = _classify_posture(win_pct, wins, pct_complete)
+    posture = await _classify_posture(pool, league_id, season, team_id)
 
     game_date = game_row.get("scheduled_date")
     back_to_back = await _is_back_to_back(pool, league_id, season, team_id, game_date)
@@ -262,11 +252,41 @@ async def _get_form(pool, league_id: int, season: int, team_id: int) -> dict:
     return dict(row)
 
 
-def _classify_posture(win_pct: float, wins: int, pct_complete: float) -> str:
-    if win_pct > 0.55 or (wins > 35 and pct_complete > 0.50):
+async def _classify_posture(pool, league_id: int, season: int, team_id: int) -> str:
+    """Classify coaching posture from the SAME live-posture source trades use.
+
+    Finding #5 (realism audit): this function used to compute a local,
+    record-only heuristic (win_pct/wins/pct_complete from standings_cache) that
+    never read franchise_plan.goal -- exactly the defect B7 already fixed for
+    the trade posture pipeline (services/team_intel.py::build_team_intel /
+    compute_posture, which blends roster star-count + record + plan_goal via
+    trade_context_builder.compute_team_mode). A team with a stated `win_now`
+    plan on a losing skid could get classified "tanking" here and receive
+    forced-slow-pace/bench-conserving gameplans that contradicted the front
+    office's actual plan. Reusing compute_posture directly means gameplan
+    posture and trade posture can never drift apart again.
+
+    No circular import risk: team_intel imports trade_context_builder and
+    franchise_plan_service, neither of which imports cpu_coach_service (the
+    only importer of cpu_coach_service in services/ is sim_orchestrator.py).
+
+    compute_posture only reads `league.id` and `league.current_season` off the
+    League argument, so a lightweight stand-in is passed instead of fetching
+    the full leagues row -- this avoids an extra query per team per game while
+    still calling the real, shared posture logic.
+    """
+    from services import team_intel
+
+    league_ref = SimpleNamespace(id=league_id, current_season=season)
+    posture_data = await team_intel.compute_posture(pool, league_ref, team_id)
+    mode = posture_data["mode"]
+
+    if mode == "contending":
         return "contender"
-    if win_pct < 0.30 and pct_complete > 0.60:
+    if mode in ("rebuilding", "soft_rebuild"):
         return "tanking"
+    # play_in_fringe / developing (and any future bucket) -> mid: matches the
+    # old heuristic's middle band, which drove "balanced" pace/intensity options.
     return "mid"
 
 
