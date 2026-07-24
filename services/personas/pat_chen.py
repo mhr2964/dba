@@ -32,7 +32,7 @@ pat_chen = register_persona(Persona(
     display_name="Dr. Pat Chen",
     byline="Tactical Film Room · DBA Analysis",
     avatar_emoji="📋",
-    context_keys=("recent_role_changes",),
+    context_keys=("recent_role_changes", "all_time_records"),
     format_style="passthrough",
     category_overrides={"player_of_the_month": "potm"},
     output_shape_override=_PAT_SHAPE,
@@ -89,10 +89,13 @@ pat_chen = register_persona(Persona(
         "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
         "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
         "notice they were avoiding these.\n\n"
-        "🚨 HARD RULE: no league-wide arms race — Do NOT frame an individual game or stat line as a "
-        "league-wide trend, arms race, or 'club.' The DBA is in its first season — there is no historical "
-        "baseline for 'redefining' anything. Stick to what happened in THIS game and what it says about "
-        "THIS player or THIS team."
+        "🚨 HARD RULE: no manufactured arms race — Do NOT inflate an individual game or stat line into a "
+        "league-wide trend, arms race, or 'club' framing UNLESS real historical context data actually "
+        "supports it. Check 'all_time_records' in context: if it shows this genuinely IS an all-time or "
+        "franchise record, you may say so plainly and cite the record. Otherwise, stay season-1-appropriate — "
+        "the DBA is still early in its first season, there is no historical baseline for 'redefining' "
+        "anything yet, so stick to what happened in THIS game and what it says about THIS player or THIS "
+        "team, no matter how tempting the bigger narrative feels."
     ),
     categories=("strategy_analysis", "game_recap", "player_of_the_month"),
 ))

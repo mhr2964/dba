@@ -4,7 +4,10 @@ voice_notes (Finding #7).
 
 7a: pat_chen.py ships the "no league-wide arms race" rule documented in
 Brain/Note Pad/dba/pat-chen-feedback-eval.md (P5) — previously proposed but
-never shipped.
+never shipped. Phase 2 fix D3 made this rule conditional (real history data
+can now justify a genuine comparison) instead of an unconditional ban — the
+test below was updated alongside that rewrite; it still pins that the
+season-1 humility language survives as the fallback branch.
 
 7b: marcus_cole.py already ships every rule documented in
 Brain/Note Pad/dba/marcus-cole-feedback-eval.md (A1-A8) — this locks that in
@@ -23,6 +26,15 @@ def test_pat_chen_ships_no_arms_race_rule():
     voice_notes = PERSONAS["pat_chen"].voice_notes.lower()
     assert "arms race" in voice_notes
     assert "first season" in voice_notes
+
+
+def test_pat_chen_arms_race_rule_is_conditional_on_real_history_data():
+    """D3: the rule bans manufactured narratives, but explicitly carves out
+    a real historical comparison when all_time_records data supports it."""
+    voice_notes = PERSONAS["pat_chen"].voice_notes.lower()
+    assert "all_time_records" in voice_notes
+    assert "unless real historical context data actually" in voice_notes
+    assert "all_time_records" in PERSONAS["pat_chen"].context_keys
 
 
 def test_pat_chen_has_explicit_word_cap_in_prompt_text():
