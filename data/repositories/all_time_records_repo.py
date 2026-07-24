@@ -23,6 +23,24 @@ async def get_record(
     return dict(row) if row else None
 
 
+async def get_all(pool: asyncpg.Pool, league_id: int) -> list[dict]:
+    """All current all-time records for a league — one row per record_type that
+    has been set so far. Returns [] (not an error) when no record has been set
+    yet (early in season 1) — callers should treat an empty list as "nothing
+    to reference" rather than a failure.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT id, league_id, record_type, value, player_id, team_id, game_id, season_set, set_at
+        FROM all_time_records
+        WHERE league_id = $1
+        ORDER BY record_type
+        """,
+        league_id,
+    )
+    return [dict(r) for r in rows]
+
+
 async def set_record(
     pool: asyncpg.Pool,
     league_id: int,
