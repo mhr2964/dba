@@ -220,6 +220,124 @@ def _is_refusal(body: str) -> bool:
     return any(low.startswith(p) for p in _REFUSAL_PREFIXES)
 
 
+# ---------------------------------------------------------------------------
+# Post-generation grounding check (Finding #1 — no fact-checking of LLM output)
+# ---------------------------------------------------------------------------
+# Pragmatic, regex-based net for the most common hallucination shape: a specific
+# percentage or streak-length that doesn't correspond to anything in the context
+# dict that was actually sent to the model. This is deliberately NOT a full NLP
+# fact-checker (out of scope per the audit) — it targets numeric claims the model
+# is instructed to ground ("use ONLY real stats") but that nothing downstream
+# ever re-verifies. Plain integer claims (e.g. "34 points" that should've been
+# 30) are out of scope: same-order-of-magnitude integers are too ambiguous to
+# flag without false-positive noise, whereas percentages and streak lengths are
+# specific enough that a mismatch is a strong hallucination signal.
+
+_PCT_CLAIM_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+_STREAK_CLAIM_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?[\s-]+(?:straight|consecutive|game(?:s)?\s+(?:win|los(?:s|ing))(?:\s+streak)?)",
+    re.IGNORECASE,
+)
+# Real make/attempt pairs commonly present in columnist context payloads — used
+# to derive the shooting percentages personas (esp. Pat Chen) are instructed to
+# compute, so a correctly-computed FG%/3P%/eFG% doesn't get flagged as invented.
+_MAKE_ATTEMPT_PAIRS: tuple[tuple[str, str], ...] = (("fgm", "fga"), ("tpm", "tpa"), ("ftm", "fta"))
+# Absolute tolerance (percentage points, or raw count) for a claim to count as grounded.
+# Generous on purpose — this is a hallucination net, not a precision auditor.
+_GROUNDING_TOLERANCE = 1.5
+
+
+def _collect_context_numbers(obj, acc: set[float]) -> None:
+    """Recursively collect numeric leaf values from a context dict/list.
+
+    Ratios in [0, 1] are also added scaled to 0-100 so a context value like
+    0.487 grounds a rendered claim of "48.7%". Numbers embedded in strings
+    (e.g. "118-110" score summaries, "34-11-9" stat lines) are picked up too,
+    since box-score summaries are frequently pre-formatted as strings rather
+    than raw numeric fields.
+    """
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _collect_context_numbers(v, acc)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _collect_context_numbers(v, acc)
+    elif isinstance(obj, bool):
+        return
+    elif isinstance(obj, (int, float)):
+        acc.add(round(float(obj), 1))
+        if 0.0 <= obj <= 1.0:
+            acc.add(round(float(obj) * 100, 1))
+    elif isinstance(obj, str):
+        for m in re.finditer(r"-?\d+(?:\.\d+)?", obj):
+            try:
+                acc.add(round(float(m.group(0)), 1))
+            except ValueError:
+                pass
+
+
+def _collect_derived_percentages(obj, acc: set[float]) -> None:
+    """Recursively derive shooting percentages from make/attempt pairs in context.
+
+    Personas (Pat Chen especially) are explicitly instructed to compute TS%/eFG%/
+    FG%/3P% from raw makes and attempts — those computed values legitimately won't
+    appear verbatim in context, so they'd otherwise be flagged as hallucinated.
+    """
+    if isinstance(obj, dict):
+        for made_key, att_key in _MAKE_ATTEMPT_PAIRS:
+            made, att = obj.get(made_key), obj.get(att_key)
+            if isinstance(made, (int, float)) and isinstance(att, (int, float)) and att:
+                acc.add(round(made / att * 100, 1))
+        fgm, tpm, fga = obj.get("fgm"), obj.get("tpm"), obj.get("fga")
+        if (
+            isinstance(fgm, (int, float)) and isinstance(tpm, (int, float))
+            and isinstance(fga, (int, float)) and fga
+        ):
+            acc.add(round((fgm + 0.5 * tpm) / fga * 100, 1))
+        for v in obj.values():
+            _collect_derived_percentages(v, acc)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _collect_derived_percentages(v, acc)
+
+
+def _find_ungrounded_claims(headline: str, body: str, context: dict) -> list[str]:
+    """Scan generated text for percentage/streak-length claims not grounded in context.
+
+    Returns the list of matched claim substrings (e.g. "61.4%", "8 straight")
+    that don't correspond — within tolerance — to any real number (or computable
+    shooting percentage) present in the context dict sent to the prompt. Empty
+    list means everything checked out (or nothing checkable was claimed).
+    """
+    text = f"{headline}\n{body}"
+    allowed: set[float] = set()
+    _collect_context_numbers(context, allowed)
+    _collect_derived_percentages(context, allowed)
+
+    def _grounded(value: float) -> bool:
+        return any(abs(value - a) <= _GROUNDING_TOLERANCE for a in allowed)
+
+    flagged: list[str] = []
+    for m in _PCT_CLAIM_RE.finditer(text):
+        if not _grounded(float(m.group(1))):
+            flagged.append(m.group(0))
+    for m in _STREAK_CLAIM_RE.finditer(text):
+        if not _grounded(float(m.group(1))):
+            flagged.append(m.group(0))
+    return flagged
+
+
+def _build_fact_check_addendum(flagged: list[str]) -> str:
+    """System-prompt addendum appended before a one-time regeneration retry."""
+    joined = "; ".join(flagged[:5])
+    return (
+        "\n\nCORRECTION NEEDED: Your previous draft included numeric claims that do not "
+        f"match anything computable from the context provided ({joined}). Every percentage "
+        "or streak length you state must be present in, or directly computable from, the "
+        "context JSON. Remove or fix any number you cannot ground in the context. Do not invent."
+    )
+
+
 async def generate(  # noqa: PLR0912, PLR0915
     pool,
     league_id: int,
@@ -515,176 +633,210 @@ async def generate(  # noqa: PLR0912, PLR0915
         import anthropic
 
         client = anthropic.AsyncAnthropic(api_key=api_key)
-        message = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1400,  # raised from 900 — passthrough personas produce longer bodies; truncation broke JSON parse
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        raw = message.content[0].text.strip()
 
-        # Ride-along: capture the raw LLM response alongside the prompt.
-        if _capture_prompt is not None:
-            _capture_prompt["raw_llm_response"] = raw
+        # Grounding-check retry loop (Finding #1): at most one regeneration when
+        # the first draft contains numeric claims (percentages, streak lengths)
+        # that don't correspond to anything in the context dict. Only applies to
+        # the two "good" content paths below (old {"headline","body"} shape and
+        # the main structured shape) — parse-failure and missing-field fallbacks
+        # already produce degraded placeholder text that isn't worth fact-checking
+        # or re-rolling, so they keep returning immediately as before.
+        _fact_check_addendum = ""
+        _final_headline: str | None = None
+        _final_body: str | None = None
 
-        # DIAGNOSTIC — log first 800 chars of every LLM response so we can
-        # verify each persona's actual output shape.  Leave in place.
-        log.info(
-            "columnist_service [RAW] persona=%s category=%s | %.800s",
-            _persona_id, _category, raw,
-        )
-
-        parsed = _tolerant_json_parse(raw, _persona_id, _category)
-
-        if parsed is None:
-            # All structured parsing failed — wrap raw text and return something.
-            # Guard: if the raw text looks like JSON (starts with '{'), try one more
-            # time to pull readable fields out of it so we never post raw JSON to Discord.
-            log.warning(
-                "columnist_service: JSON parse failed for %s/%s — using prose fallback | raw: %r",
-                _persona_id, _category, raw[:120],
+        for _attempt in range(2):
+            message = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1400,  # raised from 900 — passthrough personas produce longer bodies; truncation broke JSON parse
+                system=system_prompt + _fact_check_addendum,
+                messages=[{"role": "user", "content": user_content}],
             )
-            persona_display = persona.display_name
-            _prose_raw = raw.strip()
-            # Treat fence-prefixed raw the same as JSON-prefixed — both are
-            # the LLM trying to return structured output. Never spill them.
-            _looks_like_json = _prose_raw.startswith("{") or _prose_raw.startswith("`")
-            if _looks_like_json:
-                # Attempt a best-effort field extraction from JSON-shaped text.
-                _json_candidate: dict | None = None
-                try:
-                    import re as _re
-                    _cleaned = _re.sub(r",\s*([}\]])", r"\1", _prose_raw)
-                    _json_candidate = json.loads(_cleaned)
-                except Exception:
-                    pass
-                if isinstance(_json_candidate, dict):
-                    # Got a valid dict — route through the normal assembly path.
-                    _h = str(_json_candidate.get("headline", "")).strip()
-                    _b = str(_json_candidate.get("body", "")).strip()
-                    if _h and _b:
-                        # Old-shape fallback.
-                        await article_repo.insert(
-                            pool, league_id=league_id, season=season,
-                            persona_id=_persona_id, category=_category,
-                            headline=_h, body=_b,
-                            subject_team_ids=_subject_team_ids,
-                            subject_player_ids=_subject_player_ids,
-                        )
-                        return {"headline": _h, "body": _b}
-                    # New-shape keys available — assemble.
-                    _json_candidate.setdefault("lede", "")
-                    _json_candidate.setdefault("key_stats", [])
-                    _json_candidate.setdefault("bullets", [])
-                    _json_candidate.setdefault("verdict", "")
-                    _h = str(_json_candidate.get("headline", "")).strip()
-                    if _h:
-                        _fmt = persona.category_overrides.get(_category, persona.format_style)
-                        _body = _assemble_article(_json_candidate, persona_display, _fmt, ctx=_context)
-                        await article_repo.insert(
-                            pool, league_id=league_id, season=season,
-                            persona_id=_persona_id, category=_category,
-                            headline=_h, body=_body,
-                            subject_team_ids=_subject_team_ids,
-                            subject_player_ids=_subject_player_ids,
-                        )
-                        return {"headline": _h, "body": _body}
-                # JSON-shaped but still unparseable — discard JSON text entirely;
-                # emit a generic headline so no raw braces reach Discord.
-                headline = f"{_category.replace('_', ' ').title()} Report"
-                body = f"**{headline}**\n\n— *{persona_display}*"
-            else:
-                first_line = _prose_raw.split("\n")[0].strip()[:80]
-                headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
-                rest = _prose_raw[len(first_line):].strip()[:300]
-                body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
-            await article_repo.insert(
-                pool, league_id=league_id, season=season,
-                persona_id=_persona_id, category=_category,
-                headline=headline, body=body,
-                subject_team_ids=_subject_team_ids,
-                subject_player_ids=_subject_player_ids,
-            )
-            return {"headline": headline, "body": body}
+            raw = message.content[0].text.strip()
 
-        # Accept old {"headline","body"} shape if it slips through.
-        # Exception: trade_report must go through _assemble_trade_report so that
-        # [FRAMING]/[ANALYSIS] markers are stripped and asset blocks are rendered.
-        # Passthrough personas also must go through _assemble_article (not raw body)
-        # so _dedupe_headline and the empty-body guard fire correctly.
-        _bypass_old_shape = _category == "trade_report" or persona.format_style in (
-            "passthrough", "tank_watch", "potm",
-        )
-        if "headline" in parsed and "body" in parsed and "lede" not in parsed and not _bypass_old_shape:
-            headline = str(parsed["headline"]).strip()
-            body = str(parsed["body"]).strip()[:1400]
-            if _is_refusal(body):
+            # Ride-along: capture the raw LLM response alongside the prompt.
+            if _capture_prompt is not None:
+                _capture_prompt["raw_llm_response"] = raw
+
+            # DIAGNOSTIC — log first 800 chars of every LLM response so we can
+            # verify each persona's actual output shape.  Leave in place.
+            log.info(
+                "columnist_service [RAW] persona=%s category=%s attempt=%d | %.800s",
+                _persona_id, _category, _attempt + 1, raw,
+            )
+
+            parsed = _tolerant_json_parse(raw, _persona_id, _category)
+
+            if parsed is None:
+                # All structured parsing failed — wrap raw text and return something.
+                # Guard: if the raw text looks like JSON (starts with '{'), try one more
+                # time to pull readable fields out of it so we never post raw JSON to Discord.
+                # No grounding check / retry here — this is already degraded fallback text.
                 log.warning(
-                    "columnist_service: %s/%s returned meta-commentary (old shape), skipping: %r",
-                    _persona_id, _category, body[:80],
+                    "columnist_service: JSON parse failed for %s/%s — using prose fallback | raw: %r",
+                    _persona_id, _category, raw[:120],
                 )
-                return None
-            await article_repo.insert(
-                pool, league_id=league_id, season=season,
-                persona_id=_persona_id, category=_category,
-                headline=headline, body=body,
-                subject_team_ids=_subject_team_ids,
-                subject_player_ids=_subject_player_ids,
+                persona_display = persona.display_name
+                _prose_raw = raw.strip()
+                # Treat fence-prefixed raw the same as JSON-prefixed — both are
+                # the LLM trying to return structured output. Never spill them.
+                _looks_like_json = _prose_raw.startswith("{") or _prose_raw.startswith("`")
+                if _looks_like_json:
+                    # Attempt a best-effort field extraction from JSON-shaped text.
+                    _json_candidate: dict | None = None
+                    try:
+                        import re as _re
+                        _cleaned = _re.sub(r",\s*([}\]])", r"\1", _prose_raw)
+                        _json_candidate = json.loads(_cleaned)
+                    except Exception:
+                        pass
+                    if isinstance(_json_candidate, dict):
+                        # Got a valid dict — route through the normal assembly path.
+                        _h = str(_json_candidate.get("headline", "")).strip()
+                        _b = str(_json_candidate.get("body", "")).strip()
+                        if _h and _b:
+                            # Old-shape fallback.
+                            await article_repo.insert(
+                                pool, league_id=league_id, season=season,
+                                persona_id=_persona_id, category=_category,
+                                headline=_h, body=_b,
+                                subject_team_ids=_subject_team_ids,
+                                subject_player_ids=_subject_player_ids,
+                            )
+                            return {"headline": _h, "body": _b}
+                        # New-shape keys available — assemble.
+                        _json_candidate.setdefault("lede", "")
+                        _json_candidate.setdefault("key_stats", [])
+                        _json_candidate.setdefault("bullets", [])
+                        _json_candidate.setdefault("verdict", "")
+                        _h = str(_json_candidate.get("headline", "")).strip()
+                        if _h:
+                            _fmt = persona.category_overrides.get(_category, persona.format_style)
+                            _body = _assemble_article(_json_candidate, persona_display, _fmt, ctx=_context)
+                            await article_repo.insert(
+                                pool, league_id=league_id, season=season,
+                                persona_id=_persona_id, category=_category,
+                                headline=_h, body=_body,
+                                subject_team_ids=_subject_team_ids,
+                                subject_player_ids=_subject_player_ids,
+                            )
+                            return {"headline": _h, "body": _body}
+                    # JSON-shaped but still unparseable — discard JSON text entirely;
+                    # emit a generic headline so no raw braces reach Discord.
+                    headline = f"{_category.replace('_', ' ').title()} Report"
+                    body = f"**{headline}**\n\n— *{persona_display}*"
+                else:
+                    first_line = _prose_raw.split("\n")[0].strip()[:80]
+                    headline = first_line if first_line else f"{_category.replace('_', ' ').title()} Report"
+                    rest = _prose_raw[len(first_line):].strip()[:300]
+                    body = f"**{headline}**\n\n{rest}\n\n— *{persona_display}*" if rest else f"**{headline}**\n\n— *{persona_display}*"
+                await article_repo.insert(
+                    pool, league_id=league_id, season=season,
+                    persona_id=_persona_id, category=_category,
+                    headline=headline, body=body,
+                    subject_team_ids=_subject_team_ids,
+                    subject_player_ids=_subject_player_ids,
+                )
+                return {"headline": headline, "body": body}
+
+            # Accept old {"headline","body"} shape if it slips through.
+            # Exception: trade_report must go through _assemble_trade_report so that
+            # [FRAMING]/[ANALYSIS] markers are stripped and asset blocks are rendered.
+            # Passthrough personas also must go through _assemble_article (not raw body)
+            # so _dedupe_headline and the empty-body guard fire correctly.
+            _bypass_old_shape = _category == "trade_report" or persona.format_style in (
+                "passthrough", "tank_watch", "potm",
             )
-            return {"headline": headline, "body": body}
+            if "headline" in parsed and "body" in parsed and "lede" not in parsed and not _bypass_old_shape:
+                headline = str(parsed["headline"]).strip()
+                body = str(parsed["body"]).strip()[:1400]
+                if _is_refusal(body):
+                    log.warning(
+                        "columnist_service: %s/%s returned meta-commentary (old shape), skipping: %r",
+                        _persona_id, _category, body[:80],
+                    )
+                    return None
+                _final_headline, _final_body = headline, body
+            else:
+                # Require headline. For standard shapes also require lede; custom-shape
+                # personas (output_shape_override set) only need headline to be valid.
+                # Personas with a named format_style that has its own renderer also pass
+                # with headline alone — the renderer handles empty optional fields.
+                headline = str(parsed.get("headline", "")).strip()
+                lede = str(parsed.get("lede", "")).strip()
+                _uses_custom_shape = bool(_effective_shape)
+                _has_named_renderer = persona.format_style in (
+                    "moment", "verdict", "index", "hot_take",
+                    "analytics", "tactical", "recap", "potm", "trade_report",
+                    "passthrough", "tank_watch",
+                )
+                _required_ok = headline and (lede or _uses_custom_shape or _has_named_renderer)
+                if not _required_ok:
+                    log.warning(
+                        "columnist_service: missing required fields (headline%s) from %s — prose fallback | got keys: %r",
+                        "" if _uses_custom_shape else "/lede",
+                        _persona_id, list(parsed.keys()),
+                    )
+                    persona_display = persona.display_name
+                    # Don't emit raw JSON into the body — use a generic headline instead.
+                    headline = f"{_category.replace('_', ' ').title()} Report"
+                    body = f"**{headline}**\n\n— *{persona_display}*"
+                    await article_repo.insert(
+                        pool, league_id=league_id, season=season,
+                        persona_id=_persona_id, category=_category,
+                        headline=headline, body=body,
+                        subject_team_ids=_subject_team_ids,
+                        subject_player_ids=_subject_player_ids,
+                    )
+                    return {"headline": headline, "body": body}
 
-        # Require headline. For standard shapes also require lede; custom-shape
-        # personas (output_shape_override set) only need headline to be valid.
-        # Personas with a named format_style that has its own renderer also pass
-        # with headline alone — the renderer handles empty optional fields.
-        headline = str(parsed.get("headline", "")).strip()
-        lede = str(parsed.get("lede", "")).strip()
-        _uses_custom_shape = bool(_effective_shape)
-        _has_named_renderer = persona.format_style in (
-            "moment", "verdict", "index", "hot_take",
-            "analytics", "tactical", "recap", "potm", "trade_report",
-            "passthrough", "tank_watch",
-        )
-        _required_ok = headline and (lede or _uses_custom_shape or _has_named_renderer)
-        if not _required_ok:
-            log.warning(
-                "columnist_service: missing required fields (headline%s) from %s — prose fallback | got keys: %r",
-                "" if _uses_custom_shape else "/lede",
-                _persona_id, list(parsed.keys()),
-            )
-            persona_display = persona.display_name
-            # Don't emit raw JSON into the body — use a generic headline instead.
-            headline = f"{_category.replace('_', ' ').title()} Report"
-            body = f"**{headline}**\n\n— *{persona_display}*"
-            await article_repo.insert(
-                pool, league_id=league_id, season=season,
-                persona_id=_persona_id, category=_category,
-                headline=headline, body=body,
-                subject_team_ids=_subject_team_ids,
-                subject_player_ids=_subject_player_ids,
-            )
-            return {"headline": headline, "body": body}
+                # Inject empty defaults for optional fields so _assemble_article never KeyErrors.
+                parsed.setdefault("key_stats", [])
+                parsed.setdefault("bullets", [])
+                parsed.setdefault("verdict", "")
 
-        # Inject empty defaults for optional fields so _assemble_article never KeyErrors.
-        parsed.setdefault("key_stats", [])
-        parsed.setdefault("bullets", [])
-        parsed.setdefault("verdict", "")
+                persona_display = persona.display_name
+                _fmt = persona.category_overrides.get(_category, persona.format_style)
+                body = _assemble_article(parsed, persona_display, _fmt, ctx=_context)
 
-        persona_display = persona.display_name
-        _fmt = persona.category_overrides.get(_category, persona.format_style)
-        body = _assemble_article(parsed, persona_display, _fmt, ctx=_context)
+                # Passthrough renderer returns None when body is empty — skip the post.
+                if body is None:
+                    return None
 
-        # Passthrough renderer returns None when body is empty — skip the post.
-        if body is None:
-            return None
+                # Refusal detector: if the LLM explained lack of data instead of writing
+                # an article, skip silently rather than posting the refusal to Discord.
+                if _is_refusal(body):
+                    log.warning(
+                        "columnist_service: %s/%s returned meta-commentary, skipping: %r",
+                        _persona_id, _category, body[:80],
+                    )
+                    return None
 
-        # Refusal detector: if the LLM explained lack of data instead of writing
-        # an article, skip silently rather than posting the refusal to Discord.
-        if _is_refusal(body):
-            log.warning(
-                "columnist_service: %s/%s returned meta-commentary, skipping: %r",
-                _persona_id, _category, body[:80],
-            )
+                _final_headline, _final_body = headline, body
+
+            # ── Grounding check (Finding #1) ──────────────────────────────────
+            # Only reached by the two "good" content paths above. Retry once
+            # (regenerate from scratch with a correction note) when the first
+            # draft has ungrounded numeric claims; post whatever we have after
+            # the retry rather than dropping the article entirely.
+            _ungrounded = _find_ungrounded_claims(_final_headline, _final_body, _context)
+            if _ungrounded and _attempt == 0:
+                log.warning(
+                    "columnist_service: %s/%s draft had ungrounded numeric claim(s) %r — retrying once",
+                    _persona_id, _category, _ungrounded[:5],
+                )
+                _fact_check_addendum = _build_fact_check_addendum(_ungrounded)
+                _final_headline = _final_body = None
+                continue
+            if _ungrounded:
+                log.warning(
+                    "columnist_service: %s/%s still has ungrounded numeric claim(s) %r after retry — posting anyway",
+                    _persona_id, _category, _ungrounded[:5],
+                )
+            break
+
+        if _final_headline is None or _final_body is None:
+            # Defensive — every loop exit path above either returns or sets both.
             return None
 
         await article_repo.insert(
@@ -693,13 +845,13 @@ async def generate(  # noqa: PLR0912, PLR0915
             season=season,
             persona_id=_persona_id,
             category=_category,
-            headline=headline,
-            body=body,
+            headline=_final_headline,
+            body=_final_body,
             subject_team_ids=_subject_team_ids,
             subject_player_ids=_subject_player_ids,
         )
 
-        return {"headline": headline, "body": body}
+        return {"headline": _final_headline, "body": _final_body}
 
     except Exception as exc:
         raw_preview = locals().get("raw", "<no response>")

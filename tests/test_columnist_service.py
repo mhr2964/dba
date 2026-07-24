@@ -1,0 +1,171 @@
+"""
+Characterization + new-behavior tests for columnist_service.generate().
+
+Covers the grounding-check retry loop added for Finding #1 (no fact-checking
+of LLM output): a well-formed draft with a numeric claim that doesn't match
+anything in the context dict should trigger exactly one regeneration attempt,
+and the article that eventually gets posted/persisted should be whichever
+draft's claims are grounded (or the second draft, if grounding never clears).
+Also pins the pre-existing happy path (single grounded draft, one API call)
+so the retry logic doesn't regress normal behavior.
+
+No real Anthropic API calls are made — anthropic.AsyncAnthropic is patched
+with a fake client whose messages.create() is scripted per test.
+"""
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from services import columnist_service
+from services.personas.base import Persona
+
+pytestmark = pytest.mark.asyncio
+
+
+def _persona(**overrides) -> Persona:
+    defaults = dict(
+        id="test_persona",
+        display_name="Test Persona",
+        byline="Test Desk",
+        avatar_emoji="🧪",
+        voice_notes="Test voice notes.",
+        categories=("game_recap",),
+    )
+    defaults.update(overrides)
+    return Persona(**defaults)
+
+
+def _fake_message(text: str):
+    return SimpleNamespace(content=[SimpleNamespace(text=text)])
+
+
+def _fake_client(*texts: str):
+    """Return a fake anthropic.AsyncAnthropic() instance yielding `texts` in
+    order across successive messages.create() calls (one per API call)."""
+    client = MagicMock()
+    responses = [_fake_message(t) for t in texts]
+    client.messages.create = AsyncMock(side_effect=responses)
+    return client
+
+
+async def _run_generate(persona, context, texts, **kwargs):
+    fake_anthropic_module = SimpleNamespace(
+        AsyncAnthropic=MagicMock(return_value=_fake_client(*texts))
+    )
+    pool = MagicMock()
+    insert_calls = []
+
+    async def _fake_insert(pool_, **insert_kwargs):
+        insert_calls.append(insert_kwargs)
+        return 1
+
+    with (
+        patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+        patch.dict("services.personas.PERSONAS", {persona.id: persona}, clear=True),
+        patch("services.columnist_ride_along.should_fire_for", return_value=True),
+        patch("data.repositories.article_repo.insert", _fake_insert),
+        patch.dict("sys.modules", {"anthropic": fake_anthropic_module}),
+    ):
+        result = await columnist_service.generate(
+            pool, league_id=1, season=2025,
+            persona_id=persona.id, category="game_recap", context=context,
+            **kwargs,
+        )
+    return result, insert_calls
+
+
+async def test_happy_path_grounded_draft_posts_on_first_attempt():
+    """A draft whose only numeric claim matches context should NOT retry —
+    exactly one API call, one DB insert."""
+    persona = _persona()
+    context = {"team": "OKC", "win_streak": 8}
+    body_json = json.dumps({
+        "headline": "OKC Riding an 8-Game Win Streak",
+        "lede": "Thunder win their 8th straight.",
+        "key_stats": [{"label": "Win streak", "value": "8 straight"}],
+        "bullets": ["OKC has won 8 straight games."],
+        "verdict": "The streak continues.",
+    })
+    result, insert_calls = await _run_generate(persona, context, [body_json])
+
+    assert result is not None
+    assert "8 straight" in result["body"] or "8" in result["body"]
+    assert len(insert_calls) == 1
+
+
+async def test_ungrounded_percentage_triggers_one_retry_then_posts_grounded_draft():
+    """First draft invents a 61.4% claim not in context; second (retried) draft
+    is grounded. Exactly 2 API calls, exactly 1 DB insert (the grounded one)."""
+    persona = _persona()
+    context = {"team": "OKC", "fgm": 40, "fga": 80}  # real FG% = 50.0
+    bad_body = json.dumps({
+        "headline": "OKC Shoots a Blistering 61.4% From the Field",
+        "lede": "Thunder torched the nets at 61.4% shooting.",
+        "key_stats": [{"label": "FG%", "value": "61.4%"}],
+        "bullets": ["A 61.4% shooting night is elite."],
+        "verdict": "Efficiency won the night.",
+    })
+    good_body = json.dumps({
+        "headline": "OKC Shoots an Even 50% From the Field",
+        "lede": "Thunder shot 50% from the field.",
+        "key_stats": [{"label": "FG%", "value": "50.0%"}],
+        "bullets": ["A 50% shooting night is solid."],
+        "verdict": "Efficiency won the night.",
+    })
+    result, insert_calls = await _run_generate(persona, context, [bad_body, good_body])
+
+    assert result is not None
+    assert "50" in result["headline"]
+    assert len(insert_calls) == 1
+    assert "50" in insert_calls[0]["headline"]
+
+
+async def test_ungrounded_claim_persists_after_retry_still_posts():
+    """Both attempts invent an ungrounded percentage — grounding never clears,
+    but the article still posts (graceful fallback, not a silent drop) using
+    the second attempt's content, after exactly 2 API calls."""
+    persona = _persona()
+    context = {"team": "OKC", "fgm": 40, "fga": 80}  # real FG% = 50.0
+    bad_body_1 = json.dumps({
+        "headline": "OKC Shoots a Blistering 61.4% From the Field",
+        "lede": "Thunder torched the nets.",
+        "key_stats": [{"label": "FG%", "value": "61.4%"}],
+        "bullets": ["A 61.4% shooting night is elite."],
+        "verdict": "Efficiency won the night.",
+    })
+    bad_body_2 = json.dumps({
+        "headline": "OKC Shoots a Ridiculous 72.9% From the Field",
+        "lede": "Thunder torched the nets even harder.",
+        "key_stats": [{"label": "FG%", "value": "72.9%"}],
+        "bullets": ["A 72.9% shooting night is absurd."],
+        "verdict": "Efficiency won the night.",
+    })
+    result, insert_calls = await _run_generate(persona, context, [bad_body_1, bad_body_2])
+
+    assert result is not None
+    assert "72.9" in result["headline"]
+    assert len(insert_calls) == 1
+
+
+async def test_old_shape_headline_body_also_gets_grounding_checked():
+    """The legacy {"headline","body"} shape (no 'lede') goes through the same
+    grounding gate as the structured shape."""
+    persona = _persona()
+    context = {"team": "OKC", "win_streak": 5}
+    bad = json.dumps({
+        "headline": "OKC Extends Its Streak to 9 Straight",
+        "body": "The Thunder have now won 9 straight games, a franchise best.",
+    })
+    good = json.dumps({
+        "headline": "OKC Extends Its Streak to 5 Straight",
+        "body": "The Thunder have now won 5 straight games.",
+    })
+    result, insert_calls = await _run_generate(persona, context, [bad, good])
+
+    assert result is not None
+    assert "5 Straight" in result["headline"]
+    assert len(insert_calls) == 1
