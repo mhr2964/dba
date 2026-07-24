@@ -131,7 +131,7 @@ async def _attempt_three_team_deal(
                 _plan_a_candidate = await _get_franchise_plan(pool, league.id, a.id, season)
                 offer_pids, offer_pkids, pkg_val = await _build_return_package(
                     pool, league, a, a_block, target_value, taken_player_ids, recently_signed_ids,
-                    plan_a=_plan_a_candidate,
+                    plan_a=_plan_a_candidate, live_mode_a=posture_a["mode"],
                 )
                 if not offer_pids and not offer_pkids:
                     continue
@@ -416,7 +416,7 @@ async def _attempt_three_team_deal(
         a_block_updated = block_by_team.get(team_a.id, [])
         offer2_pids, _, pkg2_val = await _build_return_package(
             pool, league, team_a, a_block_updated, target_value, taken_player_ids, recently_signed_ids,
-            plan_a=_plan_a_3team,
+            plan_a=_plan_a_3team, live_mode_a=posture_a["mode"],
         )
         # Force include the filler pick.
         offer2_pick_ids = [filler_pick["id"]]
@@ -1293,6 +1293,7 @@ async def _run_incoming_first_for_team(
             target_team,
             target_value,
             package_value,
+            live_mode=mode_a,
         )
         if _sw_pid is not None:
             offer_player_ids = list(offer_player_ids) + [_sw_pid]
@@ -1667,7 +1668,7 @@ async def _run_incoming_first_for_team(
             try:
                 _full_roster_a = await player_repo.get_roster(pool, league.id, team_a.id)
                 for _cp in _full_roster_a:
-                    if is_cornerstone(team_a, _cp, _full_roster_a) and _cp.id not in offer_player_ids:
+                    if is_cornerstone(team_a, _cp, _full_roster_a, live_mode=mode_a) and _cp.id not in offer_player_ids:
                         _cornerstone_notes.append(
                             f"{_cp.first_name} {_cp.last_name} OVR {_cp.overall} (untouchable)"
                         )
@@ -2791,6 +2792,7 @@ async def _pick_sweetener(
     counterparty_team: team_repo.Team,
     target_value: float,
     package_value: float,
+    live_mode: str | None = None,
 ) -> tuple[int | None, int | None, float]:
     """
     Find the smallest sweetener that pushes package_value / target_value to >= 1.05.
@@ -2800,6 +2802,10 @@ async def _pick_sweetener(
        first-round protection rules as _build_return_package).
     2. R2 picks not already in package.
     3. Low-OVR (<=75) role players not in the package whose removal won't break rotation.
+
+    live_mode: team A's live posture mode (B7), threaded into the is_cornerstone
+    backstop check on the role-player sweetener path below. Falls back to
+    team_a.cpu_mode when the caller doesn't have a live mode handy yet.
 
     Returns (player_id_or_None, pick_id_or_None, added_value).
     Exactly one of player_id / pick_id will be set (or both None if nothing found).
@@ -2864,7 +2870,7 @@ async def _pick_sweetener(
         p for p in roster
         if p.id not in current_package_player_ids
         and p.overall <= 75
-        and not is_cornerstone(team_a, p, roster)
+        and not is_cornerstone(team_a, p, roster, live_mode=live_mode)
     ]
     if not expendable:
         return None, None, 0.0
