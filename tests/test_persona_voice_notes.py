@@ -99,6 +99,16 @@ def test_ren_takahashi_has_real_transaction_mechanic():
     assert columnist_service._resolve_word_target("ren_takahashi") == 40
 
 
+def test_darius_cole_has_real_scouting_substance():
+    """C2: darius_cole previously had pure formatting rules (odds ladder,
+    stock lines) with no real draft-evaluation knowledge -- this pins the
+    added positional-need theory and scouting/bust-risk language."""
+    voice_notes = PERSONAS["darius_cole"].voice_notes
+    assert "Positional need" in voice_notes
+    assert "Bust risk" in voice_notes
+    assert "translatable skills" in voice_notes
+
+
 def test_keisha_williams_has_a_stated_standing_bias():
     voice_notes = PERSONAS["keisha_williams"].voice_notes.lower()
     assert "standing bias" in voice_notes
