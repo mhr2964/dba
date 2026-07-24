@@ -8,7 +8,7 @@ state: yellow
 
 ## Next action
 
-**RESOLVED 2026-07-24:** the Message Content Intent toggle was already on (or fixed silently at some point without this file being updated) — confirmed by running `python main.py` directly: connected clean, synced 168 commands to guild `1503802254346551318`, no intent error. This was a stale blocker in this file, not a real one. Next: verify the 3 pending trade-restructure fixes against the B5/B7/B8 rules in `docs/design/trade-logic-rules.md`: LAC shouldn't ship 3 players + 2nd for Poeltl; NYK shouldn't ship Bridges + Anunoby for Kuminga; DEN shouldn't ship Gordon + 2nd for Brooks. This needs an actual trade scenario run against real team state — either live in Discord or via a scripted repro — not yet scoped.
+Only one loose end remains: push the `dba-site` commit (`17feab1`, sibling repo) to the `heroku` remote when ready — holding since that deploys the live site immediately.
 
 ## Traps
 
@@ -23,10 +23,10 @@ state: yellow
 
 ## Recent context
 
-- 2026-07-24: Fixed the flaky `test_progression.py::test_high_potential_grows_more` (`2328d22`) — under-powered statistical assertion, not shared state. Resynced `Projects/dba-site`'s command reference (separate repo, `17feab1`). Closed the last opportunistic item from the sweep: split `sim_batch_hooks.py` out of `batch_sim_runner.py` (renamed `sim_orchestrator.py`, `c79adbb`) — see `docs/design/architecture.md`'s Split status for why the discord-import invariant still isn't fully closed for these two files (DM sends need a separate abstraction, out of scope).
-- 2026-07-22: Completed the full re-architecture sweep — Phase 0 (hygiene), Phase 1 (Announcer protocol seam), Phase 2 (both god-file splits: `cpu_trade_proposals.py`, `batch_sim_runner.py`), Phase 3 (6 oversized service files split), and a cog-splitting extension (6 oversized cogs split). See `docs/design/architecture.md`'s "Split status" / "Phase 3 splits" / "Cog splits" sections for the durable breakdown; git log has full per-split detail.
+- 2026-07-24: Closed out both remaining sweep items that turned out to be stale, not real. (1) Discord intent toggle: ran `python main.py` directly — connected clean, 168 commands synced, no intent error; the "won't connect" trap had gone stale across sessions. (2) The 3 "unverified" trade-restructure fixes (LAC/Poeltl, NYK/Kuminga, DEN/Brooks) already had passing unit tests directly against the B5/B8 gate logic the whole time (`test_cpu_should_accept_contender_rules.py::test_contender_rejects_downgrade_with_lost_pick`, `test_apply_final_trade_gates.py::test_contender_lateral_swap_with_pick_rejected` and `::test_contender_2for1_without_upgrade_rejected`) — ran all 3 explicitly, confirmed passing. Also fixed the flaky `test_progression.py::test_high_potential_grows_more` (`2328d22`), resynced `Projects/dba-site`'s command reference (`17feab1`, unpushed), and split `sim_batch_hooks.py` out of `batch_sim_runner.py` (renamed `sim_orchestrator.py`, `c79adbb`) — the last opportunistic item from the sweep.
+- 2026-07-22: Completed the full re-architecture sweep — Phase 0 (hygiene), Phase 1 (Announcer protocol seam), Phase 2 (both god-file splits), Phase 3 (6 oversized service files split), cog-splitting extension (6 oversized cogs split). See `docs/design/architecture.md`'s Split status sections; git log has full per-split detail.
 - 2026-05-23: Bidirectional CPU trade proposals, B7 posture fix, B8 gate-parity helper, B5 retune. See session note `Brain/General Session Notes/2026-05-23 - DBA Trade Restructure - Bidirectional Proposals, B7 Fix, Marcus Prompt.md`.
 
 ---
 
-Re-architecture sweep (Phases 0-3, cog splits, and the opportunistic sim_orchestrator split) is fully done. Only 3 loose ends remain: the Discord intent toggle, the 3 unverified trades, and the unpushed dba-site commit. When those close, prune this back further or delete it — don't leave a stale "complete" handoff lying around.
+Re-architecture sweep is fully done and verified. Only the dba-site push is outstanding. When that closes, delete this file — don't leave a stale "complete" handoff lying around.
