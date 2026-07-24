@@ -955,6 +955,14 @@ async def generate(  # noqa: PLR0912, PLR0915
                 # personas (output_shape_override set) only need headline to be valid.
                 # Personas with a named format_style that has its own renderer also pass
                 # with headline alone — the renderer handles empty optional fields.
+                # NOTE (B1): "moment", "verdict", "index", "tactical", "recap" are listed
+                # here for forward-compat, but as of B1 those five renderers return
+                # EmbedData (not str) and are NOT in columnist_assembly._RENDERERS — a
+                # persona whose format_style is one of these would still pass this
+                # leniency check, but _assemble_article() below would silently fall back
+                # to _assemble_default instead of calling the EmbedData renderer. Phase 2
+                # must add explicit dispatch for these five before assigning one to a
+                # live persona (see columnist_assembly.py's module docstring).
                 headline = str(parsed.get("headline", "")).strip()
                 lede = str(parsed.get("lede", "")).strip()
                 _uses_custom_shape = bool(_effective_shape)

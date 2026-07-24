@@ -10,6 +10,7 @@ them being what actually renders every columnist article's final text.
 from __future__ import annotations
 
 from services import columnist_assembly as cs
+from services.announcer_protocol import EmbedData
 
 
 # ---------------------------------------------------------------------------
@@ -149,58 +150,76 @@ def test_assemble_hot_take_no_content_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# _assemble_tactical
+# _assemble_tactical (B1 — revived as EmbedData; not wired into _RENDERERS)
 # ---------------------------------------------------------------------------
 
 def test_assemble_tactical_splits_bullets_into_worked_and_didnt():
     parsed = {
+        "headline": "Coaching Read",
         "lede": "Lede.",
         "key_stats": [{"label": "AST", "value": "12"}],
         "bullets": ["Good thing", "Bad thing"],
         "verdict": "Adjust X.",
     }
     result = cs._assemble_tactical(parsed, "Quinn Park")
-    assert "## What Worked" in result
-    assert "## What Didn't" in result
-    assert "## The Adjustment" in result
-    assert "Adjust X." in result
+    assert isinstance(result, EmbedData)
+    assert result.title == "Coaching Read"
+    assert "Lede." in result.description
+    field_names = [f.name for f in result.fields]
+    assert "✅ What Worked" in field_names
+    assert "❌ What Didn't" in field_names
+    assert "🔧 The Adjustment" in field_names
+    worked_field = next(f for f in result.fields if f.name == "✅ What Worked")
+    assert "Good thing" in worked_field.value
+    assert worked_field.inline is True
+    adjustment_field = next(f for f in result.fields if f.name == "🔧 The Adjustment")
+    assert "Adjust X." in adjustment_field.value
 
 
 # ---------------------------------------------------------------------------
-# _assemble_recap
+# _assemble_recap (B1 — revived as EmbedData; not wired into _RENDERERS)
 # ---------------------------------------------------------------------------
 
 def test_assemble_recap_tight_format():
     parsed = {"lede": "Lede.", "bullets": ["Beat one", "Beat two", "Beat three"], "verdict": "Final word."}
     result = cs._assemble_recap(parsed, "Keisha Williams")
-    assert "Lede." in result
-    assert "• Beat one" in result
-    assert "• Beat two" in result
+    assert isinstance(result, EmbedData)
+    assert result.description == "Lede."
+    field_names = [f.name for f in result.fields]
+    assert field_names == ["Beat 1", "Beat 2", "Final Word"]
+    assert result.fields[0].value == "Beat one"
+    assert result.fields[1].value == "Beat two"
     # Only the first 2 bullets are used.
-    assert "Beat three" not in result
-    assert "Final word." in result
+    assert not any("Beat three" in f.value for f in result.fields)
+    assert result.fields[2].value == "Final word."
+    assert result.footer == "Keisha Williams"
 
 
 # ---------------------------------------------------------------------------
-# _assemble_moment
+# _assemble_moment (B1 — revived as EmbedData; not wired into _RENDERERS)
 # ---------------------------------------------------------------------------
 
 def test_assemble_moment_full_shape():
     parsed = {"headline": "The Moment", "scene": "Scene setter.", "moment": "Play by play.", "meaning": "Why it matters."}
     result = cs._assemble_moment(parsed, "Maya Chen")
-    assert "**The Moment**" in result
-    assert "*Scene setter.*" in result
-    assert "Play by play." in result
-    assert "**The why:** Why it matters." in result
+    assert isinstance(result, EmbedData)
+    assert result.title == "The Moment"
+    assert result.description == "*Scene setter.*"
+    field_names = [f.name for f in result.fields]
+    assert "The Play" in field_names
+    assert "Why It Matters" in field_names
+    assert next(f for f in result.fields if f.name == "The Play").value == "Play by play."
+    assert next(f for f in result.fields if f.name == "Why It Matters").value == "Why it matters."
 
 
 def test_assemble_moment_headline_only_fallback():
     result = cs._assemble_moment({"headline": "The Moment"}, "Maya Chen")
-    assert "*Maya Chen on The Moment*" in result
+    assert len(result.fields) == 1
+    assert "Maya Chen on The Moment." in result.fields[0].value
 
 
 # ---------------------------------------------------------------------------
-# _assemble_verdict
+# _assemble_verdict (B1 — revived as EmbedData; not wired into _RENDERERS)
 # ---------------------------------------------------------------------------
 
 def test_assemble_verdict_full_shape():
@@ -209,21 +228,25 @@ def test_assemble_verdict_full_shape():
         "receipts": ["Receipt one"], "verdict": "Guilty.",
     }
     result = cs._assemble_verdict(parsed, "Jordan Rivera")
-    assert "**The Verdict**" in result
-    assert "**The Case:** Case text." in result
-    assert "Argument text." in result
-    assert "**THE RECEIPTS**" in result
-    assert "Receipt one" in result
-    assert "VERDICT: Guilty." in result
+    assert isinstance(result, EmbedData)
+    assert result.title == "The Verdict"
+    assert result.description == "Argument text."
+    field_names = [f.name for f in result.fields]
+    assert "⚖️ The Case" in field_names
+    assert "The Receipts" in field_names
+    assert "🔨 VERDICT" in field_names
+    assert next(f for f in result.fields if f.name == "The Receipts").value == "• Receipt one"
+    assert next(f for f in result.fields if f.name == "🔨 VERDICT").value == "Guilty."
 
 
 def test_assemble_verdict_headline_only_fallback():
     result = cs._assemble_verdict({"headline": "The Verdict"}, "Jordan Rivera")
-    assert "verdict is in on The Verdict" in result
+    assert len(result.fields) == 1
+    assert "verdict is in on The Verdict" in result.fields[0].value
 
 
 # ---------------------------------------------------------------------------
-# _assemble_index
+# _assemble_index (B1 — revived as EmbedData; not wired into _RENDERERS)
 # ---------------------------------------------------------------------------
 
 def test_assemble_index_full_shape():
@@ -233,12 +256,67 @@ def test_assemble_index_full_shape():
         "implication": "This matters.",
     }
     result = cs._assemble_index(parsed, "Keisha Williams")
-    assert "**The Index**" in result
-    assert "THE INDEX: Efficiency" in result
-    assert "112.5" in result
-    assert "Def text." in result
-    assert "**Player X** — 30 PTS, career high" in result
-    assert "*Why it matters:* This matters." in result
+    assert isinstance(result, EmbedData)
+    assert result.title == "The Index"
+    assert "Efficiency" in result.description
+    assert "112.5" in result.description
+    assert "Def text." in result.description
+    field_names = [f.name for f in result.fields]
+    assert "Player X" in field_names
+    assert "Why It Matters" in field_names
+    standout_field = next(f for f in result.fields if f.name == "Player X")
+    assert "30 PTS" in standout_field.value
+    assert "career high" in standout_field.value
+    # Single standout -> not inline (only 2+ standouts sit side by side).
+    assert standout_field.inline is False
+    assert next(f for f in result.fields if f.name == "Why It Matters").value == "This matters."
+
+
+def test_assemble_index_multiple_standouts_are_inline():
+    parsed = {
+        "headline": "The Index",
+        "standouts": [
+            {"name": "Player X", "value": "30 PTS"},
+            {"name": "Player Y", "value": "12 AST"},
+        ],
+    }
+    result = cs._assemble_index(parsed, "Keisha Williams")
+    standout_fields = [f for f in result.fields if f.name in ("Player X", "Player Y")]
+    assert len(standout_fields) == 2
+    assert all(f.inline for f in standout_fields)
+
+
+def test_assemble_index_headline_only_fallback():
+    result = cs._assemble_index({"headline": "The Index"}, "Keisha Williams")
+    assert len(result.fields) == 1
+    assert "numbers tell the story on The Index" in result.fields[0].value
+
+
+# ---------------------------------------------------------------------------
+# _truncate_field / _truncate_text (B1 safety helpers)
+# ---------------------------------------------------------------------------
+
+def test_truncate_field_under_limit_joins_unchanged():
+    lines = ["• one", "• two"]
+    assert cs._truncate_field(lines) == "• one\n• two"
+
+
+def test_truncate_field_over_limit_drops_trailing_lines():
+    lines = [f"• line {i} " + "x" * 100 for i in range(20)]
+    result = cs._truncate_field(lines, limit=300)
+    assert len(result) <= 300 + len("\n…(20 more)")
+    assert "more)" in result
+
+
+def test_truncate_text_under_limit_unchanged():
+    assert cs._truncate_text("short text") == "short text"
+
+
+def test_truncate_text_over_limit_truncates_with_ellipsis():
+    long_text = "x" * 2000
+    result = cs._truncate_text(long_text, limit=100)
+    assert len(result) == 100
+    assert result.endswith("…")
 
 
 # ---------------------------------------------------------------------------
@@ -373,3 +451,5 @@ def test_assemble_article_potm_passes_ctx():
     ctx = {"month_label": "Jan"}
     result = cs._assemble_article(parsed, "Persona", format_style="potm", ctx=ctx)
     assert "Jan" in result
+
+
