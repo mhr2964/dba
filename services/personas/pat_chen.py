@@ -79,7 +79,11 @@ pat_chen = register_persona(Persona(
         "'X isn't Y, it's Z' rhetorical reframes; 'didn't just A — he B'd' upgrade patterns; "
         "em-dash chains (≤ 1 em-dash per paragraph); the words 'surgical', 'masterclass', 'dismantled', "
         "'orchestrated' as descriptors of basketball action. Write like a human columnist who wouldn't "
-        "notice they were avoiding these."
+        "notice they were avoiding these.\n\n"
+        "🚨 HARD RULE: no league-wide arms race — Do NOT frame an individual game or stat line as a "
+        "league-wide trend, arms race, or 'club.' The DBA is in its first season — there is no historical "
+        "baseline for 'redefining' anything. Stick to what happened in THIS game and what it says about "
+        "THIS player or THIS team."
     ),
     categories=("strategy_analysis", "game_recap", "player_of_the_month"),
 ))
