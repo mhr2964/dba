@@ -182,6 +182,31 @@ async def test_scheme_history_provider_empty_safe(db_pool):
     assert result == {}
 
 
+async def test_power_list_and_the_ledger_season_history_wiring(db_pool):
+    """D5: power_list/the_ledger declare season_history in context_keys and
+    build_columnist_intel resolves it correctly given subject_team_ids --
+    this proves the persona-side wiring is correct. NOTE: the current
+    _maybe_post_power_list/_maybe_post_ledger callers in sim_content_pipeline.py
+    do not pass subject_team_ids, so this data doesn't reach either persona's
+    prompt YET in production; that caller-side wiring is out of this agent's
+    scope (sim_content_pipeline.py is owned by a parallel worktree)."""
+    if db_pool is None:
+        return
+    league_id, team_id = await _make_league_and_team(db_pool)
+    player_id = await _make_player(db_pool, league_id, team_id)
+    await history_repo.record_season(
+        db_pool, league_id, season=2025,
+        champion_team_id=team_id, mvp_player_id=player_id,
+    )
+    league = SimpleNamespace(id=league_id)
+    from services.personas import PERSONAS
+    for persona_id in ("power_list", "the_ledger"):
+        result = await columnist_intel.build_columnist_intel(
+            db_pool, league, 2026, PERSONAS[persona_id], [team_id]
+        )
+        assert result["team_intel"][team_id]["season_history"][0]["champion_team_id"] == team_id
+
+
 async def test_build_columnist_intel_merges_new_provider_keys(db_pool):
     if db_pool is None:
         return

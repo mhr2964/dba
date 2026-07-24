@@ -109,6 +109,27 @@ def test_darius_cole_has_real_scouting_substance():
     assert "translatable skills" in voice_notes
 
 
+def test_power_list_has_conditional_season_transition_callback():
+    """D5: Power List can reference last season's champion when
+    season_history data supports it, degrading gracefully to
+    season-1-only framing when the data is empty (season 1)."""
+    assert "season_history" in PERSONAS["power_list"].context_keys
+    voice_notes = PERSONAS["power_list"].voice_notes.lower()
+    assert "season_history" in voice_notes
+    assert "reigning champion" in voice_notes
+    assert "absent or empty" in voice_notes
+
+
+def test_the_ledger_has_conditional_season_transition_callback():
+    """D5: The Ledger can reference a front office's trajectory across a
+    season boundary (title defense vs standing pat) when season_history
+    data supports it, degrading gracefully otherwise."""
+    assert "season_history" in PERSONAS["the_ledger"].context_keys
+    voice_notes = PERSONAS["the_ledger"].voice_notes.lower()
+    assert "season_history" in voice_notes
+    assert "absent or empty" in voice_notes
+
+
 def test_keisha_williams_has_a_stated_standing_bias():
     voice_notes = PERSONAS["keisha_williams"].voice_notes.lower()
     assert "standing bias" in voice_notes

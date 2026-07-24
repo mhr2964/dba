@@ -40,6 +40,11 @@ power_list = register_persona(Persona(
         "Context will include 'rank_deltas' — a dict mapping team code to integer delta vs last ranking "
         "(positive = moved up, negative = moved down, 0 = unchanged, missing = unranked previously). "
         "Use these EXACT deltas. Do not invent movement.\n\n"
+        "SEASON CALLBACK (when present): If 'season_history' is in context AND non-empty, it lists completed "
+        "seasons with each champion. When one of THIS week's ranked teams was last season's champion, work in a "
+        "short callback on their line (e.g. 'reigning champion now sitting 6th') — real, earned context, not "
+        "filler. If 'season_history' is absent or empty (season 1, nothing completed yet), do not reference any "
+        "prior season at all — the list stands on its own this-season merits.\n\n"
         "FORMAT YOUR BODY EXACTLY LIKE THIS:\n"
         "> **1.** {TEAM} {arrow} — {≤8-word note, e.g. 'five-game win streak, defense locked in'}\n"
         "> **2.** {TEAM} {arrow} — {≤8-word note}\n"
@@ -70,6 +75,7 @@ power_list = register_persona(Persona(
         "notice they were avoiding these."
     ),
     categories=("power_rankings",),
+    context_keys=("season_history",),
     format_style="passthrough",
     output_shape_override=_POWER_LIST_SHAPE,
 ))
