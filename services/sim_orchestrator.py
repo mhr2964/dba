@@ -115,11 +115,16 @@ async def _sim_single_game(
         for _p in away_players:
             _apply_directives(_p)
 
+    # players= is passed alongside override_strategy so get_sim_modifiers can
+    # condition press/switch_all's magnitude on each team's own roster
+    # (finding #2, realism audit) -- previously this parameter was always None
+    # on the live path since override_strategy short-circuits the auto-archetype
+    # branch that used to be its only consumer.
     home_strategy = await strategy_service.get_sim_modifiers(
-        pool, league_id, home_team.id, override_strategy=home_gameplan["strategy"]
+        pool, league_id, home_team.id, players=home_players, override_strategy=home_gameplan["strategy"]
     )
     away_strategy = await strategy_service.get_sim_modifiers(
-        pool, league_id, away_team.id, override_strategy=away_gameplan["strategy"]
+        pool, league_id, away_team.id, players=away_players, override_strategy=away_gameplan["strategy"]
     )
 
     # Phase 2: stamp role-based touch share + shot profile onto player dicts before sim.

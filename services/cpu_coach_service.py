@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import os
 import random
+from types import SimpleNamespace
 
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
@@ -126,19 +127,8 @@ async def _compute_cpu_gameplan(
     form = await _get_form(pool, league_id, season, team_id)
     win_streak: int = form.get("win_streak", 0) or 0
     loss_streak: int = form.get("loss_streak", 0) or 0
-    wins: int = form.get("wins", 0) or 0
-    losses: int = form.get("losses", 0) or 0
-    win_pct: float = wins / (wins + losses) if (wins + losses) > 0 else 0.0
 
-    total_games = await pool.fetchval(
-        "SELECT COUNT(*) FROM games WHERE league_id = $1 AND season = $2 AND season_type = 'regular'",
-        league_id,
-        season,
-    ) or 82
-    game_index: int = game_row.get("game_index", 0) or 0
-    pct_complete: float = game_index / total_games if total_games > 0 else 0.0
-
-    posture = _classify_posture(win_pct, wins, pct_complete)
+    posture = await _classify_posture(pool, league_id, season, team_id)
 
     game_date = game_row.get("scheduled_date")
     back_to_back = await _is_back_to_back(pool, league_id, season, team_id, game_date)
@@ -199,6 +189,9 @@ def _analyze_roster(top8: list[dict]) -> dict:
             "isolation_star_name": None,
             "elite_big_name": None,
             "elite_scorer_name": None,
+            "avg_speed": 50.0,
+            "avg_defense": 50.0,
+            "avg_defensive_effort": 50.0,
         }
     n = len(top8)
 
@@ -210,6 +203,14 @@ def _analyze_roster(top8: list[dict]) -> dict:
         return full.split()[-1] if full else ""
 
     avg_ovr = avg("overall")
+    # Finding #1 (realism audit): personnel inputs for the defensive-scheme
+    # gate in _decide_strategy -- press requires team speed, switch_all
+    # requires team defense/versatility. Mirrors the >=74 raw-rating /
+    # >=60 tendency-style thresholds auto_strategy.infer_archetype already
+    # uses for its (dead-code, but pattern-proven) offensive archetype checks.
+    avg_speed = avg("speed")
+    avg_defense = avg("defense")
+    avg_defensive_effort = avg("defensive_effort")
 
     _passer_p = next((p for p in top8 if p.get("playmaking", 50) > 85), None)
     has_elite_passer = _passer_p is not None
@@ -243,6 +244,9 @@ def _analyze_roster(top8: list[dict]) -> dict:
         "isolation_star_name": isolation_star_name,
         "elite_big_name": elite_big_name,
         "elite_scorer_name": elite_scorer_name,
+        "avg_speed": avg_speed,
+        "avg_defense": avg_defense,
+        "avg_defensive_effort": avg_defensive_effort,
     }
 
 
@@ -262,11 +266,41 @@ async def _get_form(pool, league_id: int, season: int, team_id: int) -> dict:
     return dict(row)
 
 
-def _classify_posture(win_pct: float, wins: int, pct_complete: float) -> str:
-    if win_pct > 0.55 or (wins > 35 and pct_complete > 0.50):
+async def _classify_posture(pool, league_id: int, season: int, team_id: int) -> str:
+    """Classify coaching posture from the SAME live-posture source trades use.
+
+    Finding #5 (realism audit): this function used to compute a local,
+    record-only heuristic (win_pct/wins/pct_complete from standings_cache) that
+    never read franchise_plan.goal -- exactly the defect B7 already fixed for
+    the trade posture pipeline (services/team_intel.py::build_team_intel /
+    compute_posture, which blends roster star-count + record + plan_goal via
+    trade_context_builder.compute_team_mode). A team with a stated `win_now`
+    plan on a losing skid could get classified "tanking" here and receive
+    forced-slow-pace/bench-conserving gameplans that contradicted the front
+    office's actual plan. Reusing compute_posture directly means gameplan
+    posture and trade posture can never drift apart again.
+
+    No circular import risk: team_intel imports trade_context_builder and
+    franchise_plan_service, neither of which imports cpu_coach_service (the
+    only importer of cpu_coach_service in services/ is sim_orchestrator.py).
+
+    compute_posture only reads `league.id` and `league.current_season` off the
+    League argument, so a lightweight stand-in is passed instead of fetching
+    the full leagues row -- this avoids an extra query per team per game while
+    still calling the real, shared posture logic.
+    """
+    from services import team_intel
+
+    league_ref = SimpleNamespace(id=league_id, current_season=season)
+    posture_data = await team_intel.compute_posture(pool, league_ref, team_id)
+    mode = posture_data["mode"]
+
+    if mode == "contending":
         return "contender"
-    if win_pct < 0.30 and pct_complete > 0.60:
+    if mode in ("rebuilding", "soft_rebuild"):
         return "tanking"
+    # play_in_fringe / developing (and any future bucket) -> mid: matches the
+    # old heuristic's middle band, which drove "balanced" pace/intensity options.
     return "mid"
 
 
@@ -332,6 +366,23 @@ async def _get_hot_cold(pool, top5: list[dict], season: int) -> dict[int, str]:
             elif ratio < 0.85:
                 result[pid] = "cold"
     return result
+
+
+# Finding #1 personnel gates (realism audit): a team's own roster must be able
+# to execute press / switch_all before either scheme can be selected at all --
+# previously press fired purely off opponent OVR and switch_all purely off
+# opponent archetype/posture, with zero read of the team's own speed or
+# defensive personnel (the "slow team runs full-court press" bug).
+#
+# Thresholds mirror auto_strategy.infer_archetype's existing >=74-raw-rating /
+# >=60-tendency convention (that module is dead code in the live sim path, but
+# its thresholds are a proven reference point): speed and defense are raw 0-99
+# ratings like shooting_3pt/finishing there, so >=74 is the same "clearly
+# above average" bar; defensive_effort is tendency-shaped (0-100 behavioral
+# leaning) like tendency_3pt/tendency_pass there, so >=60 matches.
+_PRESS_SPEED_THRESHOLD = 74
+_SWITCH_ALL_DEFENSE_THRESHOLD = 74
+_SWITCH_ALL_EFFORT_THRESHOLD = 60
 
 
 def _weighted_choice(rng: random.Random, options: list[tuple[str, int]]) -> str:
@@ -403,19 +454,44 @@ def _decide_strategy(
 
     offensive_scheme = _weighted_choice(rng, scheme_options)
 
+    # Personnel gate: can THIS roster actually execute press / switch_all?
+    # A slow team pressing full-court, or a poor-defense team switching every
+    # screen, gives up more than it gains -- so those options are pruned from
+    # the weighted list entirely rather than picked and left to hurt the team
+    # with no roster-aware consequence (finding #1).
+    can_press = self_a.get("avg_speed", 50) >= _PRESS_SPEED_THRESHOLD
+    can_switch_all = (
+        self_a.get("avg_defense", 50) >= _SWITCH_ALL_DEFENSE_THRESHOLD
+        and self_a.get("avg_defensive_effort", 50) >= _SWITCH_ALL_EFFORT_THRESHOLD
+    )
+
     defense_options: list[tuple[str, int]]
     if opp_a["has_isolation_star"]:
-        defense_options = [("man_to_man", 3), ("switch_all", 2)]
+        defense_options = [("man_to_man", 3)]
+        if can_switch_all:
+            defense_options.append(("switch_all", 2))
         rationale_parts.append("locking down their isolation star")
     elif offensive_scheme == "three_heavy":
-        defense_options = [("zone", 3), ("switch_all", 1)]
+        defense_options = [("zone", 3)]
+        if can_switch_all:
+            defense_options.append(("switch_all", 1))
         rationale_parts.append("zone to disrupt their three-point attack")
     elif opp_a.get("avg_ovr", 70) > 82:
-        defense_options = [("press", 2), ("man_to_man", 2), ("switch_all", 1)]
+        defense_options = [("man_to_man", 2)]
+        if can_press:
+            defense_options.append(("press", 2))
+        if can_switch_all:
+            defense_options.append(("switch_all", 1))
     elif posture == "contender":
-        defense_options = [("man_to_man", 2), ("switch_all", 1), ("press", 1)]
+        defense_options = [("man_to_man", 2)]
+        if can_switch_all:
+            defense_options.append(("switch_all", 1))
+        if can_press:
+            defense_options.append(("press", 1))
     else:
-        defense_options = [("man_to_man", 3), ("switch_all", 1), ("zone", 1)]
+        defense_options = [("man_to_man", 3), ("zone", 1)]
+        if can_switch_all:
+            defense_options.append(("switch_all", 1))
 
     defensive_scheme = _weighted_choice(rng, defense_options)
 

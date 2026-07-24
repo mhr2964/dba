@@ -158,6 +158,114 @@ async def test_press_increases_pace():
     )
 
 
+async def test_press_with_slow_roster_adds_foul_downside_and_shrinks_turnover_benefit():
+    """Finding #2: press used to have zero downside and a flat benefit
+    regardless of personnel. A slow roster (avg speed well below the 50-70
+    fit band) should now get a real foul-rate cost and a reduced (not
+    eliminated) turnover-forcing benefit."""
+    mock_pool = AsyncMock()
+
+    async def _fetchrow_press(*args, **kwargs):
+        return {
+            "offensive_pace": "balanced",
+            "offensive_scheme": "balanced",
+            "defensive_scheme": "press",
+            "defensive_intensity": "normal",
+            "star_usage": 50,
+        }
+
+    mock_pool.fetchrow = _fetchrow_press
+    slow_roster = [{"overall": 70, "speed": 40} for _ in range(8)]
+
+    modifiers = await strategy_service.get_sim_modifiers(
+        mock_pool, league_id=1, team_id=1, players=slow_roster
+    )
+
+    assert modifiers["foul_adj"] > 0.0, "Slow roster pressing should incur a real foul-rate cost"
+    assert modifiers["opp_turnover_adj"] < 0.05, (
+        "Slow roster pressing should get a reduced turnover-forcing benefit vs the flat 0.05 baseline"
+    )
+
+
+async def test_press_with_fast_roster_gets_full_benefit_and_no_foul_downside():
+    """A genuinely fast roster (avg speed >= 70) should get the full turnover
+    benefit and no foul-rate penalty -- the personnel actually fits the scheme."""
+    mock_pool = AsyncMock()
+
+    async def _fetchrow_press(*args, **kwargs):
+        return {
+            "offensive_pace": "balanced",
+            "offensive_scheme": "balanced",
+            "defensive_scheme": "press",
+            "defensive_intensity": "normal",
+            "star_usage": 50,
+        }
+
+    mock_pool.fetchrow = _fetchrow_press
+    fast_roster = [{"overall": 80, "speed": 85} for _ in range(8)]
+
+    modifiers = await strategy_service.get_sim_modifiers(
+        mock_pool, league_id=1, team_id=1, players=fast_roster
+    )
+
+    assert modifiers["foul_adj"] == 0.0
+    assert abs(modifiers["opp_turnover_adj"] - 0.05) < 0.001
+
+
+async def test_switch_all_with_poor_defense_roster_shrinks_benefit():
+    """Finding #2: switch_all used to apply the same flat ppp_defense_mult/
+    opp_three_rate_adj regardless of the team's own defensive personnel. A
+    roster at league-average defense (well below the 50-74/40-60 fit bands)
+    should get the full flat concession, not a reduced one."""
+    mock_pool = AsyncMock()
+
+    async def _fetchrow_switch(*args, **kwargs):
+        return {
+            "offensive_pace": "balanced",
+            "offensive_scheme": "balanced",
+            "defensive_scheme": "switch_all",
+            "defensive_intensity": "normal",
+            "star_usage": 50,
+        }
+
+    mock_pool.fetchrow = _fetchrow_switch
+    poor_defense_roster = [{"overall": 70, "defense": 50, "defensive_effort": 40} for _ in range(8)]
+
+    modifiers = await strategy_service.get_sim_modifiers(
+        mock_pool, league_id=1, team_id=1, players=poor_defense_roster
+    )
+
+    assert abs(modifiers["ppp_defense_mult"] - 0.98) < 0.001
+    assert abs(modifiers["opp_three_rate_adj"] - 0.07) < 0.001
+
+
+async def test_switch_all_with_elite_defense_roster_gets_near_neutral_concession():
+    """An elite, versatile defensive roster (avg defense >= 74, avg
+    defensive_effort >= 60 -- the same bar finding #1's selection gate uses)
+    should switch with minimal cost: concession shrinks toward 1.0 (no
+    concession) and opponent 3PA rate opens up much less."""
+    mock_pool = AsyncMock()
+
+    async def _fetchrow_switch(*args, **kwargs):
+        return {
+            "offensive_pace": "balanced",
+            "offensive_scheme": "balanced",
+            "defensive_scheme": "switch_all",
+            "defensive_intensity": "normal",
+            "star_usage": 50,
+        }
+
+    mock_pool.fetchrow = _fetchrow_switch
+    elite_defense_roster = [{"overall": 85, "defense": 85, "defensive_effort": 75} for _ in range(8)]
+
+    modifiers = await strategy_service.get_sim_modifiers(
+        mock_pool, league_id=1, team_id=1, players=elite_defense_roster
+    )
+
+    assert modifiers["ppp_defense_mult"] > 0.98
+    assert modifiers["opp_three_rate_adj"] < 0.07
+
+
 async def test_run_and_gun_adds_turnovers():
     """Run-and-gun pace adds turnover adjustment."""
     mock_pool = AsyncMock()
