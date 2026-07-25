@@ -8,6 +8,8 @@ returns None for all guild.get_channel() calls, so Discord sends are skipped.
 """
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from core.errors import DBAError
@@ -720,3 +722,117 @@ async def test_get_team_wins_counts_simmed_games_not_scheduled(db_pool):
 
     wins = await fa_service._get_team_wins(db_pool, league_id, team_id, 2025)
     assert wins == 1
+
+
+# ---------------------------------------------------------------------------
+# RO4 — close_fa's retirement branch must be age-gated (consistent with
+# progression_service's P5 _RETIREMENT_MIN_AGE), not tenure-gated.
+#
+# close_fa previously force-retired any unsigned free agent purely on
+# years_pro > 8 with NO age/birth_date check. That let a young player who
+# simply sat unsigned for 8+ seasons get force-retired at ~26-27, while a
+# genuinely washed veteran who entered the league late (short tenure, high
+# age) could never be retired via this path at all. Both tests below are
+# structured to fail against the old years_pro > 8 condition.
+# ---------------------------------------------------------------------------
+
+
+async def _setup_unsigned_player(
+    pool, birth_date: datetime.date, years_pro: int, overall: int = 55
+) -> tuple[int, int]:
+    """
+    Insert a league (with an fa_state row so close_fa's update_fa_state UPDATE
+    has a row to touch) and a single low-OVR, already-unsigned free agent.
+    Returns (league_id, player_id).
+    """
+    league_row = await pool.fetchrow(
+        """
+        INSERT INTO leagues
+            (discord_guild_id, name, start_season_year, current_season,
+             commissioner_user_id, salary_cap)
+        VALUES (888300, 'RO4 Test League', 2025, 2025, 99999, 140000000)
+        RETURNING id
+        """
+    )
+    league_id: int = league_row["id"]
+
+    player_row = await pool.fetchrow(
+        """
+        INSERT INTO players (
+            league_id, first_name, last_name, position,
+            birth_date, years_pro,
+            roster_status,
+            overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+            finishing, playmaking, defense, rebounding, iq,
+            potential, peak_age_start, peak_age_end,
+            loyalty, money_drive, win_drive
+        ) VALUES (
+            $1, 'Unsigned', 'Player', 'SF',
+            $2, $3,
+            'free_agent',
+            $4, 60, 55, 50, 55,
+            55, 55, 55, 55, 60,
+            60, 24, 29,
+            50, 50, 50
+        )
+        RETURNING id
+        """,
+        league_id,
+        birth_date,
+        years_pro,
+        overall,
+    )
+    player_id: int = player_row["id"]
+
+    await pool.execute(
+        """
+        INSERT INTO fa_state (league_id, season, current_day, phase, total_days)
+        VALUES ($1, 2025, 8, 'offers_open', 8)
+        """,
+        league_id,
+    )
+
+    return league_id, player_id
+
+
+async def test_close_fa_does_not_retire_young_long_tenure_player(db_pool):
+    """
+    A young player (age ~26) with years_pro > 8 (10) and low OVR must NOT be
+    retired by close_fa. Pre-fix, the bare years_pro > 8 condition would have
+    force-retired this player purely on tenure despite being nowhere near
+    retirement age.
+    """
+    league_id, player_id = await _setup_unsigned_player(
+        db_pool, birth_date=datetime.date(2000, 1, 1), years_pro=10, overall=55
+    )
+
+    await fa_service.close_fa(league_id, 2025)
+
+    status = await db_pool.fetchval(
+        "SELECT roster_status FROM players WHERE id = $1", player_id
+    )
+    assert status == "free_agent", (
+        "Young player with long tenure but low retirement age should remain "
+        f"a free agent, got roster_status={status!r}"
+    )
+
+
+async def test_close_fa_retires_old_short_tenure_player(db_pool):
+    """
+    An old player (age ~40, past progression's _RETIREMENT_MIN_AGE=36) with
+    years_pro <= 8 (5) and low OVR IS retired by close_fa. Pre-fix, the bare
+    years_pro > 8 condition required 8+ years of tenure and would NEVER have
+    retired this player via close_fa despite being well past retirement age.
+    """
+    league_id, player_id = await _setup_unsigned_player(
+        db_pool, birth_date=datetime.date(1986, 1, 1), years_pro=5, overall=55
+    )
+
+    await fa_service.close_fa(league_id, 2025)
+
+    status = await db_pool.fetchval(
+        "SELECT roster_status FROM players WHERE id = $1", player_id
+    )
+    assert status == "retired", (
+        f"Old, low-tenure, low-OVR player should be retired, got roster_status={status!r}"
+    )
