@@ -39,6 +39,19 @@ _BIG_POSITIONS = {"PF", "C"}
 # Age boundary that triggers steeper decline regardless of peak window.
 _STEEP_DECLINE_AGE = 38
 
+# --- P5: active-roster retirement thresholds (see docs/design/progression-logic-rules.md) ---
+# Only decline-stage players at/above this age are considered for retirement.
+_RETIREMENT_MIN_AGE = 36
+# Post-progression overall must be below this to be retirement-eligible — keeps
+# still-productive vets safe regardless of age (draft_class_generator.py's own
+# tiers put 55-65 as second-round OVR, 60-70 as late-first; 68 sits just above
+# that band, i.e. "no longer even a fringe rotation piece").
+_RETIREMENT_MAX_OVERALL = 68
+# retire_chance = min(_RETIREMENT_CHANCE_CAP, _RETIREMENT_CHANCE_PER_YEAR * (age - 35))
+# e.g. age 36 -> 5%, age 40 -> 25%, age 43+ -> capped at 40%.
+_RETIREMENT_CHANCE_PER_YEAR = 0.05
+_RETIREMENT_CHANCE_CAP = 0.40
+
 
 def _compute_age(birth_date: Optional[datetime.date], years_pro: int) -> int:
     """
@@ -84,6 +97,11 @@ async def _avg_minutes(
     """
     Return (avg_minutes, games_played) for this player this season.
     Uses game_box_scores joined to games for the season filter.
+
+    Games are marked 'simmed' once played (data/repositories/game_repo.py);
+    'completed' was never actually written anywhere, so this filter previously
+    matched zero rows in real play, silently defeating the low-minutes penalty
+    below regardless of the season-number bug it was found alongside (P1).
     """
     row = await pool.fetchrow(
         """
@@ -95,7 +113,7 @@ async def _avg_minutes(
         WHERE g.league_id = $1
           AND g.season     = $2
           AND b.player_id  = $3
-          AND g.status     = 'completed'
+          AND g.status     = 'simmed'
         """,
         league_id,
         season,
@@ -134,24 +152,41 @@ def _build_deltas_growth(
     return deltas
 
 
-def _build_deltas_stable(player: player_repo.Player) -> dict[str, int]:
+def _build_deltas_stable(player: player_repo.Player, low_minutes: bool) -> dict[str, int]:
     deltas: dict[str, int] = {}
-    # overall: biased toward 0 (weights: -1=1, 0=2, +1=1)
-    deltas["overall"] = random.choices([-1, 0, 1], weights=[1, 2, 1])[0]
+    # overall: biased toward 0 (weights: -1=1, 0=2, +1=1). A stable-stage player
+    # not getting real run should be more likely to slip than a starter, not
+    # stay flat — shift the distribution toward negative/neutral outcomes
+    # instead of halving (halving a stable-stage swing doesn't have the
+    # perverse-sign problem decline does, but it also doesn't capture "not
+    # playing costs you," so weight toward -1 directly).
+    if low_minutes:
+        deltas["overall"] = random.choices([-1, 0, 1], weights=[3, 2, 1])[0]
+    else:
+        deltas["overall"] = random.choices([-1, 0, 1], weights=[1, 2, 1])[0]
     for attr in RATING_ATTRIBUTES:
         if attr == "overall":
             continue
-        deltas[attr] = random.randint(-1, 1)
+        if low_minutes:
+            deltas[attr] = random.choices([-1, 0, 1], weights=[2, 2, 1])[0]
+        else:
+            deltas[attr] = random.randint(-1, 1)
     return deltas
 
 
-def _build_deltas_decline(player: player_repo.Player, age: int) -> dict[str, int]:
+def _build_deltas_decline(player: player_repo.Player, age: int, low_minutes: bool) -> dict[str, int]:
     deltas: dict[str, int] = {}
 
     if age >= _STEEP_DECLINE_AGE:
         overall_drop = random.randint(2, 4)
     else:
         overall_drop = random.randint(1, 3)
+    # Low minutes makes decline WORSE, not better — a vet not playing loses
+    # conditioning faster. Naively halving a negative delta via floor division
+    # would perversely soften decline (e.g. -3 // 2 == -2), so add extra drop
+    # instead of halving.
+    if low_minutes:
+        overall_drop += 1
     deltas["overall"] = -overall_drop
 
     position = player.position.upper()
@@ -185,7 +220,12 @@ async def _process_player(
     player: player_repo.Player,
     season: int,
     league_id: int,
-) -> None:
+) -> tuple[str, int, int]:
+    """
+    Process one player's end-of-season progression.
+    Returns (stage, age, final_overall) so run_progression can run the
+    post-processing retirement check (P5) without a second attribute read.
+    """
     age = _compute_age(player.birth_date, player.years_pro)
     potential_weight = _potential_growth_weight(player.potential)
 
@@ -198,18 +238,24 @@ async def _process_player(
         stage = "decline"
 
     # --- low minutes check ---
+    # games_played > 10 alone used to EXCLUDE deep-bench players (<=10 games)
+    # from any penalty at all — a player who barely played got a full,
+    # unpenalized growth/stable roll. barely_played folds them into the same
+    # penalty branch as low_minutes instead of exempting them.
     avg_min, games_played = await _avg_minutes(pool, league_id, player.id, season)
     low_minutes = games_played > 10 and avg_min < 15.0
+    barely_played = games_played <= 10
+    low_minutes = low_minutes or barely_played
 
     # --- build base deltas ---
     if stage == "growth":
         deltas = _build_deltas_growth(player, potential_weight, low_minutes)
         base_reason = "pre_peak_growth"
     elif stage == "stable":
-        deltas = _build_deltas_stable(player)
+        deltas = _build_deltas_stable(player, low_minutes)
         base_reason = "peak_stable"
     else:
-        deltas = _build_deltas_decline(player, age)
+        deltas = _build_deltas_decline(player, age, low_minutes)
         base_reason = "post_peak_decline"
 
     log_entries: list[tuple[str, int, int, str]] = []
@@ -226,7 +272,13 @@ async def _process_player(
             log_entries.append((attr, before, after, base_reason))
 
     # --- breakout check (growth phase only) ---
-    if stage == "growth" and player.years_pro <= 3 and random.random() < 0.08:
+    # Scale chance with potential instead of a flat 8% for any years_pro<=3
+    # player — a 95-potential player should break out meaningfully more often
+    # than a 60-potential one. At potential_weight=0.5 this reduces to 0.08,
+    # matching the old flat constant; it ranges 0.068 (potential 40) to 0.14
+    # (potential 99).
+    breakout_chance = 0.02 + 0.12 * potential_weight
+    if stage == "growth" and player.years_pro <= 3 and random.random() < breakout_chance:
         breakout_overall_delta = random.randint(2, 4)
         before_ovr = attr_values["overall"]
         attr_values["overall"] = _clamp(before_ovr + breakout_overall_delta)
@@ -242,6 +294,17 @@ async def _process_player(
             if after != before:
                 attr_values[attr] = after
                 log_entries.append((attr, before, after, "breakout"))
+
+    # --- potential ceiling (P4) ---
+    # overall growth is always >= +1 pre-peak while peak_age_start is
+    # independently randomized, so without this a low-potential player could
+    # in principle grind past their own ceiling given enough seasons. Injury
+    # setbacks below are still allowed to push a player under their potential
+    # — only the upper bound is clamped here.
+    if attr_values["overall"] > player.potential:
+        before_ovr = attr_values["overall"]
+        attr_values["overall"] = player.potential
+        log_entries.append(("overall", before_ovr, attr_values["overall"], "potential_ceiling"))
 
     # --- injury setback ---
     if await _has_season_ending_injury(pool, league_id, player.id, season):
@@ -262,13 +325,13 @@ async def _process_player(
                 attr_values[attr] = after
                 log_entries.append((attr, before, after, "injury_setback"))
 
-    # --- low minutes log entry (if halving caused meaningful difference) ---
-    # The halving already happened in _build_deltas_growth; we record it only
-    # if there were any non-zero deltas and the player qualified.
-    if low_minutes and stage == "growth" and log_entries:
-        # Tag existing entries as low_minutes — replace reason on base growth entries
+    # --- low minutes log entry (if the penalty caused a meaningful difference) ---
+    # The penalty (halved growth / worse stable-or-decline outcome) already
+    # happened above in _build_deltas_*; we only relabel the base-reason
+    # entries so the log records why the delta looks the way it does.
+    if low_minutes and log_entries:
         log_entries = [
-            (attr, bv, av, "low_minutes" if reason == "pre_peak_growth" else reason)
+            (attr, bv, av, "low_minutes" if reason == base_reason else reason)
             for attr, bv, av, reason in log_entries
         ]
 
@@ -321,6 +384,69 @@ async def _process_player(
         player.id,
     )
 
+    return stage, age, attr_values["overall"]
+
+
+async def _maybe_retire_player(
+    pool: asyncpg.Pool,
+    player: player_repo.Player,
+    stage: str,
+    age: int,
+    post_overall: int,
+    season: int,
+    league_id: int,
+) -> bool:
+    """
+    P5: age/decline-gated active-roster retirement (see docs/design/progression-logic-rules.md).
+
+    Retirement is a roster-status change, not an attribute delta, so this runs
+    as a post-_process_player step rather than inside it. Only decline-stage
+    players at/above _RETIREMENT_MIN_AGE with a low post-progression overall
+    are even considered, and the chance is capped conservatively — this should
+    not retire still-productive veterans. Returns True if the player retired.
+    """
+    if stage != "decline" or age < _RETIREMENT_MIN_AGE or post_overall >= _RETIREMENT_MAX_OVERALL:
+        return False
+
+    retire_chance = min(_RETIREMENT_CHANCE_CAP, _RETIREMENT_CHANCE_PER_YEAR * (age - 35))
+    if random.random() >= retire_chance:
+        return False
+
+    await pool.execute(
+        "UPDATE players SET roster_status = 'retired', team_id = NULL WHERE id = $1",
+        player.id,
+    )
+    # Deactivate any active contract — mirrors the is_active/terminated_reason
+    # soft-delete pattern used by every other contract termination path
+    # (fa_service._sign_player, fa_service.open_fa, rollover_service._age_contracts).
+    await pool.execute(
+        """
+        UPDATE contracts SET is_active = FALSE, terminated_reason = 'retired'
+        WHERE player_id = $1 AND is_active = TRUE
+        """,
+        player.id,
+    )
+    await pool.execute(
+        """
+        INSERT INTO progression_log
+            (league_id, season_completed, player_id, attribute, before_value, after_value, reason)
+        VALUES ($1, $2, $3, 'overall', $4, $4, 'retirement')
+        """,
+        league_id,
+        season,
+        player.id,
+        post_overall,
+    )
+    log.info(
+        "Player %d retired at age %d (overall %d, league %d, season %d)",
+        player.id,
+        age,
+        post_overall,
+        league_id,
+        season,
+    )
+    return True
+
 
 async def run_progression(league_id: int, season: int) -> int:
     """
@@ -342,7 +468,8 @@ async def run_progression(league_id: int, season: int) -> int:
 
     for player in players:
         try:
-            await _process_player(pool, player, season, league_id)
+            stage, age, post_overall = await _process_player(pool, player, season, league_id)
+            await _maybe_retire_player(pool, player, stage, age, post_overall, season, league_id)
         except Exception:
             log.exception(
                 "Progression failed for player %d (league %d, season %d)",
