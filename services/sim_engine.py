@@ -672,7 +672,13 @@ def _build_box_for_team(
     # flag is still applied below (man_to_man defense still matters), but touch share
     # concentration is no longer driven by OVR rank.
 
-    # Clutch adjustment: in close games, high-clutch players get more late-game usage.
+    # CA6 (coaching AI realism sweep): comment corrected -- this is NOT a
+    # late-game-only mechanic (sim_game has no quarters/clock to target "late"
+    # usage at). It's a whole-game scoring-weight bump: when the FINAL score
+    # margin comes back close (< 12), high-clutch-rating players get a larger
+    # share of their team's ALREADY-DECIDED total points for the entire game,
+    # as a proxy for "this was a tight game where clutch players mattered
+    # more." No behavior change -- comment only.
     if abs(score_diff) < 12:
         clutch_adj = [(p.get("clutch_rating", 50) - 50) / 100.0 for p in players]  # -0.5 to +0.5
         scoring_weights = [max(scoring_weights[i] * (1 + clutch_adj[i] * 0.4), 0.01) for i in range(n)]
