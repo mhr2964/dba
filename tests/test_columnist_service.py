@@ -384,3 +384,57 @@ async def test_old_shape_headline_body_also_gets_grounding_checked():
     assert result is not None
     assert "5 Straight" in result["headline"]
     assert len(insert_calls) == 1
+
+
+async def test_index_format_style_returns_embed_data_and_flattened_body():
+    """A persona with format_style='index' (Phase 2 B1 follow-up — Keisha
+    Williams) dispatches through _EMBED_RENDERERS instead of _assemble_article:
+    the returned dict gets an additive 'embed_data' EmbedData with real
+    fields, and 'body' (used for DB storage / word-count / grounding checks)
+    is the flattened plain-text version, not a raw JSON dump."""
+    from services.announcer_protocol import EmbedData
+
+    persona = _persona(format_style="index")
+    context = {"team": "ATL"}
+    body_json = json.dumps({
+        "headline": "Net Rating Tells the Real Story Tonight",
+        "metric_name": "NET RATING",
+        "headline_value": "+21.4",
+        "definition": "Net rating measures point differential per 100 possessions.",
+        "standouts": [
+            {"name": "Marcus Davis", "value": "68% TS", "note": "elite efficiency"},
+        ],
+        "implication": "Atlanta's second unit needs more minutes.",
+    })
+    # The "68% TS" standout isn't in context, so the grounding-check retry
+    # fires once (see _find_ungrounded_claims) -- supply the same draft twice
+    # so the retry succeeds and posts anyway, matching how the grounding-check
+    # tests above handle an unresolvable ungrounded claim.
+    result, insert_calls = await _run_generate(persona, context, [body_json, body_json])
+
+    assert result is not None
+    assert isinstance(result["embed_data"], EmbedData)
+    assert result["embed_data"].title == "Net Rating Tells the Real Story Tonight"
+    assert any("Marcus Davis" in f.name for f in result["embed_data"].fields)
+    assert "Marcus Davis" in result["body"]
+    assert "Atlanta's second unit needs more minutes" in result["body"]
+    assert insert_calls[0]["body"] == result["body"]
+
+
+async def test_passthrough_format_style_has_no_embed_data_key():
+    """Regression guard for the additive contract: a persona NOT dispatched
+    through _EMBED_RENDERERS gets a plain {"headline","body"} dict, same as
+    before this fix — no 'embed_data' key appears at all."""
+    persona = _persona()
+    context = {"team": "OKC", "win_streak": 8}
+    body_json = json.dumps({
+        "headline": "OKC Riding an 8-Game Win Streak",
+        "lede": "Thunder win their 8th straight.",
+        "key_stats": [{"label": "Win streak", "value": "8 straight"}],
+        "bullets": ["OKC has won 8 straight games."],
+        "verdict": "The streak continues.",
+    })
+    result, _ = await _run_generate(persona, context, [body_json])
+
+    assert result is not None
+    assert "embed_data" not in result

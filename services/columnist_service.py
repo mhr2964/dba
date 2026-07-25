@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 from data.repositories import article_repo
-from services.columnist_assembly import _assemble_article
+from services.columnist_assembly import _assemble_article, _EMBED_RENDERERS, _flatten_embed_data
 from services.personas import PERSONAS
 
 log = logging.getLogger(__name__)
@@ -832,6 +832,7 @@ async def generate(  # noqa: PLR0912, PLR0915
         _length_correction_addendum = ""
         _final_headline: str | None = None
         _final_body: str | None = None
+        _final_embed_data = None
         _word_target = _resolve_word_target(_persona_id)
         _first_attempt_word_count: int | None = None
 
@@ -955,14 +956,13 @@ async def generate(  # noqa: PLR0912, PLR0915
                 # personas (output_shape_override set) only need headline to be valid.
                 # Personas with a named format_style that has its own renderer also pass
                 # with headline alone — the renderer handles empty optional fields.
-                # NOTE (B1): "moment", "verdict", "index", "tactical", "recap" are listed
-                # here for forward-compat, but as of B1 those five renderers return
-                # EmbedData (not str) and are NOT in columnist_assembly._RENDERERS — a
-                # persona whose format_style is one of these would still pass this
-                # leniency check, but _assemble_article() below would silently fall back
-                # to _assemble_default instead of calling the EmbedData renderer. Phase 2
-                # must add explicit dispatch for these five before assigning one to a
-                # live persona (see columnist_assembly.py's module docstring).
+                # NOTE (B1/B1-followup): "moment", "verdict", "index", "tactical", "recap"
+                # are listed here for forward-compat. Those five renderers return EmbedData
+                # (not str) and are NOT in columnist_assembly._RENDERERS, but "index" is now
+                # in _EMBED_RENDERERS (Keisha Williams) and is dispatched explicitly below,
+                # BEFORE _assemble_article is ever reached, so it gets its real EmbedData
+                # rather than falling back to _assemble_default. The remaining four still
+                # need the same explicit-dispatch treatment before assignment to a persona.
                 headline = str(parsed.get("headline", "")).strip()
                 lede = str(parsed.get("lede", "")).strip()
                 _uses_custom_shape = bool(_effective_shape)
@@ -999,7 +999,20 @@ async def generate(  # noqa: PLR0912, PLR0915
 
                 persona_display = persona.display_name
                 _fmt = persona.category_overrides.get(_category, persona.format_style)
-                body = _assemble_article(parsed, persona_display, _fmt, ctx=_context)
+
+                # EmbedData dispatch (Phase 2 B1 follow-up) — a persona whose
+                # format_style is one of _EMBED_RENDERERS' keys never reaches
+                # _assemble_article/_RENDERERS. The renderer works on the raw
+                # parsed dict; _flatten_embed_data() gives the word-count and
+                # grounding-check logic below (and article_repo storage) a
+                # plain string, same as every other persona.
+                _embed_renderer = _EMBED_RENDERERS.get(_fmt)
+                if _embed_renderer is not None:
+                    _embed_data = _embed_renderer(parsed, persona_display)
+                    body = _flatten_embed_data(_embed_data)
+                else:
+                    _embed_data = None
+                    body = _assemble_article(parsed, persona_display, _fmt, ctx=_context)
 
                 # Passthrough renderer returns None when body is empty — skip the post.
                 if body is None:
@@ -1014,7 +1027,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                     )
                     return None
 
-                _final_headline, _final_body = headline, body
+                _final_headline, _final_body, _final_embed_data = headline, body, _embed_data
 
             # ── Grounding check (Finding #1) ──────────────────────────────────
             # Only reached by the two "good" content paths above. Retry once
@@ -1045,7 +1058,7 @@ async def generate(  # noqa: PLR0912, PLR0915
                         _persona_id, _category, _word_count, _word_target,
                     )
                     _length_correction_addendum = _build_length_correction_addendum(_word_target, _word_count)
-                _final_headline = _final_body = None
+                _final_headline = _final_body = _final_embed_data = None
                 continue
             if _ungrounded:
                 log.warning(
@@ -1077,7 +1090,12 @@ async def generate(  # noqa: PLR0912, PLR0915
             structured_data=_structured_data,
         )
 
-        return {"headline": _final_headline, "body": _final_body}
+        _result = {"headline": _final_headline, "body": _final_body}
+        if _final_embed_data is not None:
+            # Additive — existing callers reading only headline/body are
+            # unaffected. See _EMBED_RENDERERS (columnist_assembly.py).
+            _result["embed_data"] = _final_embed_data
+        return _result
 
     except Exception as exc:
         raw_preview = locals().get("raw", "<no response>")

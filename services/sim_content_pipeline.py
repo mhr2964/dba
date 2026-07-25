@@ -13,6 +13,7 @@ sim_persistence.py's use of bot/embeds/sim_embeds.season_record_embed.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import random
 import re
 from collections import Counter, defaultdict
@@ -72,6 +73,35 @@ _DEFAULT_DESCRIPTION_CHAR_LIMIT = 800
 def _description_limit(category: str) -> int:
     """Discord embed description truncation ceiling for this article category."""
     return _DESCRIPTION_CHAR_LIMIT.get(category, _DEFAULT_DESCRIPTION_CHAR_LIMIT)
+
+
+def _embed_from_article(
+    article: dict, persona, rgb: tuple[int, int, int], category: str,
+) -> EmbedData:
+    """Build the Discord embed for a generic columnist article.
+
+    When columnist_service.generate() dispatched through _EMBED_RENDERERS
+    (Phase 2 B1 follow-up — currently just Keisha Williams/"index"), article
+    carries a real EmbedData with structured fields under "embed_data";
+    reuse its description/fields as-is and only override title/color/footer
+    so it matches this call site's usual conventions. Every other persona
+    (embed_data absent) keeps the original description=body[:limit] shape.
+    """
+    embed_data = article.get("embed_data")
+    footer = f"by {persona.display_name} · {persona.byline}" if persona else None
+    if embed_data is not None:
+        return dataclasses.replace(
+            embed_data,
+            title=article["headline"],
+            color=_rgb_to_int(rgb),
+            footer=footer,
+        )
+    return EmbedData(
+        title=article["headline"],
+        description=article["body"][:_description_limit(category)],
+        color=_rgb_to_int(rgb),
+        footer=footer,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1688,12 +1718,7 @@ async def _maybe_post_columnist(
             else:
                 persona = _PERSONAS.get(persona_id)
                 rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
-                embed_data = EmbedData(
-                    title=article["headline"],
-                    description=article["body"][:_description_limit("game_recap")],
-                    color=_rgb_to_int(rgb),
-                    footer=f"by {persona.display_name} · {persona.byline}" if persona else None,
-                )
+                embed_data = _embed_from_article(article, persona, rgb, "game_recap")
             _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
                 "analysis", embed_data
             )
@@ -2011,12 +2036,7 @@ async def _maybe_post_playoff_columnist(
         return
 
     rgb = _PERSONA_COLORS.get(persona_id, (100, 100, 100))
-    embed_data = EmbedData(
-        title=article["headline"],
-        description=article["body"][:_description_limit("playoff_recap")],
-        color=_rgb_to_int(rgb),
-        footer=f"by {persona.display_name} · {persona.byline}",
-    )
+    embed_data = _embed_from_article(article, persona, rgb, "playoff_recap")
     try:
         _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
             "analysis", embed_data

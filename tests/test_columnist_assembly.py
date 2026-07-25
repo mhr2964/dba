@@ -293,6 +293,36 @@ def test_assemble_index_headline_only_fallback():
 
 
 # ---------------------------------------------------------------------------
+# _flatten_embed_data / _EMBED_RENDERERS (Phase 2 B1 follow-up)
+# ---------------------------------------------------------------------------
+
+def test_flatten_embed_data_joins_description_and_fields():
+    embed = cs._assemble_index({
+        "headline": "The Index", "metric_name": "Efficiency", "headline_value": "112.5",
+        "definition": "Def text.", "standouts": [{"name": "Player X", "value": "30 PTS", "note": "career high"}],
+        "implication": "This matters.",
+    }, "Keisha Williams")
+    flat = cs._flatten_embed_data(embed)
+    assert "Efficiency" in flat
+    assert "Player X: 30 PTS\ncareer high" in flat
+    assert "Why It Matters: This matters." in flat
+    # Title is excluded — callers store/display the headline separately.
+    assert "The Index" not in flat.split("\n")[0]
+
+
+def test_flatten_embed_data_handles_no_fields_or_description():
+    embed = cs._assemble_index({"headline": "The Index"}, "Keisha Williams")
+    # Headline-only fallback still produces one field, so flatten isn't empty.
+    flat = cs._flatten_embed_data(embed)
+    assert flat.strip() != ""
+
+
+def test_embed_renderers_maps_index_to_assemble_index():
+    assert cs._EMBED_RENDERERS["index"] is cs._assemble_index
+    assert "index" not in cs._RENDERERS
+
+
+# ---------------------------------------------------------------------------
 # _truncate_field / _truncate_text (B1 safety helpers)
 # ---------------------------------------------------------------------------
 

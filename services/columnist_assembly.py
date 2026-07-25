@@ -27,13 +27,18 @@ other renderer in this module returns a plain string body that
 columnist_service.generate() stores as article_repo.body and slices into an
 EmbedData.description at the call site, and mixing an EmbedData-returning
 renderer into that same dispatch path would silently break that contract for
-whichever caller hits it. As of this fix no live persona sets format_style
-to any of these five values (grep confirmed), so they are current dead code
-by design -- revived and correctness-tested, but not yet wired to any
-persona. Phase 2 picks which persona gets which renderer and updates the
-relevant _maybe_post_* call site in sim_content_pipeline.py to build its
-embed from the returned EmbedData directly (fields=..., description=...)
-instead of the current description=body[:N] pattern.
+whichever caller hits it.
+
+_EMBED_RENDERERS (Phase 2 B1 follow-up) is the separate dispatch table
+columnist_service.generate() checks BEFORE calling _assemble_article: when a
+persona's format_style is a key here, generate() calls the renderer directly
+on the raw parsed dict, flattens the result via _flatten_embed_data() for
+storage/word-count/grounding-check purposes (those checks only know how to
+read a string), and returns the real EmbedData too under an additive
+"embed_data" key so the Discord-facing call site can build a real field-grid
+embed instead of description=body[:N]. Only "index" -> _assemble_index is
+wired so far (Keisha Williams -- see keisha_williams.py); the other four
+remain unassigned dead code by design, same as before this fix.
 """
 from __future__ import annotations
 
@@ -536,6 +541,30 @@ def _assemble_index(parsed: dict, persona_display: str) -> EmbedData:
         ))
 
     return EmbedData(title=headline, description=description, fields=fields, footer=persona_display)
+
+
+def _flatten_embed_data(embed: EmbedData) -> str:
+    """Join an EmbedData's description + field name/value pairs into one
+    plain-text string. Used by columnist_service.generate() so the existing
+    word-count (A3) and grounding-check (Finding #1) logic -- both of which
+    only know how to read a string -- keep working unchanged for personas
+    dispatched through _EMBED_RENDERERS, and so article_repo still gets a
+    readable body for storage/search/ride-along preview. The title is
+    excluded -- callers already store/display the headline separately."""
+    parts: list[str] = []
+    if embed.description:
+        parts.append(embed.description)
+    for f in embed.fields:
+        parts.append(f"{f.name}: {f.value}")
+    return "\n\n".join(parts)
+
+
+# Maps format_style strings to EMBEDDATA-RETURNING renderers (see module
+# docstring). Checked by columnist_service.generate() BEFORE _assemble_article
+# -- a persona whose format_style is a key here never reaches _RENDERERS.
+_EMBED_RENDERERS = {
+    "index": _assemble_index,
+}
 
 
 def _parse_trade_body(body: str) -> tuple[str, str]:
