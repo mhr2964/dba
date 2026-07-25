@@ -12,7 +12,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import history_repo, hof_repo, league_repo, player_repo, team_repo
 from phase.states import Phase
-from services import league_service, progression_service, rollover_service
+from services import hof_service, league_service, progression_service, rollover_service
 
 log = get_logger(__name__)
 
@@ -113,6 +113,12 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
             league.id,
         )
 
+        # RO3: HOF induction runs here, AFTER progression, not inside
+        # rollover_service.run_rollover -- evaluating candidates before
+        # progression has updated years_pro/retirement state for the season
+        # would check every player against stale data.
+        inducted = await hof_service.check_and_induct(pool, league.id, league.current_season)
+
         await league_service.advance_phase(league.id, Phase.FA_OPEN.value)
 
         # snapshot OVR after to find notable movers
@@ -148,7 +154,9 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
             [c for c in changes if c["delta"] < 0], key=lambda c: c["delta"]
         )[:3]
 
-        embed = progression_embeds.progression_summary_embed(processed, improvers, decliners)
+        embed = progression_embeds.progression_summary_embed(
+            processed, improvers, decliners, hof_inducted=inducted
+        )
 
         news_channel_id = await league_repo.get_channel(pool, league.id, "league-news")
         if news_channel_id:
