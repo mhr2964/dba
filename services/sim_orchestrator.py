@@ -291,6 +291,27 @@ async def _fetch_race_leaders_once(pool, league_id: int, season: int) -> dict:
 
 
 
+async def _maybe_refresh_franchise_plans(
+    pool, league_id: int, season: int, current_game_index: Optional[int], caller: str
+) -> None:
+    """Wrapper that swallows exceptions so a franchise-plan refresh failure never
+    aborts the sim (mirrors _maybe_run_cpu_trades' own swallow-and-log pattern).
+
+    Called both once at the top of each top-level sim call (pre-call snapshot,
+    covers the offseason/zero-games-simmed case) AND at the same per-sub-batch
+    cadence _maybe_run_cpu_trades already uses (FP1) — so reassessment/pivot
+    checkpoints (_is_reassessment_checkpoint/_should_pivot) can fire against
+    standings updated mid-call, not just the standings snapshot taken before
+    any games in this call were simmed.
+    """
+    try:
+        await franchise_plan_service.derive_and_persist_all(
+            pool, league_id, season, current_game_index=current_game_index
+        )
+    except Exception as exc:
+        log.warning("franchise_plan refresh failed (%s): %s", caller, exc)
+
+
 async def check_user_matchups_in_range(
     pool,
     league_id: int,
@@ -318,15 +339,11 @@ async def sim_until_rival(
     _league_phase = _league_phase_row["current_phase"] if _league_phase_row else ""
     await _maybe_close_trade_window(pool, league_id)
     current_index = await game_repo.get_current_index(pool, league_id, season)
-    # Refresh franchise plans once per sim batch so plans stay current as records evolve.
-    # Pass current_index so checkpoint detection can track which game window triggered
-    # each derive and enforce plan stickiness between checkpoints.
-    try:
-        await franchise_plan_service.derive_and_persist_all(
-            pool, league_id, season, current_game_index=current_index
-        )
-    except Exception as _fp_exc:
-        log.warning("franchise_plan refresh failed (sim_until_rival): %s", _fp_exc)
+    # Refresh franchise plans against the pre-call standings snapshot (covers the
+    # zero-games-simmed / offseason case). FP1: also re-fires below at the same
+    # per-sub-batch cadence _maybe_run_cpu_trades uses, so a mid-call collapse/surge
+    # gets a real pivot opportunity instead of waiting for the next top-level sim call.
+    await _maybe_refresh_franchise_plans(pool, league_id, season, current_index, "sim_until_rival:pre-call")
 
     next_user_game = await game_repo.get_user_matchup_ahead(pool, league_id, season, current_index)
 
@@ -414,6 +431,10 @@ async def sim_until_rival(
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
             await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
+            # FP1: re-fire the franchise-plan checkpoint/pivot check at this same
+            # per-sub-batch cadence (not just once at the top of the whole call) so
+            # a mid-call collapse/surge can pivot before cpu_trade_service reads the plan.
+            await _maybe_refresh_franchise_plans(pool, league_id, season, last_game_idx, "sub-batch:mid-batch")
             # Mid-batch: skip block refresh — fires once at the final flush below.
             await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=False)
             await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
@@ -452,6 +473,9 @@ async def sim_until_rival(
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
         await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
+        # FP1: same re-fire as the mid-batch hook above, for the tail batch that
+        # doesn't reach _BOX_SCORE_BATCH_SIZE.
+        await _maybe_refresh_franchise_plans(pool, league_id, season, last_game_idx, "sub-batch:final-flush")
         # Final flush: run block refresh now (only time it fires this sim call).
         await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=True)
         await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
@@ -498,15 +522,11 @@ async def sim_range(
     news_channel = await _get_news_channel(guild, pool, league_id)
     await _maybe_close_trade_window(pool, league_id, news_channel)
     current_index = await game_repo.get_current_index(pool, league_id, season)
-    # Refresh franchise plans once per sim batch so plans stay current as records evolve.
-    # Pass current_index so checkpoint detection can track which game window triggered
-    # each derive and enforce plan stickiness between checkpoints.
-    try:
-        await franchise_plan_service.derive_and_persist_all(
-            pool, league_id, season, current_game_index=current_index
-        )
-    except Exception as _fp_exc:
-        log.warning("franchise_plan refresh failed (sim_range): %s", _fp_exc)
+    # Refresh franchise plans against the pre-call standings snapshot (covers the
+    # zero-games-simmed / offseason case). FP1: also re-fires below at the same
+    # per-sub-batch cadence _maybe_run_cpu_trades uses, so a mid-call collapse/surge
+    # gets a real pivot opportunity instead of waiting for the next top-level sim call.
+    await _maybe_refresh_franchise_plans(pool, league_id, season, current_index, "sim_range:pre-call")
 
     if not force:
         user_matchups = await check_user_matchups_in_range(
@@ -585,6 +605,10 @@ async def sim_range(
             _last_game_date = batch_results[-1]["game"].get("scheduled_date")
             _last_game_date_str = str(_last_game_date) if _last_game_date else None
             await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
+            # FP1: re-fire the franchise-plan checkpoint/pivot check at this same
+            # per-sub-batch cadence (not just once at the top of the whole call) so
+            # a mid-call collapse/surge can pivot before cpu_trade_service reads the plan.
+            await _maybe_refresh_franchise_plans(pool, league_id, season, last_game_idx, "sub-batch:mid-batch")
             # Mid-batch: skip block refresh — fires once at the final flush below.
             await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=False)
             await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
@@ -624,6 +648,9 @@ async def sim_range(
         _last_game_date = batch_results[-1]["game"].get("scheduled_date")
         _last_game_date_str = str(_last_game_date) if _last_game_date else None
         await _maybe_post_potm(pool, guild, league_id, season, _last_game_date_str, current_game_index=last_game_idx, prefetched_race_leaders=_race_leaders)
+        # FP1: same re-fire as the mid-batch hook above, for the tail batch that
+        # doesn't reach _BOX_SCORE_BATCH_SIZE.
+        await _maybe_refresh_franchise_plans(pool, league_id, season, last_game_idx, "sub-batch:final-flush")
         # Final flush: run block refresh now (only time it fires this sim call).
         await _maybe_run_cpu_trades(pool, league_id, season, last_game_idx, total_regular_games, deadline_game_index, guild, refresh_block=True)
         await _maybe_advance_trade_deadline(pool, league_id, last_game_idx, deadline_game_index, news_channel)
