@@ -313,6 +313,7 @@ async def advance_pick(
             best["id"],
         )
         await _assign_rookie_contract(pool, league_id, on_clock_team_id, best["id"], pick_number, season)
+        await _add_drafted_player_to_lineup(pool, league_id, on_clock_team_id, best["id"], season)
 
         log.info(f"CPU pick: {team.full_name} selects player {best['id']} at pick {pick_number}")
 
@@ -407,6 +408,7 @@ async def make_pick(league_id: int, season: int, team_id: int, player_id: int) -
         player_id,
     )
     await _assign_rookie_contract(pool, league_id, team_id, player_id, pick_number, season)
+    await _add_drafted_player_to_lineup(pool, league_id, team_id, player_id, season)
 
     next_pick = pick_number + 1
     await draft_repo.update_draft_status(pool, draft.id, "in_progress", current_pick=next_pick)
@@ -528,3 +530,50 @@ async def _assign_rookie_contract(
         int(salary),
         season,
     )
+
+
+async def _add_drafted_player_to_lineup(
+    pool: asyncpg.Pool,
+    league_id: int,
+    team_id: int,
+    player_id: int,
+    season: int,
+) -> None:
+    """D3 Option A (docs/design/draft-logic-rules.md): insert a freshly-drafted
+    player into `lineups` and re-derive roles immediately.
+
+    Without this, a drafted rookie is a roster *ghost*: active and under
+    contract, but invisible to both sim_persistence._load_lineup_for_team and
+    role_service.derive_roles (both INNER JOIN lineups) — zero minutes until a
+    manual /admin rebuild-lineups or a trade happens to touch them.
+
+    Mirrors trade_service.py's post-trade pattern exactly: insert at
+    MAX(slot)+1 for the receiving team, then invalidate_role_cache +
+    derive_and_persist_all_for_team so player_roles is consistent with the
+    new lineup right away (same two calls trade_service.py already makes
+    after a trade clears).
+    """
+    next_slot = await pool.fetchval(
+        "SELECT COALESCE(MAX(slot), 0) + 1 FROM lineups WHERE league_id = $1 AND team_id = $2",
+        league_id,
+        team_id,
+    )
+    await pool.execute(
+        """INSERT INTO lineups
+               (league_id, team_id, is_starter, slot, player_id, set_by)
+           VALUES ($1, $2, FALSE, $3, $4, NULL)
+           ON CONFLICT (league_id, team_id, slot) DO NOTHING""",
+        league_id,
+        team_id,
+        next_slot,
+        player_id,
+    )
+
+    from services import role_service
+    from services.sim_persistence import invalidate_role_cache
+
+    invalidate_role_cache(league_id, team_id, season)
+    async with pool.acquire() as conn:
+        await role_service.derive_and_persist_all_for_team(
+            conn, league_id, team_id, season, silent_emit=True,
+        )

@@ -248,6 +248,54 @@ _DEFENSE_LOW_USAGE_THRESHOLD = 40
 _ROLE_DIVERSITY_PENALTY = 6.0
 
 
+# D3 Option B (docs/design/draft-logic-rules.md): rookie-pedigree bias.
+# Without this, Option A alone (inserting a drafted rookie into `lineups`)
+# still under-delivers -- pure OVR/tendency-based scoring will often bury an
+# unrefined 19-year-old top pick below a similar-OVR journeyman vet, which is
+# sometimes realistic but wrong on average for a real top-10 pick a team has
+# committed to developing. Applies to any prospect who cleared _PICK_THRESHOLD
+# in a draft within their first two seasons (years_pro 0 or 1), nudging their
+# fit score toward starter/rotation-tier roles over bench/depth roles.
+#
+# Magnitude is a placeholder, not a tuned constant (documented in the rule
+# doc) -- +12 sits in the same range as the existing archetype/tendency
+# bonuses already in this file (e.g. rim_protector's +25/+30, wing_stopper's
+# +25), and the year-1 half-taper mirrors D1's "signal fades, doesn't cliff"
+# shape. Full bonus in the draft season (years_pro == 0), half in year 1,
+# gone entirely by year 2+ -- a real top-10 pick still gets bench-buried once
+# veteran competition has had a full season to prove itself.
+_ROOKIE_PEDIGREE_PICK_THRESHOLD = 10
+_ROOKIE_PEDIGREE_BONUS = 12.0
+_ROOKIE_PEDIGREE_YEARS_PRO_TAPER: dict[int, float] = {0: 1.0, 1: 0.5}
+# Roles the bonus nudges toward -- starter/rotation minutes tiers only, not
+# bench/depth (a bonus toward "sit them on the bench correctly" would be
+# incoherent with the rule's own intent).
+_ROOKIE_PEDIGREE_ROTATION_TIERS = frozenset({"starter", "rotation"})
+
+
+def _rookie_pedigree_bonus(player: dict, role: str) -> float:
+    """D3 Option B: additive nudge toward starter/rotation roles for a recent
+    top-10 pick still in their first two pro seasons. See module-level
+    constants above for magnitude/taper reasoning.
+
+    No-op (returns 0.0) when the player has no pick_number/years_pro data
+    (e.g. undrafted or the fields aren't populated yet) -- same "additive,
+    opt-in signal" shape as the philosophy-bias hook this sits alongside.
+    """
+    pick_number = player.get("pick_number")
+    years_pro = player.get("years_pro")
+    if pick_number is None or years_pro is None:
+        return 0.0
+    if pick_number > _ROOKIE_PEDIGREE_PICK_THRESHOLD:
+        return 0.0
+    taper = _ROOKIE_PEDIGREE_YEARS_PRO_TAPER.get(years_pro)
+    if taper is None:
+        return 0.0
+    if ROLE_REGISTRY.get(role, {}).get("minutes_tier") not in _ROOKIE_PEDIGREE_ROTATION_TIERS:
+        return 0.0
+    return _ROOKIE_PEDIGREE_BONUS * taper
+
+
 def _age_from_birth(birth_date: Optional[datetime.date], season: int) -> Optional[float]:
     """Estimate age at season-start (October of that year)."""
     if birth_date is None:
@@ -465,6 +513,10 @@ def _score_role_fit(
             ovr_rank=ovr_rank,
             team_context=team_context,
         )
+
+    # D3 Option B: rookie-pedigree bias, additive and independent of philosophy
+    # (applies regardless of which philosophy bias fired above).
+    score += _rookie_pedigree_bonus(player, role)
 
     return score
 

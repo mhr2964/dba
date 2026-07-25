@@ -7,6 +7,11 @@ test_high_potential_grows_more for the "don't repeat the unseeded flaky
 sampling test" lesson this domain follows from the start), D1's positional-
 need/philosophy CPU-select regressions (pure, no DB), and the pick/contract
 flow (advance_pick, make_pick).
+
+D3 Option A (docs/design/draft-logic-rules.md): also covers that a drafted
+player gets a `lineups` row immediately at pick time (both the CPU path in
+advance_pick and the human path in make_pick), not just after a manual
+/admin rebuild-lineups — the root-cause bug D3 fixes.
 """
 from __future__ import annotations
 
@@ -422,3 +427,83 @@ async def test_make_pick_assigns_rookie_contract(db_pool):
     player = await db_pool.fetchrow("SELECT * FROM players WHERE id = $1", prospect_ids[0])
     assert player["team_id"] == team_a
     assert player["roster_status"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# D3 Option A — drafted player gets a `lineups` row immediately, not just
+# after a rebuild.
+# ---------------------------------------------------------------------------
+
+
+async def test_advance_pick_cpu_selection_inserts_lineup_row(db_pool, mock_guild):
+    """CPU picks (advance_pick's auto-select path) should leave the drafted
+    player with a real `lineups` row right away — pre-fix, advance_pick only
+    touched players/draft_selections/contracts, so a CPU-drafted rookie was
+    invisible to the sim (INNER JOIN lineups) until a manual rebuild."""
+    league_id, team_a, team_b = await _setup_two_team_draft(db_pool)
+    await _seed_prospects(db_pool, league_id, n=5)
+
+    await draft_service.advance_pick(league_id, 2025, mock_guild, bot=None)
+
+    draft = await draft_repo.get_draft(db_pool, league_id, 2025)
+    selections = await draft_repo.get_selections(db_pool, draft.id)
+    assert len(selections) == 2
+
+    for selection in selections:
+        lineup_row = await db_pool.fetchrow(
+            "SELECT * FROM lineups WHERE league_id = $1 AND team_id = $2 AND player_id = $3",
+            league_id,
+            selection.team_id,
+            selection.player_id,
+        )
+        assert lineup_row is not None, (
+            f"Expected a lineups row for drafted player {selection.player_id} "
+            f"immediately after the pick, not just after a rebuild"
+        )
+
+
+async def test_make_pick_inserts_lineup_row_immediately(db_pool):
+    """Human picks (make_pick) should also get an immediate `lineups` row."""
+    league_id, team_a, team_b = await _setup_two_team_draft(db_pool, cpu_team_manager=1, second_team_manager=2)
+    prospect_ids = await _seed_prospects(db_pool, league_id, n=5)
+
+    await draft_service.make_pick(league_id, 2025, team_a, prospect_ids[0])
+
+    lineup_row = await db_pool.fetchrow(
+        "SELECT * FROM lineups WHERE league_id = $1 AND team_id = $2 AND player_id = $3",
+        league_id,
+        team_a,
+        prospect_ids[0],
+    )
+    assert lineup_row is not None
+    assert lineup_row["is_starter"] is False
+
+
+async def test_make_pick_lineup_slot_stacks_on_existing_roster(db_pool):
+    """A second pick for the same team should land at MAX(slot)+1, not
+    collide with the first pick's slot (mirrors trade_service.py's pattern)."""
+    league_id, team_a, team_b = await _setup_two_team_draft(db_pool, cpu_team_manager=1, second_team_manager=2)
+    prospect_ids = await _seed_prospects(db_pool, league_id, n=5)
+
+    await draft_service.make_pick(league_id, 2025, team_a, prospect_ids[0])
+    # Manually advance the draft back to team_a's "pick" again for this test
+    # by inserting a second pick slot owned by team_a.
+    await db_pool.execute(
+        """
+        INSERT INTO draft_picks (league_id, season, round, original_team_id, current_team_id, pick_number)
+        VALUES ($1, 2025, 1, $2, $2, 3)
+        """,
+        league_id,
+        team_a,
+    )
+    draft = await draft_repo.get_draft(db_pool, league_id, 2025)
+    await draft_repo.update_draft_status(db_pool, draft.id, "in_progress", current_pick=3)
+
+    await draft_service.make_pick(league_id, 2025, team_a, prospect_ids[1])
+
+    slots = await db_pool.fetch(
+        "SELECT slot FROM lineups WHERE league_id = $1 AND team_id = $2 ORDER BY slot",
+        league_id,
+        team_a,
+    )
+    assert [r["slot"] for r in slots] == [1, 2]

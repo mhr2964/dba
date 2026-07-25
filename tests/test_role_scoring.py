@@ -241,3 +241,82 @@ def test_derive_tendency_respecter_returns_touch_share_and_rationale():
         assert "role" in a
         assert "touch_share" in a
         assert "rationale" in a
+
+
+# ---------------------------------------------------------------------------
+# _rookie_pedigree_bonus / rookie-pedigree bias in _score_role_fit — D3
+# Option B (docs/design/draft-logic-rules.md).
+#
+# Per the plan's explicit instruction, these assert the DIRECTION of the
+# effect ("a top-5 rookie's rotation-role score is measurably higher than an
+# equivalent non-rookie's"), not a specific tuned number — the exact
+# magnitude/taper is a placeholder pending real evidence (see rule doc).
+# ---------------------------------------------------------------------------
+
+
+def test_rookie_pedigree_bonus_zero_for_non_pedigreed_player():
+    # No pick_number/years_pro at all — undrafted/legacy data, must no-op.
+    player = _player()
+    assert rs._rookie_pedigree_bonus(player, "iso_scorer") == 0.0
+
+
+def test_rookie_pedigree_bonus_zero_for_low_pick():
+    # A late-second-round pick shouldn't get the bonus even in year 0.
+    player = _player(pick_number=45, years_pro=0)
+    assert rs._rookie_pedigree_bonus(player, "iso_scorer") == 0.0
+
+
+def test_rookie_pedigree_bonus_zero_after_year_1():
+    # A top-5 pick with 2+ years of pro experience is no longer "recent."
+    player = _player(pick_number=3, years_pro=2)
+    assert rs._rookie_pedigree_bonus(player, "iso_scorer") == 0.0
+
+
+def test_rookie_pedigree_bonus_zero_for_bench_depth_roles():
+    # The bonus only nudges toward starter/rotation tiers, not bench/depth --
+    # a bonus toward "sit correctly on the bench" would contradict the rule's
+    # own intent.
+    player = _player(pick_number=1, years_pro=0)
+    assert rs._rookie_pedigree_bonus(player, "end_of_bench") == 0.0
+    assert rs._rookie_pedigree_bonus(player, "veteran_mentor") == 0.0
+
+
+def test_rookie_pedigree_bonus_positive_for_top_pick_rookie_season_rotation_role():
+    player = _player(pick_number=3, years_pro=0)
+    assert rs._rookie_pedigree_bonus(player, "catch_and_shoot") > 0.0
+
+
+def test_rookie_pedigree_bonus_tapers_between_year_0_and_year_1():
+    rookie_season = _player(pick_number=3, years_pro=0)
+    year_1 = _player(pick_number=3, years_pro=1)
+    bonus_year_0 = rs._rookie_pedigree_bonus(rookie_season, "catch_and_shoot")
+    bonus_year_1 = rs._rookie_pedigree_bonus(year_1, "catch_and_shoot")
+    assert bonus_year_0 > bonus_year_1 > 0.0
+
+
+def test_score_role_fit_top5_rookie_scores_higher_than_equivalent_non_rookie():
+    """Direction-only assertion (per plan): an otherwise-identical top-5
+    rookie's rotation-role fit score must be measurably higher than a
+    non-pedigreed player's, all else equal."""
+    rookie = _player(overall=72, position="SG", pick_number=4, years_pro=0)
+    non_rookie = _player(overall=72, position="SG")
+    rookie_score = rs._score_role_fit(rookie, "catch_and_shoot", ovr_rank=8, n_players=14)
+    non_rookie_score = rs._score_role_fit(non_rookie, "catch_and_shoot", ovr_rank=8, n_players=14)
+    assert rookie_score > non_rookie_score
+
+
+def test_score_role_fit_rookie_bonus_applies_alongside_philosophy_bias():
+    """The rookie bonus is additive on top of whatever the philosophy bias
+    already contributed -- both signals should stack, not override."""
+    rookie = _player(overall=72, position="SG", pick_number=4, years_pro=0)
+    team_context = {
+        "league_id": 1, "team_id": 1, "season": 2025,
+        "philosophy": "tendency_respecter",
+    }
+    with_ctx = rs._score_role_fit(
+        rookie, "catch_and_shoot", ovr_rank=8, n_players=14, team_context=team_context,
+    )
+    without_ctx = rs._score_role_fit(rookie, "catch_and_shoot", ovr_rank=8, n_players=14)
+    # tendency_respecter is the identity bias, so both should include the
+    # same rookie bonus and land on (approximately) the same score.
+    assert abs(with_ctx - without_ctx) < 0.01
