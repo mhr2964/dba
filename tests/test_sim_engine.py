@@ -274,3 +274,89 @@ def test_three_rate_adj_boosts_good_shooters_tpa_more_than_bad_shooters():
         f"good shooter tpa {good_tpa_total} should exceed poor shooter tpa {bad_tpa_total} "
         f"under a positive three_rate_adj"
     )
+
+
+# ---------------------------------------------------------------------------
+# CA1 (coaching AI realism sweep) -- blowout garbage-time minutes.
+# _build_box_for_team is the real, only production code path that computes
+# minutes (auto-allocate and minutes_override both flow through it before
+# CA1's post-processing step) -- calling it directly with a forced score_diff
+# exercises the actual fix, not a mock. This is a MANDATORY live smoke test
+# per the coaching-ai sweep's verification bar: it was run against pre-fix
+# code (CA1's post-processing block temporarily removed) and confirmed to
+# fail (starters kept full minutes regardless of margin), then re-run
+# post-fix and confirmed to pass. See docs/design/coaching-ai-logic-rules.md.
+# ---------------------------------------------------------------------------
+
+
+def _make_blowout_roster(team_id: int, start_id: int) -> list[dict]:
+    positions = ["PG", "SG", "SF", "PF", "C", "PG", "SG", "SF", "PF", "C"]
+    return [_make_player(start_id + i, team_id, overall=75, position=positions[i]) for i in range(10)]
+
+
+def test_blowout_reduces_starter_minutes_and_grows_bench_minutes():
+    """A 30+ point final margin should pull starters down from their
+    auto-allocated ~35 min toward the garbage-time floor, with the freed
+    minutes flowing to bench players -- a close game (score_diff small)
+    should leave starters at their normal allocation."""
+    players_blowout = _make_blowout_roster(1, 1)
+    players_close = _make_blowout_roster(2, 1)
+
+    rng_blowout = Random(1)
+    box_blowout = _build_box_for_team(
+        rng_blowout, [dict(p) for p in players_blowout], team_id=1, team_score=130, score_diff=32,
+    )
+    rng_close = Random(1)
+    box_close = _build_box_for_team(
+        rng_close, [dict(p) for p in players_close], team_id=2, team_score=110, score_diff=4,
+    )
+
+    starter_minutes_blowout = sum(line["minutes"] for line in box_blowout[:5])
+    starter_minutes_close = sum(line["minutes"] for line in box_close[:5])
+    bench_minutes_blowout = sum(line["minutes"] for line in box_blowout[5:])
+    bench_minutes_close = sum(line["minutes"] for line in box_close[5:])
+
+    assert starter_minutes_blowout < starter_minutes_close, (
+        f"Blowout starters ({starter_minutes_blowout}) should play fewer combined "
+        f"minutes than a close game's starters ({starter_minutes_close})"
+    )
+    assert bench_minutes_blowout > bench_minutes_close, (
+        f"Blowout bench ({bench_minutes_blowout}) should absorb the freed minutes "
+        f"vs a close game's bench ({bench_minutes_close})"
+    )
+
+
+def test_blowout_never_pulls_starters_below_garbage_time_floor():
+    """No starter should be reduced below the 22-min garbage-time floor even
+    at the maximum blowout severity (margin >= 30)."""
+    players = _make_blowout_roster(1, 1)
+    rng = Random(2)
+    box = _build_box_for_team(
+        rng, [dict(p) for p in players], team_id=1, team_score=140, score_diff=45,
+    )
+    for line in box[:5]:
+        assert line["minutes"] >= 22.0 - 0.01, f"Starter fell below garbage-time floor: {line}"
+
+
+def test_mild_blowout_margin_reduces_less_than_severe_blowout():
+    """Margin=20 (mild) should reduce starter minutes less than margin=30+ (severe) --
+    proves severity actually scales with margin rather than being a flat cutoff."""
+    players_mild = _make_blowout_roster(1, 1)
+    players_severe = _make_blowout_roster(2, 1)
+
+    rng_mild = Random(5)
+    box_mild = _build_box_for_team(
+        rng_mild, [dict(p) for p in players_mild], team_id=1, team_score=120, score_diff=20,
+    )
+    rng_severe = Random(5)
+    box_severe = _build_box_for_team(
+        rng_severe, [dict(p) for p in players_severe], team_id=2, team_score=140, score_diff=35,
+    )
+
+    starter_minutes_mild = sum(line["minutes"] for line in box_mild[:5])
+    starter_minutes_severe = sum(line["minutes"] for line in box_severe[:5])
+
+    assert starter_minutes_severe < starter_minutes_mild, (
+        f"Severe blowout starters ({starter_minutes_severe}) should play fewer minutes "
+        f"than a mild blowout's ({starter_minutes_mild})"
+    )

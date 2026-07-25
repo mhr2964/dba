@@ -525,6 +525,40 @@ def _build_box_for_team(
             for i in range(len(starters)):
                 minutes_list[i] = min(minutes_list[i] + per_starter, _STARTER_CAP)
 
+    # CA1 (coaching AI realism sweep): blowout garbage-time minutes.
+    # sim_game is a single-shot function -- final score margin is already known
+    # by the time minutes are computed, so this is a post-processing pass over
+    # whatever minutes_list the override/auto-allocate branches above produced,
+    # not a live in-game substitution decision the engine has no clock to drive.
+    # _BLOWOUT_THRESHOLD/_BLOWOUT_MAX_THRESHOLD/_GARBAGE_TIME_STARTER_FLOOR are
+    # disclosed placeholders -- not derived from a formula, tuned by feel.
+    _BLOWOUT_THRESHOLD = 20.0
+    _BLOWOUT_MAX_THRESHOLD = 30.0
+    _GARBAGE_TIME_STARTER_FLOOR = 22.0
+    _GARBAGE_TIME_BENCH_CAP = 38.0  # matches the bench cap already used above
+
+    abs_diff = abs(score_diff)
+    if abs_diff >= _BLOWOUT_THRESHOLD and bench:
+        severity = min(
+            1.0, (abs_diff - _BLOWOUT_THRESHOLD) / (_BLOWOUT_MAX_THRESHOLD - _BLOWOUT_THRESHOLD)
+        )
+        freed = 0.0
+        n_starters = len(starters)
+        for i in range(n_starters):
+            m = minutes_list[i]
+            if m > _GARBAGE_TIME_STARTER_FLOOR:
+                # Reduction scales from ~15% of excess minutes at the mild end
+                # (margin==20) to ~50% at the severe end (margin>=30).
+                reduction = (m - _GARBAGE_TIME_STARTER_FLOOR) * (0.15 + 0.35 * severity)
+                minutes_list[i] = m - reduction
+                freed += reduction
+        if freed > 0.0:
+            bench_start = n_starters
+            bench_total = sum(minutes_list[bench_start:]) or 1.0
+            for i in range(bench_start, len(minutes_list)):
+                share = minutes_list[i] / bench_total * freed
+                minutes_list[i] = min(minutes_list[i] + share, _GARBAGE_TIME_BENCH_CAP)
+
     # Phase 2: Role-based touch share drives scoring weight distribution.
     # touch_share from player_roles replaces the old OVR × usage_weight^1.55 formula.
     # star_usage_mult and the star-debuff-target logic are neutralised below.
