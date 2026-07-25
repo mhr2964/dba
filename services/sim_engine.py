@@ -571,6 +571,12 @@ def _build_box_for_team(
 
     _has_role_data = any(p.get("_role_touch_share") is not None for p in players)
 
+    # CA2 (coaching AI realism sweep): usage_weight/star_usage_mult exponent.
+    # Softer than the legacy fallback formula's 1.55 -- role-based touch_share
+    # already does most of the concentration work here, so usage only needs to
+    # nudge it, not drive it. Disclosed placeholder.
+    _USAGE_WEIGHT_TS_EXPONENT = 0.6
+
     if _has_role_data:
         scoring_weights = []
         for i, p in enumerate(players):
@@ -591,9 +597,30 @@ def _build_box_for_team(
             elif minutes_tier != "depth" and player_minutes < 12.0:
                 ts *= 0.30
 
+            # CA2: usage_weight is set upstream by cpu_coach_service's usage_mode
+            # directives (via sim_persistence._apply_directives -- "feature" x1.4,
+            # "conserve" x0.6) but was dead-wired here: this branch never read it,
+            # so a "feature" directive had zero effect on scoring share once role
+            # data was stamped. Softer exponent than the legacy formula's 1.55
+            # since touch_share already carries most of the concentration.
+            usage_weight = p.get("usage_weight", 50)
+            ts *= (usage_weight / 50.0) ** _USAGE_WEIGHT_TS_EXPONENT
+
             # Per-game noise (same range as legacy formula, keeps game variance)
             noise = rng.uniform(0.80, 1.20)
             scoring_weights.append(max(ts * noise, 0.001))
+
+        # CA2: star_usage_mult now targets ONLY the single highest-OVR player's
+        # weight, applied before renormalization -- a uniform team-wide scalar
+        # would cancel out entirely once _distribute_proportional allocates the
+        # fixed team score by each player's RELATIVE share of the total weight.
+        # Scaling just one player's weight actually shifts that ratio.
+        if players and star_usage_mult != 1.0:
+            star_idx = max(
+                range(len(players)),
+                key=lambda i: players[i].get("overall", players[i].get("finishing", 50)),
+            )
+            scoring_weights[star_idx] *= 1 + (star_usage_mult - 1) * 0.6
 
         # Renormalize so weights sum to 1.0 (touch share fractions must be proportional)
         _total_ts = sum(scoring_weights)
@@ -616,10 +643,12 @@ def _build_box_for_team(
             noise = rng.uniform(0.75, 1.25)
             scoring_weights.append(max(base * noise, 0.01))
 
-    # star_usage_mult: Replaced by role-based touch_share in Phase 2 (player_roles).
-    # iso_scorer / primary_initiator naturally carry 24-25% touch share; roles do the
-    # concentration work without the OVR-rank shortcut.  Parameter kept in signature
-    # for backwards compatibility but is a no-op when role data is present.
+    # star_usage_mult: applied above (CA2) as a targeted nudge to the highest-OVR
+    # player's weight when role data is present -- no longer a no-op (was dead-wired
+    # pre-CA2). The legacy fallback branch above never read this parameter either
+    # (its own usage_w term comes straight from p["usage_weight"], not this
+    # function's star_usage_mult arg) -- unchanged, since that path "should not be
+    # reached in normal operation" per its own comment.
     # _find_star_debuff_targets: Also a no-op when role data is stamped — the debuff
     # flag is still applied below (man_to_man defense still matters), but touch share
     # concentration is no longer driven by OVR rank.

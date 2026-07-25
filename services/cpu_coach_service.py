@@ -562,8 +562,12 @@ def _decide_player_directives(
         else:
             usage_mode = "normal"
 
-        if posture == "tanking":
-            usage_mode = "conserve" if rank < 2 else "normal"
+        # CA3 (coaching AI realism sweep): a second, redundant `if posture ==
+        # "tanking":` block used to sit here and unconditionally overwrite the
+        # decision above for every tanking team (e.g. a hot/isolation-star
+        # "feature" from the branches above got silently reset to
+        # "conserve"/"normal"). The tanking-aware `elif` above is now the sole
+        # source of truth for tanking teams' usage_mode.
 
         if shooting_3pt > 80 and scheme == "three_heavy":
             shot_diet = "force_3s"
