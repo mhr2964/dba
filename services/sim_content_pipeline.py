@@ -74,6 +74,31 @@ def _description_limit(category: str) -> int:
     return _DESCRIPTION_CHAR_LIMIT.get(category, _DEFAULT_DESCRIPTION_CHAR_LIMIT)
 
 
+# ---------------------------------------------------------------------------
+# Big Picture "Read full column" expand affordance (B3).
+# ---------------------------------------------------------------------------
+_BIG_PICTURE_CASE_STUDY_RE = re.compile(r"^## The Case Study", re.MULTILINE)
+
+
+def _split_big_picture_teaser(body: str) -> tuple[str, str]:
+    """Split Big Picture's body into (teaser, full) for the B3 expand button.
+
+    Teaser = everything before the '## The Case Study' header (the italic
+    theme-setter + '## The Pattern' section). Full = the complete body,
+    unchanged -- posted behind the expand button. Falls back to the whole
+    body as both teaser and full when the expected header isn't found (e.g.
+    an LLM deviation from its own template) so the teaser is never blank and
+    nothing is silently dropped.
+    """
+    match = _BIG_PICTURE_CASE_STUDY_RE.search(body or "")
+    if not match:
+        return body, body
+    teaser = body[:match.start()].rstrip()
+    if not teaser:
+        return body, body
+    return teaser, body
+
+
 async def _build_batch_game_context(batch_results: list[dict]) -> dict:
     """Build a minimal context dict from batch game results for specialty personas.
 
@@ -492,25 +517,48 @@ async def _maybe_post_big_picture(
         )
         context["top_performers"] = [dict(r) for r in top_performers]
 
+        # D5: season_history/hall_of_fame are LEAGUE-wide (not team-scoped -- see
+        # columnist_intel.py's module docstring), but the intel-injection path in
+        # columnist_service.generate() only fires when subject_team_ids is truthy.
+        # Any single real team_id unlocks the same league-wide lists, so the
+        # current #1-standings team is used purely as a key, not a subject.
+        _subject_team_ids = [standings[0]["team_id"]] if standings else None
+
         article = await asyncio.wait_for(
             columnist_service.generate(
                 pool, league_id, season,
                 persona_id="big_picture",
                 category="sunday_column",
                 context=context,
+                subject_team_ids=_subject_team_ids,
             ),
             timeout=20.0,
         )
         if article:
-            embed_data = EmbedData(
-                title=f"🔭 {article['headline']}",
-                description=article["body"][:_description_limit("sunday_column")],
+            # B3: short teaser (theme-setter + The Pattern) posted by default,
+            # full column (Case Study + What It Means) behind an expand button
+            # that edits the message in place -- see bot/ui/big_picture_view.py.
+            teaser_body, full_body = _split_big_picture_teaser(article["body"])
+            title = f"🔭 {article['headline']}"
+            footer = f"by {persona.display_name} · {persona.byline}"
+            teaser_embed_data = EmbedData(
+                title=title,
+                description=teaser_body[:_description_limit("sunday_column")],
                 color=_rgb_to_int((70, 90, 160)),
-                footer=f"by {persona.display_name} · {persona.byline}",
+                footer=footer,
             )
+            full_embed_data = EmbedData(
+                title=title,
+                description=full_body[:_description_limit("sunday_column")],
+                color=_rgb_to_int((70, 90, 160)),
+                footer=footer,
+            )
+            from bot.ui.big_picture_view import BigPictureExpandView
+            expand_view = BigPictureExpandView(full_embed_data)
             _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
-                "analysis", embed_data
+                "analysis", teaser_embed_data, view=expand_view
             )
+            expand_view.message = _sent
             await _feedback_log.register_columnist_post(
                 pool, _sent,
                 league_id=league_id, season=season,

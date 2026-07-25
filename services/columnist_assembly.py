@@ -594,6 +594,31 @@ def _parse_marcus_cole_body(body: str) -> tuple[str, str]:
     return chunks.get("TEAM_A", ""), chunks.get("TEAM_B", "")
 
 
+def _render_trade_asset_line(item: dict) -> str:
+    """Format a single asset line: '• Player Name (PG, 28, OVR 84)' or a pick
+    label. Module-level (not nested in _assemble_trade_report) so B4's
+    _marcus_cole_asset_fields can reuse it for the detail-embed asset grid."""
+    itype = item.get("type", "")
+    name = str(item.get("name", "")).strip()
+    if itype == "player":
+        meta_parts: list[str] = []
+        if item.get("position"):
+            meta_parts.append(str(item["position"]))
+        if item.get("age") is not None:
+            meta_parts.append(str(item["age"]))
+        if item.get("ovr") is not None:
+            meta_parts.append(f"OVR {item['ovr']}")
+        meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        return f"• {name}{meta}"
+    elif itype == "pick":
+        via = item.get("via")
+        suffix = f" (via {via})" if via else ""
+        return f"• {name}{suffix}"
+    else:
+        # cash or unknown
+        return f"• {name}" if name else "• Cash considerations"
+
+
 def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None = None) -> str:
     """Trade report — structured swap blocks that make get/give visible at a glance.
 
@@ -636,28 +661,6 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
     out: list[str] = []
     # Do NOT prepend headline here — the Discord embed title already shows it.
 
-    def _render_item(item: dict) -> str:
-        """Format a single asset line: Player Name (PG, 28, OVR 84) or pick label."""
-        itype = item.get("type", "")
-        name = str(item.get("name", "")).strip()
-        if itype == "player":
-            meta_parts: list[str] = []
-            if item.get("position"):
-                meta_parts.append(str(item["position"]))
-            if item.get("age") is not None:
-                meta_parts.append(str(item["age"]))
-            if item.get("ovr") is not None:
-                meta_parts.append(f"OVR {item['ovr']}")
-            meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
-            return f"• {name}{meta}"
-        elif itype == "pick":
-            via = item.get("via")
-            suffix = f" (via {via})" if via else ""
-            return f"• {name}{suffix}"
-        else:
-            # cash or unknown
-            return f"• {name}" if name else "• Cash considerations"
-
     def _render_team_block(team: dict, blurb: str) -> list[str]:
         """Render one team's receives block with optional per-team blurb."""
         team_name = str(team.get("name", "")).strip()
@@ -668,7 +671,7 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
         block_lines = [f"> 🔄 **{team_name}** receives"]
         if shown:
             for item in shown:
-                block_lines.append(f"> {_render_item(item)}")
+                block_lines.append(f"> {_render_trade_asset_line(item)}")
             if overflow > 0:
                 block_lines.append(f"> *(…and {overflow} more)*")
         else:
@@ -701,7 +704,7 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
                 block_lines = [f"> 🔄 **{team_name}** receives"]
                 if shown:
                     for item in shown:
-                        block_lines.append(f"> {_render_item(item)}")
+                        block_lines.append(f"> {_render_trade_asset_line(item)}")
                     if overflow > 0:
                         block_lines.append(f"> *(…and {overflow} more)*")
                 else:
@@ -739,6 +742,80 @@ def _assemble_trade_report(parsed: dict, persona_display: str, ctx: dict | None 
         out.append(f"— *{persona_display}*")
 
     return "\n\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Marcus Cole 2-embed trade report (Phase 2 fix B4)
+# ---------------------------------------------------------------------------
+# _assemble_trade_report (above) is the ONLY consumer of format_style=
+# "trade_report" (grep confirmed -- marcus_cole.py is the sole persona using
+# it), so it's safe to keep producing its single interleaved string body
+# (columnist_service.generate()'s contract is fixed at {"headline","body"},
+# both strings -- see that module's docstring) while these two helpers split
+# that same information into a 2-embed shape for the Discord-facing call
+# site (cpu_trade_round_trigger.py) to build: a summary embed (Marcus's
+# reporter take + grades) and a detail embed (the structured asset
+# breakdown, reusing the _truncate_field/_truncate_text discipline already
+# established for B1/B2 above).
+
+_MC_GRADE_LINE_RE = re.compile(r"^\*\*Grade:\*\*\s*(.+)$", re.MULTILINE)
+
+
+def _marcus_cole_summary_text(body: str) -> tuple[str, str]:
+    """Split the fully-assembled trade_report body (from _assemble_trade_report)
+    into (blurb_prose, grade_line) for the B4 summary embed -- the asset
+    blockquote blocks (destined for the detail embed instead) and the
+    trailing byline (the embed footer already shows the persona) are dropped.
+
+    Works for all three marker schemes _assemble_trade_report supports (new
+    [TEAM_A]/[TEAM_B], legacy [FRAMING]/[ANALYSIS], and no-marker raw body)
+    since none of those produce blockquote-prefixed paragraphs -- only the
+    asset blocks do.
+    """
+    chunks = [c for c in (body or "").split("\n\n") if c.strip()]
+    blurbs: list[str] = []
+    grade_line = ""
+    for chunk in chunks:
+        stripped = chunk.strip()
+        if stripped.startswith(">"):
+            continue  # asset blockquote block -- belongs in the detail embed
+        if stripped.startswith("— *"):
+            continue  # byline -- the embed footer already names the persona
+        grade_match = _MC_GRADE_LINE_RE.match(stripped)
+        if grade_match:
+            grade_line = grade_match.group(1).strip()
+            continue
+        blurbs.append(stripped)
+    return "\n\n".join(blurbs), grade_line
+
+
+def _marcus_cole_asset_fields(teams: list[dict]) -> list[EmbedField]:
+    """Build one EmbedField per team's structured asset list for the B4 detail
+    embed -- reuses _render_trade_asset_line (the same per-item formatting
+    _assemble_trade_report's blockquote blocks use) and _truncate_field (the
+    same 950-char field safety margin B1/B2 use), but as a real field-grid
+    entry instead of a blockquote inside one description string.
+
+    `teams` is the same ctx["teams"] structure _assemble_trade_report reads:
+    [{"name": str, "gets": [{"type", "name", "position"?, "age"?, "ovr"?,
+    "via"?}, ...]}, ...]. Returns [] when teams is empty/malformed so the
+    caller can fall back to a single-field placeholder rather than posting an
+    embed with zero fields.
+    """
+    fields: list[EmbedField] = []
+    for team in teams or []:
+        team_name = str(team.get("name", "")).strip() or "Team"
+        gets: list[dict] = team.get("gets") or []
+        if not gets:
+            fields.append(EmbedField(name=f"🔄 {team_name} receives", value="*(nothing)*", inline=True))
+            continue
+        lines = [_render_trade_asset_line(item) for item in gets]
+        fields.append(EmbedField(
+            name=f"🔄 {team_name} receives",
+            value=_truncate_field(lines),
+            inline=True,
+        ))
+    return fields
 
 
 def _parse_potm_body(body: str) -> tuple[str, str, str]:

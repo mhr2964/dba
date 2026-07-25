@@ -39,9 +39,9 @@ class _FakeChannel:
     def __init__(self):
         self.sent: list[dict] = []
 
-    async def send(self, embed=None, content=None):
+    async def send(self, embed=None, embeds=None, content=None):
         msg = _FakeTradeMessage()
-        self.sent.append({"embed": embed, "content": content, "msg": msg})
+        self.sent.append({"embed": embed, "embeds": embeds, "content": content, "msg": msg})
         return msg
 
 
@@ -217,8 +217,9 @@ async def test_pending_commissioner_trade_posts_pending_embed_no_columnist():
 
 async def test_blockbuster_approved_trade_posts_marcus_cole_article():
     """A star (OVR>=80) player in an approved trade triggers the blockbuster path:
-    columnist_service.generate is called, and its result posts as a second embed
-    to #analysis with feedback_log.register_columnist_post recording it."""
+    columnist_service.generate is called, and its result posts as a 2-embed
+    message (B4: summary + asset-breakdown detail) to #analysis, with
+    feedback_log.register_columnist_post recording it."""
     new_trades = [_trade_row(3, 10, 20, "approved")]
     team_rows = [{"id": 10, "nba_team_code": "LAL"}, {"id": 20, "nba_team_code": "BOS"}]
     player_rows = [
@@ -240,9 +241,20 @@ async def test_blockbuster_approved_trade_posts_marcus_cole_article():
         )
 
     assert len(analysis_channel.sent) == 1
-    embed = analysis_channel.sent[0]["embed"]
-    assert embed.title == "\U0001F4E1 Blockbuster Deal!"
-    assert embed.description == "Marcus Cole breaks it down."
+    embeds = analysis_channel.sent[0]["embeds"]
+    assert embeds is not None
+    assert len(embeds) == 2
+
+    summary_embed, detail_embed = embeds
+    assert summary_embed.title == "\U0001F4E1 Blockbuster Deal!"
+    assert summary_embed.description == "Marcus Cole breaks it down."
+
+    assert detail_embed.title == "\U0001F504 Asset Breakdown"
+    assert len(detail_embed.fields) == 2
+    assert detail_embed.fields[0].name == "🔄 BOS receives"
+    assert "Star Man" in detail_embed.fields[0].value
+    assert detail_embed.fields[1].name == "🔄 LAL receives"
+    assert detail_embed.fields[1].value == "*(nothing)*"
 
     generate_calls = [c for c in columnist_calls if isinstance(c, tuple) and c[0] == "generate"]
     assert len(generate_calls) == 1
@@ -253,6 +265,88 @@ async def test_blockbuster_approved_trade_posts_marcus_cole_article():
     assert len(register_calls) == 1
     assert register_calls[0]["persona_id"] == "marcus_cole"
     assert register_calls[0]["subject_trade_id"] == 3
+
+
+async def test_blockbuster_trade_wires_trade_magnitude_into_context(): # D2
+    """When the league has a real salary_cap, trade_magnitude ranking (league +
+    both teams) is computed and attached to the context dict Marcus Cole's
+    columnist_service.generate call receives, under the key 'trade_magnitude'."""
+    new_trades = [_trade_row(4, 10, 20, "approved")]
+    team_rows = [{"id": 10, "nba_team_code": "LAL"}, {"id": 20, "nba_team_code": "BOS"}]
+    player_rows = [
+        {"id": 500, "first_name": "Star", "last_name": "Guy", "overall": 90, "position": "C", "age": 26},
+    ]
+
+    class _Asset:
+        def __init__(self, asset_type, from_team_id, to_team_id, player_id=None):
+            self.asset_type = asset_type
+            self.from_team_id = from_team_id
+            self.to_team_id = to_team_id
+            self.player_id = player_id
+
+    assets = [_Asset("player", 10, 20, player_id=500)]
+
+    league_rank = {"rank": 1, "total_trades": 12, "magnitude": 55.5, "is_biggest": True}
+    lal_rank = {"rank": 1, "total_trades": 3, "magnitude": 55.5, "is_biggest": True}
+    bos_rank = {"rank": 2, "total_trades": 5, "magnitude": 55.5, "is_biggest": False}
+
+    async def _fake_league_rank(pool_, league_id_, trade_id_, salary_cap, season_):
+        return league_rank
+
+    async def _fake_team_rank(pool_, league_id_, team_id_, trade_id_, salary_cap, season_):
+        return lal_rank if team_id_ == 10 else bos_rank
+
+    with (
+        patch("services.cpu_trade_round_trigger.trade_repo.get_assets", AsyncMock(return_value=assets)),
+        patch(
+            "services.cpu_trade_round_trigger._trade_magnitude_service.rank_trade_in_league_history",
+            _fake_league_rank,
+        ),
+        patch(
+            "services.cpu_trade_round_trigger._trade_magnitude_service.rank_trade_in_team_history",
+            _fake_team_rank,
+        ),
+    ):
+        _transactions_channel, _analysis_channel, _trade_calls, columnist_calls = await _run(
+            new_trades, team_rows, player_rows=player_rows,
+            league_row={"salary_cap": 140_000_000},
+        )
+
+    generate_calls = [c for c in columnist_calls if isinstance(c, tuple) and c[0] == "generate"]
+    assert len(generate_calls) == 1
+    trade_magnitude = generate_calls[0][1]["context"]["trade_magnitude"]
+    assert trade_magnitude == {
+        "league": league_rank,
+        "team_ranks": {"LAL": lal_rank, "BOS": bos_rank},
+    }
+
+
+async def test_blockbuster_trade_without_salary_cap_leaves_trade_magnitude_none():
+    """No usable league row (salary_cap missing/None) -- trade_magnitude stays
+    None rather than crashing the post."""
+    new_trades = [_trade_row(5, 10, 20, "approved")]
+    team_rows = [{"id": 10, "nba_team_code": "LAL"}, {"id": 20, "nba_team_code": "BOS"}]
+    player_rows = [
+        {"id": 600, "first_name": "Star", "last_name": "Two", "overall": 85, "position": "SF", "age": 24},
+    ]
+
+    class _Asset:
+        def __init__(self, asset_type, from_team_id, to_team_id, player_id=None):
+            self.asset_type = asset_type
+            self.from_team_id = from_team_id
+            self.to_team_id = to_team_id
+            self.player_id = player_id
+
+    assets = [_Asset("player", 10, 20, player_id=600)]
+
+    with patch("services.cpu_trade_round_trigger.trade_repo.get_assets", AsyncMock(return_value=assets)):
+        _transactions_channel, _analysis_channel, _trade_calls, columnist_calls = await _run(
+            new_trades, team_rows, player_rows=player_rows, league_row=None,
+        )
+
+    generate_calls = [c for c in columnist_calls if isinstance(c, tuple) and c[0] == "generate"]
+    assert len(generate_calls) == 1
+    assert generate_calls[0][1]["context"]["trade_magnitude"] is None
 
 
 async def test_no_transactions_channel_is_noop():

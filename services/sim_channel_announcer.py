@@ -54,13 +54,31 @@ class _BoundChannelAnnouncer:
             return
         await self._channel.send(content)
 
-    async def post_embed_get_ref(self, channel_key: str, embed_data: EmbedData):
+    async def post_embed_get_ref(self, channel_key: str, embed_data: EmbedData, view=None):
         """Like post_embed, but returns the sent message (or None) so the caller
         can pass it to feedback_log or create_thread without importing discord
-        itself -- the returned object is opaque from the caller's perspective."""
+        itself -- the returned object is opaque from the caller's perspective.
+
+        view (optional): a pre-built discord.ui.View to attach (e.g. Big
+        Picture's B3 expand button) -- only passed to channel.send when
+        provided, since discord.py's own default is a sentinel (MISSING), not
+        None, and passing a literal None explicitly can behave differently
+        from omitting the kwarg entirely.
+        """
         if not self._channel:
             return None
+        if view is not None:
+            return await self._channel.send(embed=_build_embed(embed_data), view=view)
         return await self._channel.send(embed=_build_embed(embed_data))
+
+    async def post_embeds_get_ref(self, channel_key: str, embed_data_list: list[EmbedData]):
+        """Like post_embed_get_ref, but sends several embeds in ONE message
+        (Discord supports up to 10 per message) -- used by callers that split
+        one logical post into multiple embeds (e.g. Marcus Cole's B4 2-embed
+        trade report: a summary embed + a detail/asset-breakdown embed)."""
+        if not self._channel:
+            return None
+        return await self._channel.send(embeds=[_build_embed(ed) for ed in embed_data_list])
 
     async def create_thread_and_send(self, message_ref, name: str, content: str) -> None:
         """Create a thread on a message returned by post_embed_get_ref and post
