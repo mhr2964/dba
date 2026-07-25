@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional
 
 from core.logging import get_logger
 from data.repositories import league_repo, team_repo, trade_repo
+from services import columnist_assembly
 from services import columnist_ride_along as _columnist_ride_along
 from services import columnist_service, cpu_trade_service
 from services import feedback_log as _feedback_log
@@ -450,17 +451,40 @@ async def _run_cpu_trades_inner(
             analysis_channel = guild.get_channel(analysis_channel_id) if analysis_channel_id else None
             if analysis_channel:
                 mc_persona = _PERSONAS.get("marcus_cole")
-                mc_embed_data = EmbedData(
-                    title=f"\U0001F4E1 {mc_article['headline']}",
-                    description=mc_article["body"][:2000],
-                    color=_COLOR_ORANGE_RED,
-                    footer=(
-                        f"by {mc_persona.display_name} · {mc_persona.byline}"
-                        if mc_persona else None
-                    ),
+                _mc_footer = (
+                    f"by {mc_persona.display_name} · {mc_persona.byline}"
+                    if mc_persona else None
                 )
-                _sent = await _BoundChannelAnnouncer(analysis_channel).post_embed_get_ref(
-                    "analysis", mc_embed_data
+                # B4: 2-embed trade report -- a summary embed (Marcus's reporter
+                # take + grades) and a detail embed (structured asset breakdown,
+                # reusing trade_embeds.py's multi-field grid pattern via
+                # _marcus_cole_asset_fields), sent together in one message
+                # mirroring the embeds=[a, b] precedent at
+                # bot/cogs/playoff_cog.py:307.
+                _summary_text, _grade_line = columnist_assembly._marcus_cole_summary_text(mc_article["body"])
+                summary_embed = EmbedData(
+                    title=f"\U0001F4E1 {mc_article['headline']}",
+                    description=_summary_text[:2000],
+                    color=_COLOR_ORANGE_RED,
+                    footer=_mc_footer,
+                )
+                if _grade_line:
+                    summary_embed.fields.append(EmbedField(name="Grades", value=_grade_line, inline=False))
+
+                _asset_fields = columnist_assembly._marcus_cole_asset_fields(trade_context.get("teams") or [])
+                if not _asset_fields:
+                    _asset_fields = [EmbedField(
+                        name="Assets", value="No structured asset data available.", inline=False,
+                    )]
+                detail_embed = EmbedData(
+                    title="\U0001F504 Asset Breakdown",
+                    fields=_asset_fields,
+                    color=_COLOR_ORANGE_RED,
+                    footer=_mc_footer,
+                )
+
+                _sent = await _BoundChannelAnnouncer(analysis_channel).post_embeds_get_ref(
+                    "analysis", [summary_embed, detail_embed]
                 )
                 await _feedback_log.register_columnist_post(
                     pool, _sent,

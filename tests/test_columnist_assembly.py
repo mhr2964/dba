@@ -404,6 +404,70 @@ def test_assemble_trade_report_includes_grades():
 
 
 # ---------------------------------------------------------------------------
+# _marcus_cole_summary_text / _marcus_cole_asset_fields (B4)
+# ---------------------------------------------------------------------------
+
+def test_marcus_cole_summary_text_strips_asset_blocks_and_byline():
+    parsed = {"headline": "H", "body": "[TEAM_A] Lakers get their guy. [TEAM_B] Celtics bank picks."}
+    ctx = {
+        "teams": [
+            {"name": "Lakers", "gets": [{"type": "player", "name": "Star Guy", "ovr": 88}]},
+            {"name": "Celtics", "gets": [{"type": "pick", "name": "2027 1st"}]},
+        ]
+    }
+    body = cs._assemble_trade_report(parsed, "Marcus Cole", ctx=ctx)
+    blurbs, grade_line = cs._marcus_cole_summary_text(body)
+    assert "Lakers get their guy." in blurbs
+    assert "Celtics bank picks." in blurbs
+    assert ">" not in blurbs  # asset blockquote blocks are dropped
+    assert "Marcus Cole" not in blurbs  # byline dropped
+    assert grade_line == ""
+
+
+def test_marcus_cole_summary_text_extracts_grade_line():
+    parsed = {"headline": "H", "body": "[TEAM_A] take A. [TEAM_B] take B.", "grade_a": "A", "grade_b": "C+"}
+    ctx = {"teams": [{"name": "Lakers", "gets": []}, {"name": "Celtics", "gets": []}]}
+    body = cs._assemble_trade_report(parsed, "Marcus Cole", ctx=ctx)
+    blurbs, grade_line = cs._marcus_cole_summary_text(body)
+    assert "**Grade:**" not in blurbs
+    assert "Lakers:** A" in grade_line
+    assert "Celtics:** C+" in grade_line
+
+
+def test_marcus_cole_summary_text_empty_body_returns_empty():
+    blurbs, grade_line = cs._marcus_cole_summary_text("")
+    assert blurbs == ""
+    assert grade_line == ""
+
+
+def test_marcus_cole_asset_fields_builds_one_field_per_team():
+    teams = [
+        {"name": "Lakers", "gets": [
+            {"type": "player", "name": "Star Guy", "position": "PG", "age": 27, "ovr": 88},
+        ]},
+        {"name": "Celtics", "gets": [{"type": "pick", "name": "2027 1st", "via": "LAL"}]},
+    ]
+    fields = cs._marcus_cole_asset_fields(teams)
+    assert len(fields) == 2
+    assert fields[0].name == "🔄 Lakers receives"
+    assert "Star Guy (PG, 27, OVR 88)" in fields[0].value
+    assert fields[0].inline is True
+    assert fields[1].name == "🔄 Celtics receives"
+    assert "2027 1st (via LAL)" in fields[1].value
+
+
+def test_marcus_cole_asset_fields_empty_gets_shows_placeholder():
+    fields = cs._marcus_cole_asset_fields([{"name": "Lakers", "gets": []}])
+    assert len(fields) == 1
+    assert fields[0].value == "*(nothing)*"
+
+
+def test_marcus_cole_asset_fields_empty_teams_returns_empty_list():
+    assert cs._marcus_cole_asset_fields([]) == []
+    assert cs._marcus_cole_asset_fields(None) == []
+
+
+# ---------------------------------------------------------------------------
 # _assemble_potm
 # ---------------------------------------------------------------------------
 

@@ -39,9 +39,9 @@ class _FakeChannel:
     def __init__(self):
         self.sent: list[dict] = []
 
-    async def send(self, embed=None, content=None):
+    async def send(self, embed=None, embeds=None, content=None):
         msg = _FakeTradeMessage()
-        self.sent.append({"embed": embed, "content": content, "msg": msg})
+        self.sent.append({"embed": embed, "embeds": embeds, "content": content, "msg": msg})
         return msg
 
 
@@ -217,8 +217,9 @@ async def test_pending_commissioner_trade_posts_pending_embed_no_columnist():
 
 async def test_blockbuster_approved_trade_posts_marcus_cole_article():
     """A star (OVR>=80) player in an approved trade triggers the blockbuster path:
-    columnist_service.generate is called, and its result posts as a second embed
-    to #analysis with feedback_log.register_columnist_post recording it."""
+    columnist_service.generate is called, and its result posts as a 2-embed
+    message (B4: summary + asset-breakdown detail) to #analysis, with
+    feedback_log.register_columnist_post recording it."""
     new_trades = [_trade_row(3, 10, 20, "approved")]
     team_rows = [{"id": 10, "nba_team_code": "LAL"}, {"id": 20, "nba_team_code": "BOS"}]
     player_rows = [
@@ -240,9 +241,20 @@ async def test_blockbuster_approved_trade_posts_marcus_cole_article():
         )
 
     assert len(analysis_channel.sent) == 1
-    embed = analysis_channel.sent[0]["embed"]
-    assert embed.title == "\U0001F4E1 Blockbuster Deal!"
-    assert embed.description == "Marcus Cole breaks it down."
+    embeds = analysis_channel.sent[0]["embeds"]
+    assert embeds is not None
+    assert len(embeds) == 2
+
+    summary_embed, detail_embed = embeds
+    assert summary_embed.title == "\U0001F4E1 Blockbuster Deal!"
+    assert summary_embed.description == "Marcus Cole breaks it down."
+
+    assert detail_embed.title == "\U0001F504 Asset Breakdown"
+    assert len(detail_embed.fields) == 2
+    assert detail_embed.fields[0].name == "🔄 BOS receives"
+    assert "Star Man" in detail_embed.fields[0].value
+    assert detail_embed.fields[1].name == "🔄 LAL receives"
+    assert detail_embed.fields[1].value == "*(nothing)*"
 
     generate_calls = [c for c in columnist_calls if isinstance(c, tuple) and c[0] == "generate"]
     assert len(generate_calls) == 1
