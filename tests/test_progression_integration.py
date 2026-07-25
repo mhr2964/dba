@@ -226,3 +226,33 @@ async def test_years_pro_incremented_for_all(db_pool):
         assert after == original + 1, (
             f"Player {pid}: expected years_pro {original + 1}, got {after}"
         )
+
+
+async def test_injury_setback_branch(db_pool):
+    """
+    A season-ending injury recorded for the CURRENT (progression) season
+    produces an injury_setback progression_log entry. injury_drop is always
+    randint(2, 4) (never 0), so this is deterministic without seeding.
+    """
+    league_id, team_id, player_id = await _setup(db_pool)
+
+    await db_pool.execute(
+        """
+        INSERT INTO injuries (league_id, player_id, season, severity, games_missed)
+        VALUES ($1, $2, 2025, 'season_ending', 30)
+        """,
+        league_id,
+        player_id,
+    )
+
+    await progression_service.run_progression(league_id, season=2025)
+
+    count = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM progression_log
+        WHERE league_id = $1 AND player_id = $2 AND reason = 'injury_setback'
+        """,
+        league_id,
+        player_id,
+    )
+    assert count > 0, "Expected an injury_setback progression_log row"

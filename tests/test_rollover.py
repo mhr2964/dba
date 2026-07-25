@@ -7,8 +7,8 @@ self-contained: it ages contracts, archives history, and calls hof_service.
 """
 from __future__ import annotations
 
-from data.repositories import history_repo
-from services import rollover_service
+from data.repositories import history_repo, league_repo
+from services import progression_service, rollover_service
 
 
 # ---------------------------------------------------------------------------
@@ -284,3 +284,106 @@ async def test_multiple_expired_contracts(db_pool):
         "SELECT roster_status FROM players WHERE id = $1", player_id
     )
     assert p1_row["roster_status"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# P1 — season off-by-one in the rollover -> progression handoff
+# ---------------------------------------------------------------------------
+
+
+async def test_rollover_sets_pending_progression_season(db_pool):
+    """
+    run_rollover stores the PRE-increment season on pending_progression_season
+    in the same statement that sets current_phase=PROGRESSION_PENDING, while
+    current_season itself moves forward to next_season.
+    """
+    league_id, _, _, _ = await _create_minimal_league(db_pool)
+
+    await rollover_service.run_rollover(league_id)
+
+    league = await league_repo.get_by_guild(db_pool, 777001)
+    assert league.pending_progression_season == 2025
+    assert league.current_season == 2026
+
+
+async def test_rollover_then_progression_uses_correct_season(db_pool):
+    """
+    Regression test for the season off-by-one in the rollover -> progression
+    handoff (P1). run_rollover increments current_season BEFORE progression
+    ever runs; progression must filter that season's games/injuries by
+    league.pending_progression_season (the season that just finished), not
+    league.current_season directly.
+
+    Both the low-minutes game log and the season-ending injury below are
+    recorded under season 2025 -- the season that is about to be rolled over.
+    Reading league.current_season (2026, post-rollover) after run_rollover
+    would find zero matching games/injuries and neither penalty would ever
+    log, which is exactly the bug this test must catch.
+    """
+    league_id, team_id, player_id, _ = await _create_minimal_league(db_pool)
+
+    # Force decline stage (age >= peak_age_end) so both penalties land on the
+    # same, deterministic delta path regardless of growth-phase randomness.
+    await db_pool.execute(
+        """
+        UPDATE players
+        SET birth_date = '1987-01-01', peak_age_start = 26, peak_age_end = 31
+        WHERE id = $1
+        """,
+        player_id,
+    )
+
+    # Known low-minutes game log under season 2025 (>10 games, avg < 15 min).
+    for i in range(12):
+        game_row = await db_pool.fetchrow(
+            """
+            INSERT INTO games (
+                league_id, season, season_type, game_index,
+                home_team_id, away_team_id, scheduled_date,
+                status, home_score, away_score, winner_team_id
+            ) VALUES ($1, 2025, 'regular', $2, $3, $3, '2025-01-01', 'simmed', 100, 95, $3)
+            RETURNING id
+            """,
+            league_id,
+            i + 1,
+            team_id,
+        )
+        await db_pool.execute(
+            """
+            INSERT INTO game_box_scores (game_id, player_id, team_id, minutes, points)
+            VALUES ($1, $2, $3, 8, 4)
+            """,
+            game_row["id"],
+            player_id,
+            team_id,
+        )
+
+    # Season-ending injury recorded under season 2025.
+    await db_pool.execute(
+        """
+        INSERT INTO injuries (league_id, player_id, season, severity, games_missed)
+        VALUES ($1, $2, 2025, 'season_ending', 40)
+        """,
+        league_id,
+        player_id,
+    )
+
+    summary = await rollover_service.run_rollover(league_id)
+    assert summary["season_archived"] == 2025
+
+    league = await league_repo.get_by_guild(db_pool, 777001)
+    assert league.pending_progression_season == 2025
+    assert league.current_season == 2026
+
+    # This is the exact call the fixed offseason_cog now makes -- via the
+    # handoff column, NOT league.current_season.
+    await progression_service.run_progression(league_id, league.pending_progression_season)
+
+    reasons = await db_pool.fetch(
+        "SELECT reason FROM progression_log WHERE league_id = $1 AND player_id = $2",
+        league_id,
+        player_id,
+    )
+    reason_set = {r["reason"] for r in reasons}
+    assert "low_minutes" in reason_set, f"Expected low_minutes penalty, got {reason_set}"
+    assert "injury_setback" in reason_set, f"Expected injury_setback penalty, got {reason_set}"

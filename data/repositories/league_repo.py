@@ -22,6 +22,7 @@ class League:
     salary_cap: int
     created_at: datetime.datetime
     archived_at: Optional[datetime.datetime]
+    pending_progression_season: Optional[int] = None
 
 
 def _league_from_record(r: asyncpg.Record) -> League:
@@ -38,6 +39,7 @@ def _league_from_record(r: asyncpg.Record) -> League:
         salary_cap=r["salary_cap"],
         created_at=r["created_at"],
         archived_at=r["archived_at"],
+        pending_progression_season=r["pending_progression_season"],
     )
 
 

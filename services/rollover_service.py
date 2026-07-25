@@ -48,9 +48,15 @@ async def run_rollover(league_id: int) -> dict:
         league_id,
     )
 
+    # Set phase to PROGRESSION_PENDING and stash the pre-increment season in the
+    # same statement — pending_progression_season is what /offseason progression
+    # must filter games/injuries on, since current_season above has already moved
+    # past the season that just finished (see progression_service._avg_minutes /
+    # _has_season_ending_injury callers).
     await pool.execute(
-        "UPDATE leagues SET current_phase = $1 WHERE id = $2",
+        "UPDATE leagues SET current_phase = $1, pending_progression_season = $2 WHERE id = $3",
         Phase.PROGRESSION_PENDING.value,
+        season,
         league_id,
     )
 

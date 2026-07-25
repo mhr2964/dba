@@ -61,6 +61,21 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
 
         pool = await get_pool()
 
+        # Progression must filter games/injuries on the season that JUST finished,
+        # not league.current_season -- run_rollover already incremented that. Fall
+        # back to current_season - 1 (with a warning) for leagues that rolled over
+        # before pending_progression_season existed.
+        if league.pending_progression_season is not None:
+            progression_season = league.pending_progression_season
+        else:
+            progression_season = league.current_season - 1
+            log.warning(
+                "League %d has no pending_progression_season (pre-fix rollover); "
+                "falling back to current_season - 1 = %d",
+                league.id,
+                progression_season,
+            )
+
         # snapshot OVR before progression to compute notable changes
         before_rows = await pool.fetch(
             "SELECT id, first_name, last_name, position, overall FROM players "
@@ -77,11 +92,11 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
         }
 
         try:
-            processed = await progression_service.run_progression(league.id, league.current_season)
+            processed = await progression_service.run_progression(league.id, progression_season)
         except Exception as exc:
             log.error(
                 "Progression failed for league %d season %d: %s",
-                league.id, league.current_season, exc,
+                league.id, progression_season, exc,
                 exc_info=True,
             )
             await safe_respond(
@@ -90,6 +105,13 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
                 ephemeral=True,
             )
             return
+
+        # Clear the handoff column now that progression has consumed it -- prevents
+        # a stale season number from being reused if progression is somehow re-run.
+        await pool.execute(
+            "UPDATE leagues SET pending_progression_season = NULL WHERE id = $1",
+            league.id,
+        )
 
         await league_service.advance_phase(league.id, Phase.FA_OPEN.value)
 
@@ -141,7 +163,7 @@ class OffseasonGroup(app_commands.Group, name="offseason", description="Offseaso
             interaction.user.id,
             processed,
             league.id,
-            league.current_season,
+            progression_season,
         )
 
 
