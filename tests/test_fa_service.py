@@ -684,3 +684,39 @@ async def test_submit_cpu_offers_prioritizes_positional_need(db_pool):
     # first; by the time the higher-OVR center is tried, cap room is gone.
     assert pg_id in offered_player_ids
     assert c_id not in offered_player_ids
+
+
+async def test_get_team_wins_counts_simmed_games_not_scheduled(db_pool):
+    """
+    Regression: _get_team_wins filtered on status='final', a value never
+    actually written by the sim (real completed games go scheduled->simmed,
+    see game_repo.py) -- every team's win count silently came back 0. A
+    scheduled-but-unplayed game must not count even though it carries scores
+    left over from a prior day's matchup generation.
+    """
+    league_id, team_id, _player_id = await _setup_fa_open(db_pool)
+    opponent_id = await db_pool.fetchval(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+        VALUES ($1, 'OPP', 'Opponents', 'Rivalburg', 'East', 'Atlantic')
+        RETURNING id
+        """,
+        league_id,
+    )
+
+    await db_pool.execute(
+        """
+        INSERT INTO games
+            (league_id, season, game_index, home_team_id, away_team_id,
+             scheduled_date, status, home_score, away_score, is_user_matchup, rng_seed)
+        VALUES
+            ($1, 2025, 1, $2, $3, '2025-04-01', 'simmed', 100, 90, FALSE, 1),
+            ($1, 2025, 2, $2, $3, '2025-04-02', 'scheduled', 100, 90, FALSE, 1)
+        """,
+        league_id,
+        team_id,
+        opponent_id,
+    )
+
+    wins = await fa_service._get_team_wins(db_pool, league_id, team_id, 2025)
+    assert wins == 1

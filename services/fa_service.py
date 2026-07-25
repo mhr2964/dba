@@ -926,7 +926,7 @@ async def _get_team_wins(
             END
         ), 0)
         FROM games
-        WHERE league_id = $1 AND season = $3 AND status = 'final'
+        WHERE league_id = $1 AND season = $3 AND status = 'simmed'
           AND (home_team_id = $2 OR away_team_id = $2)
         """,
         league_id,
