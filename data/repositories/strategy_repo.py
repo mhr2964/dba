@@ -8,6 +8,10 @@ _DEFAULT_STRATEGY: dict = {
     "defensive_scheme": "man_to_man",
     "defensive_intensity": "normal",
     "star_usage": 50,
+    # CA4 (coaching AI realism sweep): match the team_strategies columns'
+    # own DB defaults (alembic/versions/035_cpu_gameplans.py).
+    "bench_leash": "normal",
+    "transition_aggression": "balanced",
 }
 
 
@@ -16,7 +20,7 @@ async def get_strategy(pool: asyncpg.Pool, league_id: int, team_id: int) -> dict
     row = await pool.fetchrow(
         """
         SELECT offensive_pace, offensive_scheme, defensive_scheme,
-               defensive_intensity, star_usage
+               defensive_intensity, star_usage, bench_leash, transition_aggression
         FROM team_strategies
         WHERE league_id = $1 AND team_id = $2
         """,

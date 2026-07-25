@@ -443,6 +443,9 @@ def _assign_team_stats(
     return lines
 
 
+_BENCH_LEASH_SEVERITY_MULT = {"short": 1.3, "normal": 1.0, "long": 0.7}
+
+
 def _build_box_for_team(
     rng: Random,
     players: List[dict],
@@ -454,6 +457,7 @@ def _build_box_for_team(
     three_rate_adj: float = 0.0,
     turnover_adj: float = 0.0,
     foul_adj: float = 0.0,
+    bench_leash: str = "normal",
 ) -> List[dict]:
     n = len(players)
     if n == 0:
@@ -539,17 +543,32 @@ def _build_box_for_team(
 
     abs_diff = abs(score_diff)
     if abs_diff >= _BLOWOUT_THRESHOLD and bench:
+        # severity is margin-only (0..1): how far into the blowout range the
+        # final score landed. bench_leash is applied to the REDUCTION FRACTION
+        # below, not to severity itself -- multiplying severity directly and
+        # then re-clamping to 1.0 would make "short" and "normal" leashes
+        # collapse to the identical result at max margin, hiding CA4's effect
+        # exactly where a real coach's leash choice matters most.
         severity = min(
             1.0, (abs_diff - _BLOWOUT_THRESHOLD) / (_BLOWOUT_MAX_THRESHOLD - _BLOWOUT_THRESHOLD)
         )
+        # CA4: bench_leash scales how aggressively starters get pulled once a
+        # blowout is underway -- a short-leash coach pulls starters
+        # faster/harder, a long-leash coach rides them longer even in a
+        # blowout. Reduction fraction capped at 0.65 so even "short" at
+        # max severity doesn't strip starters beyond a real substitution
+        # pattern would.
+        leash_mult = _BENCH_LEASH_SEVERITY_MULT.get(bench_leash, 1.0)
+        reduction_frac = min(0.65, (0.15 + 0.35 * severity) * leash_mult)
         freed = 0.0
         n_starters = len(starters)
         for i in range(n_starters):
             m = minutes_list[i]
             if m > _GARBAGE_TIME_STARTER_FLOOR:
                 # Reduction scales from ~15% of excess minutes at the mild end
-                # (margin==20) to ~50% at the severe end (margin>=30).
-                reduction = (m - _GARBAGE_TIME_STARTER_FLOOR) * (0.15 + 0.35 * severity)
+                # (margin==20) to ~50% at the severe end (margin>=30), before
+                # the bench_leash multiplier above.
+                reduction = (m - _GARBAGE_TIME_STARTER_FLOOR) * reduction_frac
                 minutes_list[i] = m - reduction
                 freed += reduction
         if freed > 0.0:
@@ -888,6 +907,7 @@ def sim_game(
         three_rate_adj=h_strat.get("three_rate_adj", 0.0) + a_strat.get("opp_three_rate_adj", 0.0),
         turnover_adj=h_strat.get("turnover_adj", 0.0) + a_strat.get("opp_turnover_adj", 0.0),
         foul_adj=h_strat.get("foul_adj", 0.0),
+        bench_leash=h_strat.get("bench_leash", "normal"),
     )
     away_box = _build_box_for_team(
         rng, away_players_adj, away_team["team_id"], away_score, away_diff,
@@ -896,6 +916,7 @@ def sim_game(
         three_rate_adj=a_strat.get("three_rate_adj", 0.0) + h_strat.get("opp_three_rate_adj", 0.0),
         turnover_adj=a_strat.get("turnover_adj", 0.0) + h_strat.get("opp_turnover_adj", 0.0),
         foul_adj=a_strat.get("foul_adj", 0.0),
+        bench_leash=a_strat.get("bench_leash", "normal"),
     )
 
     injuries = _roll_injuries(rng, home_box, home_team["team_id"]) + _roll_injuries(rng, away_box, away_team["team_id"])

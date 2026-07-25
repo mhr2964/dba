@@ -383,6 +383,35 @@ async def test_minutes_plan_uses_targets(db_pool):
 
 
 # ---------------------------------------------------------------------------
+# CA4 (coaching AI realism sweep) -- bench_leash/transition_aggression round-trip.
+# strategy_repo.get_strategy's SELECT was silently missing these two columns
+# even though set_strategy could write them and _DEFAULT_STRATEGY referenced
+# them -- every read silently dropped whatever was written. This is a MANDATORY
+# live smoke test proven to fail pre-fix (get_strategy returned the DEFAULT
+# values, not what was actually written) and pass post-fix.
+# ---------------------------------------------------------------------------
+
+
+async def test_bench_leash_and_transition_aggression_round_trip(db_pool):
+    league_id, team_id, _player_id = await _create_league_team_player(db_pool)
+
+    await strategy_repo.set_strategy(
+        db_pool, league_id, team_id, bench_leash="short", transition_aggression="crash",
+    )
+
+    strategy = await strategy_repo.get_strategy(db_pool, league_id, team_id)
+
+    assert strategy["bench_leash"] == "short", (
+        f"Expected the just-written bench_leash='short' to round-trip, got {strategy.get('bench_leash')!r} "
+        f"-- get_strategy's SELECT was missing this column pre-fix, silently returning the DEFAULT value instead."
+    )
+    assert strategy["transition_aggression"] == "crash", (
+        f"Expected the just-written transition_aggression='crash' to round-trip, got "
+        f"{strategy.get('transition_aggression')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Sim engine integration tests (pure function, no DB)
 # ---------------------------------------------------------------------------
 

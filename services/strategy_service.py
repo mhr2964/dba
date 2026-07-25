@@ -107,6 +107,21 @@ async def get_sim_modifiers(
         pace_adjustment += 10.0
         turnover_adj += 1.5
 
+    # TRANSITION AGGRESSION (CA4, coaching AI realism sweep): this column
+    # existed on team_strategies with a DB default and was passed through this
+    # function's return dict, but never converted into an actual pace/turnover
+    # modifier -- every team ran neutral regardless of setting. Magnitudes are
+    # disclosed placeholders, deliberately smaller than offensive_pace's primary
+    # lever above (+-5/+-6, up to +10 for run_and_gun) since this is a secondary,
+    # transition-specific nudge on top of the team's main pace choice.
+    transition = strategy.get("transition_aggression", "balanced")
+    if transition == "crash":
+        pace_adjustment += 2.0
+        turnover_adj += 0.3
+    elif transition == "retreat":
+        pace_adjustment += -2.0
+        turnover_adj += -0.3
+
     # OFFENSIVE SCHEME — calibrated 2026-05-18 to keep top scorers in the
     # NBA-realistic 28-35 PPG band. Previous magnitudes pushed elites to 40+ PPG.
     scheme = strategy["offensive_scheme"]

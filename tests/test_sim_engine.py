@@ -360,3 +360,57 @@ def test_mild_blowout_margin_reduces_less_than_severe_blowout():
         f"Severe blowout starters ({starter_minutes_severe}) should play fewer minutes "
         f"than a mild blowout's ({starter_minutes_mild})"
     )
+
+
+# ---------------------------------------------------------------------------
+# CA4 (coaching AI realism sweep) -- bench_leash scales CA1's blowout severity.
+# MANDATORY live smoke test (second half -- see tests/test_strategy.py's
+# test_bench_leash_and_transition_aggression_round_trip for the DB round-trip
+# half): a "short" bench_leash team should pull starters harder in the SAME
+# forced blowout than a "long" bench_leash team. Proven to fail pre-fix
+# (bench_leash was accepted as a parameter with no effect -- default
+# _BENCH_LEASH_SEVERITY_MULT dict + threading didn't exist) and pass post-fix.
+# ---------------------------------------------------------------------------
+
+
+def test_short_bench_leash_pulls_starters_harder_than_long_leash_in_same_blowout():
+    players_short = _make_blowout_roster(1, 1)
+    players_long = _make_blowout_roster(2, 1)
+
+    rng_short = Random(9)
+    box_short = _build_box_for_team(
+        rng_short, [dict(p) for p in players_short], team_id=1, team_score=125, score_diff=28,
+        bench_leash="short",
+    )
+    rng_long = Random(9)
+    box_long = _build_box_for_team(
+        rng_long, [dict(p) for p in players_long], team_id=2, team_score=125, score_diff=28,
+        bench_leash="long",
+    )
+
+    starter_minutes_short = sum(line["minutes"] for line in box_short[:5])
+    starter_minutes_long = sum(line["minutes"] for line in box_long[:5])
+
+    assert starter_minutes_short < starter_minutes_long, (
+        f"'short' bench_leash starters ({starter_minutes_short}) should play fewer minutes "
+        f"than 'long' bench_leash starters ({starter_minutes_long}) in the identical blowout"
+    )
+
+
+def test_bench_leash_defaults_to_normal_severity_when_unspecified():
+    """Omitting bench_leash entirely should behave identically to explicit "normal" --
+    a regression guard for existing callers that don't pass the new parameter."""
+    players_default = _make_blowout_roster(1, 1)
+    players_normal = _make_blowout_roster(2, 1)
+
+    rng_default = Random(11)
+    box_default = _build_box_for_team(
+        rng_default, [dict(p) for p in players_default], team_id=1, team_score=125, score_diff=28,
+    )
+    rng_normal = Random(11)
+    box_normal = _build_box_for_team(
+        rng_normal, [dict(p) for p in players_normal], team_id=2, team_score=125, score_diff=28,
+        bench_leash="normal",
+    )
+
+    assert [line["minutes"] for line in box_default] == [line["minutes"] for line in box_normal]

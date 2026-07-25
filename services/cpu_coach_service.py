@@ -62,10 +62,13 @@ async def _resolve_gameplan(
 
 
 async def _load_human_gameplan(pool, league_id: int, team_id: int, players: list[dict]) -> dict:
+    # CA4 (coaching AI realism sweep): bench_leash/transition_aggression were
+    # missing from this SELECT too (same class of bug as strategy_repo.get_strategy) --
+    # a human coach's chosen leash/transition setting was silently dropped every game.
     strategy_row = await pool.fetchrow(
         """
         SELECT offensive_pace, offensive_scheme, defensive_scheme,
-               defensive_intensity, star_usage
+               defensive_intensity, star_usage, bench_leash, transition_aggression
         FROM team_strategies
         WHERE league_id = $1 AND team_id = $2
         """,
@@ -78,6 +81,8 @@ async def _load_human_gameplan(pool, league_id: int, team_id: int, players: list
         "defensive_scheme": "man_to_man",
         "defensive_intensity": "normal",
         "star_usage": 50,
+        "bench_leash": "normal",
+        "transition_aggression": "balanced",
     }
 
     directive_rows = await pool.fetch(
@@ -517,12 +522,32 @@ def _decide_strategy(
     else:
         star_usage = rng.randint(55, 65)
 
+    # CA4 (coaching AI realism sweep): bench_leash/transition_aggression were
+    # columns on team_strategies with a DB default and a get_sim_modifiers
+    # pass-through, but no CPU coach ever set a real value -- every CPU team
+    # ran the neutral default forever. Driven off the same `posture` signal
+    # the rest of this function already uses: a tanking team pulls starters
+    # faster (short leash) and plays it safe in transition (retreat); a
+    # contender rides its rotation longer (long leash) and pushes the break
+    # (crash). Everyone else gets the neutral default.
+    if posture == "tanking":
+        bench_leash = "short"
+        transition_aggression = "retreat"
+    elif posture == "contender":
+        bench_leash = "long"
+        transition_aggression = "crash"
+    else:
+        bench_leash = "normal"
+        transition_aggression = "balanced"
+
     strategy = {
         "offensive_pace": offensive_pace,
         "offensive_scheme": offensive_scheme,
         "defensive_scheme": defensive_scheme,
         "defensive_intensity": defensive_intensity,
         "star_usage": star_usage,
+        "bench_leash": bench_leash,
+        "transition_aggression": transition_aggression,
     }
     return strategy, rationale_parts
 
