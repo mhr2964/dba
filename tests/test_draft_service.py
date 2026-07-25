@@ -175,7 +175,7 @@ async def _record_win(pool, league_id: int, winner_id: int, loser_id: int, game_
         INSERT INTO games
             (league_id, season, game_index, home_team_id, away_team_id,
              scheduled_date, status, home_score, away_score, is_user_matchup, rng_seed)
-        VALUES ($1, 2025, $2, $3, $4, $5, 'final', 100, 80, FALSE, 1)
+        VALUES ($1, 2025, $2, $3, $4, $5, 'simmed', 100, 80, FALSE, 1)
         """,
         league_id,
         game_index,

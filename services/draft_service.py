@@ -96,7 +96,7 @@ async def run_lottery(league_id: int, season: int) -> list[dict]:
                COALESCE(SUM(CASE WHEN g.home_team_id = t.id OR g.away_team_id = t.id THEN 1 ELSE 0 END), 0) AS games
         FROM teams t
         LEFT JOIN games g ON (g.home_team_id = t.id OR g.away_team_id = t.id)
-            AND g.league_id = $1 AND g.season = $2 AND g.status = 'final'
+            AND g.league_id = $1 AND g.season = $2 AND g.status = 'simmed'
         WHERE t.league_id = $1
         GROUP BY t.id, t.name, t.city
         ORDER BY wins ASC, games DESC
