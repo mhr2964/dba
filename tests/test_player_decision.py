@@ -41,12 +41,19 @@ def _league(day: int = 1, total: int = 8, best: int = 0) -> LeagueContext:
     )
 
 
-def _offer(salary: int, years: int = 3, wins: int = 45, current: bool = False) -> OfferContext:
+def _offer(
+    salary: int,
+    years: int = 3,
+    wins: int = 45,
+    current: bool = False,
+    cap_space: int = _CAP,
+) -> OfferContext:
     return OfferContext(
         salary_per_year=salary,
         years=years,
         team_wins=wins,
         team_is_current=current,
+        cap_space=cap_space,
     )
 
 
@@ -151,6 +158,49 @@ def test_high_leverage_waits_for_better() -> None:
 
     # 85-95% band, day 2 < total-2 (6), star_leverage 90 > 40 → WAIT
     assert decision == Decision.WAIT
+
+
+def test_decline_below_threshold() -> None:
+    """FA8: an offer well under 85% of asking, not on the last day, is a real
+    decline — not a fallback sign."""
+    profile = _profile(age=25, overall=78, star_leverage=40, loyalty=40, win_drive=40)
+    floor = _salary_floor(profile, _CAP)
+    lowball = int(floor * 0.70)  # well under the 85% decline threshold
+
+    offer = _offer(salary=lowball, wins=20, current=False)
+    league = _league(day=1, total=8, best=lowball)  # far from the last day
+
+    decision, counter_sal, counter_yrs = decide(profile, offer, league, [offer])
+
+    assert decision == Decision.DECLINE
+    assert counter_sal is None
+    assert counter_yrs is None
+
+
+def test_counter_bounded_by_offering_teams_cap_space() -> None:
+    """FA5: counter_sal must never exceed the offering team's real remaining
+    cap space — previously bounded only by a flat 35%-of-cap constant
+    regardless of whether that specific team actually had that much room.
+    """
+    profile = _profile(age=29, overall=90, star_leverage=85, win_drive=50, loyalty=40)
+    floor = _salary_floor(profile, _CAP)
+    this_salary = int(floor * 0.96)       # >=95% of asking reaches the counter branch
+    best_salary = int(this_salary * 1.2)  # competing offer > salary * 1.1
+
+    tight_cap_space = 4_000_000  # far below both asking*1.05 and cap*0.35
+
+    offer = _offer(salary=this_salary, wins=35, current=False, cap_space=tight_cap_space)
+    league = _league(day=2, total=8, best=best_salary)
+
+    decision, counter_sal, counter_yrs = decide(profile, offer, league, [offer])
+
+    assert decision == Decision.COUNTER
+    assert counter_sal is not None
+    # The cap-space bound is the binding constraint here — well below the
+    # asking*1.05 and cap*0.35 ceilings the old code would have allowed.
+    assert counter_sal <= tight_cap_space
+    assert counter_sal < int(this_salary * 1.05)
+    assert counter_sal < int(_CAP * 0.35)
 
 
 def test_salary_floor_decreases_with_age() -> None:

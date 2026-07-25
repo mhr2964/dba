@@ -11,6 +11,11 @@ class Decision(str, Enum):
     COUNTER = "counter"
 
 
+# Mirrors fa_service._MIN_SALARY. Duplicated rather than imported to avoid a
+# circular import (fa_service already imports from this module).
+_MIN_SALARY = 1_100_000
+
+
 @dataclass
 class PlayerProfile:
     overall: int
@@ -20,6 +25,9 @@ class PlayerProfile:
     money_drive: int    # 0-100
     win_drive: int      # 0-100
     star_leverage: int  # 0-100: determines ability to counter/wait
+    # FA4: 'big_market' | 'neutral' | 'indifferent' — small asking-price nudge.
+    # Defaults to 'neutral' so existing PlayerProfile() call sites don't break.
+    market_pref: str = "neutral"
 
 
 @dataclass
@@ -28,6 +36,10 @@ class OfferContext:
     years: int
     team_wins: int
     team_is_current: bool
+    # FA5: offering team's real remaining cap space at the moment this offer
+    # context was built. Bounds the COUNTER branch's counter_sal so a team
+    # with little room can't get counter-demanded into a salary it can't pay.
+    cap_space: int
 
 
 @dataclass
@@ -70,7 +82,14 @@ def decide(
             effective["star_leverage"] > 70
             and league.best_offer_this_day > salary * 1.1
         ):
-            counter_sal = min(int(asking * 1.05), int(league.salary_cap * 0.35))
+            # FA5: bound by the offering team's actual remaining cap space, not
+            # just a flat 35%-of-cap ceiling — a team with little room left
+            # shouldn't get counter-demanded into a salary it can't legally pay.
+            counter_sal = min(
+                int(asking * 1.05),
+                int(league.salary_cap * 0.35),
+                max(offer.cap_space, _MIN_SALARY),
+            )
             return Decision.COUNTER, counter_sal, offer.years
 
         return Decision.SIGN, None, None
@@ -134,5 +153,14 @@ def _salary_floor(profile: PlayerProfile, salary_cap: int) -> int:
 
     if profile.age >= 35:
         floor = int(floor * 0.70)
+
+    # FA4: market_pref nudges asking price a small amount. There is no team
+    # market-size attribute in the schema (out of scope — see
+    # docs/design/fa-logic-rules.md's deferred items), so this reflects only
+    # the player's own generated preference, not a real team/market fit.
+    if profile.market_pref == "indifferent":
+        floor = int(floor * 0.97)
+    elif profile.market_pref == "big_market":
+        floor = int(floor * 1.03)
 
     return floor
