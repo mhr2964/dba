@@ -10,6 +10,7 @@ patch_get_pool (autouse) routes progression_service.get_pool to db_pool.
 from __future__ import annotations
 
 import datetime
+from unittest.mock import patch
 
 from services import progression_service
 
@@ -256,3 +257,231 @@ async def test_injury_setback_branch(db_pool):
         player_id,
     )
     assert count > 0, "Expected an injury_setback progression_log row"
+
+
+# ---------------------------------------------------------------------------
+# P6 (larger version) — role-fit compounding signal: batched player_roles
+# query, season alignment, and the documented uncovered-role/no-row fallback.
+# ---------------------------------------------------------------------------
+
+
+async def _set_tendencies(pool, player_id: int, **tendencies) -> None:
+    """
+    UPDATE tendency columns directly — _insert_active_player's INSERT
+    statement doesn't list them (they rely on DB column defaults), so
+    overrides passed to it are silently ignored for these fields.
+    """
+    set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(tendencies))
+    await pool.execute(
+        f"UPDATE players SET {set_clause} WHERE id = $1",
+        player_id,
+        *tendencies.values(),
+    )
+
+
+async def _give_healthy_minutes(
+    pool, league_id: int, team_id: int, player_id: int, season: int, games: int = 12
+) -> None:
+    """
+    Seed enough well-minuted 'simmed' games that low_minutes does NOT fire —
+    isolates the role-fit signal under test from the already-covered
+    low_minutes penalty (games > 10 and avg_min >= 15).
+    """
+    for i in range(games):
+        game_row = await pool.fetchrow(
+            """
+            INSERT INTO games (
+                league_id, season, season_type, game_index,
+                home_team_id, away_team_id, scheduled_date,
+                status, home_score, away_score, winner_team_id
+            ) VALUES ($1, $2, 'regular', $3, $4, $4, '2025-01-01', 'simmed', 100, 95, $4)
+            RETURNING id
+            """,
+            league_id,
+            season,
+            i + 1,
+            team_id,
+        )
+        await pool.execute(
+            """
+            INSERT INTO game_box_scores (game_id, player_id, team_id, minutes, points)
+            VALUES ($1, $2, $3, 30, 15)
+            """,
+            game_row["id"],
+            player_id,
+            team_id,
+        )
+
+
+async def _insert_player_role(
+    pool, league_id: int, team_id: int, season: int, player_id: int, role: str
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO player_roles
+            (league_id, team_id, season, player_id, role, touch_share, rationale,
+             assigned_by, locked, assigned_at)
+        VALUES ($1, $2, $3, $4, $5, 0.2, '', 'cpu', FALSE, NOW())
+        """,
+        league_id,
+        team_id,
+        season,
+        player_id,
+        role,
+    )
+
+
+def _patch_random_max_growth():
+    """
+    Same deterministic-growth patch test_progression.py's
+    test_progression_writes_log/test_overall_never_exceeds_99 already use:
+    forces max randint rolls and skips breakout, so the role-fit tests below
+    get a guaranteed, non-zero "overall" delta to nudge instead of risking a
+    randomly-drawn 0 that a -1 mismatch nudge could mask entirely.
+    """
+    return patch("services.progression_service.random")
+
+
+async def test_role_fit_mismatch_tags_progression_log(db_pool):
+    """
+    A player whose tendencies clearly miss primary_initiator's expected
+    profile (tendency_pass, ast_tendency both far below threshold) gets a
+    role_fit_mismatch progression_log entry when player_roles has a row for
+    the SAME season run_progression is called with.
+    """
+    league_id, team_id, player_id = await _setup(db_pool)
+    await _set_tendencies(db_pool, player_id, tendency_pass=20, ast_tendency=20)
+    await _give_healthy_minutes(db_pool, league_id, team_id, player_id, season=2025)
+    await _insert_player_role(
+        db_pool, league_id, team_id, season=2025, player_id=player_id, role="primary_initiator"
+    )
+
+    with _patch_random_max_growth() as mock_rng:
+        mock_rng.randint = lambda lo, hi: hi
+        mock_rng.random = lambda: 0.5
+        mock_rng.choices = lambda seq, weights=None: [seq[0]]
+        mock_rng.sample = lambda pop, k: list(pop)[:k]
+        await progression_service.run_progression(league_id, season=2025)
+
+    count = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM progression_log
+        WHERE league_id = $1 AND player_id = $2 AND reason = 'role_fit_mismatch'
+        """,
+        league_id,
+        player_id,
+    )
+    assert count > 0, "Expected a role_fit_mismatch progression_log row"
+
+
+async def test_role_fit_match_tags_progression_log(db_pool):
+    """Mirror of the mismatch test above, with tendencies well above threshold."""
+    league_id, team_id, player_id = await _setup(db_pool)
+    await _set_tendencies(db_pool, player_id, tendency_pass=80, ast_tendency=80)
+    await _give_healthy_minutes(db_pool, league_id, team_id, player_id, season=2025)
+    await _insert_player_role(
+        db_pool, league_id, team_id, season=2025, player_id=player_id, role="primary_initiator"
+    )
+
+    with _patch_random_max_growth() as mock_rng:
+        mock_rng.randint = lambda lo, hi: hi
+        mock_rng.random = lambda: 0.5
+        mock_rng.choices = lambda seq, weights=None: [seq[0]]
+        mock_rng.sample = lambda pop, k: list(pop)[:k]
+        await progression_service.run_progression(league_id, season=2025)
+
+    count = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM progression_log
+        WHERE league_id = $1 AND player_id = $2 AND reason = 'role_fit_match'
+        """,
+        league_id,
+        player_id,
+    )
+    assert count > 0, "Expected a role_fit_match progression_log row"
+
+
+async def test_role_fit_query_aligns_with_season_param(db_pool):
+    """
+    P1's season-handoff bug (this exact pipeline) is the reason this alignment
+    isn't just assumed: seeds the player_roles row under a DIFFERENT season
+    than run_progression is called with, and confirms the role-fit signal
+    does NOT fire — proving the batched query filters on the exact `season`
+    argument passed in, not some other season number (e.g. current_season).
+    """
+    league_id, team_id, player_id = await _setup(db_pool)
+    await _set_tendencies(db_pool, player_id, tendency_pass=20, ast_tendency=20)
+    await _give_healthy_minutes(db_pool, league_id, team_id, player_id, season=2025)
+    # Role row lives under season 2026 — run_progression below is called with 2025.
+    await _insert_player_role(
+        db_pool, league_id, team_id, season=2026, player_id=player_id, role="primary_initiator"
+    )
+
+    with _patch_random_max_growth() as mock_rng:
+        mock_rng.randint = lambda lo, hi: hi
+        mock_rng.random = lambda: 0.5
+        mock_rng.choices = lambda seq, weights=None: [seq[0]]
+        mock_rng.sample = lambda pop, k: list(pop)[:k]
+        await progression_service.run_progression(league_id, season=2025)
+
+    count = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM progression_log
+        WHERE league_id = $1 AND player_id = $2 AND reason LIKE 'role_fit_%'
+        """,
+        league_id,
+        player_id,
+    )
+    assert count == 0, (
+        "role_fit signal fired despite player_roles row being under a different "
+        "season than run_progression was called with — query is not season-aligned"
+    )
+
+
+async def test_role_fit_uncovered_role_no_adjustment(db_pool):
+    """
+    A role outside _ROLE_EXPECTED_TENDENCIES coverage (glue_guy — one of the
+    documented 6 uncovered roles) must produce no role_fit log tag at all —
+    falls back to today's low-minutes-only behavior exactly.
+    """
+    league_id, team_id, player_id = await _setup(db_pool)
+    await _give_healthy_minutes(db_pool, league_id, team_id, player_id, season=2025)
+    await _insert_player_role(
+        db_pool, league_id, team_id, season=2025, player_id=player_id, role="glue_guy"
+    )
+
+    await progression_service.run_progression(league_id, season=2025)
+
+    count = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM progression_log
+        WHERE league_id = $1 AND player_id = $2 AND reason LIKE 'role_fit_%'
+        """,
+        league_id,
+        player_id,
+    )
+    assert count == 0, "Uncovered role produced a role_fit log tag — should be a no-op"
+
+
+async def test_role_fit_missing_player_roles_row_no_adjustment(db_pool):
+    """
+    A brand-new active player with no player_roles row yet (e.g. hasn't had
+    roles derived this season, same as a freshly drafted rookie without D3's
+    Option A) gets no role_fit adjustment — confirms the None fallback from
+    role_by_player.get() behaves exactly like the uncovered-role case.
+    """
+    league_id, team_id, player_id = await _setup(db_pool)
+    await _give_healthy_minutes(db_pool, league_id, team_id, player_id, season=2025)
+    # Deliberately no player_roles row inserted for this player.
+
+    await progression_service.run_progression(league_id, season=2025)
+
+    count = await db_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM progression_log
+        WHERE league_id = $1 AND player_id = $2 AND reason LIKE 'role_fit_%'
+        """,
+        league_id,
+        player_id,
+    )
+    assert count == 0, "Missing player_roles row still produced a role_fit tag"

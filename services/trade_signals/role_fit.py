@@ -1,6 +1,8 @@
 """Role-fit detector: surfaces mismatch or match between player tendencies and current role."""
 from __future__ import annotations
 
+from typing import Literal, Optional
+
 from ._registry import SignalContext, register_signal
 
 _ROLE_EXPECTED_TENDENCIES: dict[str, dict[str, int]] = {
@@ -25,6 +27,41 @@ _ROLE_EXPECTED_TENDENCIES: dict[str, dict[str, int]] = {
 }
 
 
+def classify_role_fit(tendencies: dict, role: Optional[str]) -> Optional[Literal["mismatch", "match"]]:
+    """Classify a player's tendency profile against a role's expected thresholds.
+
+    Cheap, self-contained classifier — only needs the player's own tendency
+    fields (a plain dict) plus their role string, no roster-wide/philosophy
+    context. This is the single place `_ROLE_EXPECTED_TENDENCIES` and its
+    threshold math live; both the trade-signal detector below and
+    `progression_service`'s role-fit compounding signal call this.
+
+    Returns "mismatch" when every expected tendency for the role misses its
+    threshold by more than 10, "match" when every one clears it by more than
+    10, and None when the role isn't in `_ROLE_EXPECTED_TENDENCIES` or the
+    profile is genuinely mixed (some tendencies hit, some miss) — callers
+    should treat None as "no signal," not as an error.
+    """
+    if not role or role not in _ROLE_EXPECTED_TENDENCIES:
+        return None
+
+    expected = _ROLE_EXPECTED_TENDENCIES[role]
+    misses = [
+        tend for tend, threshold in expected.items()
+        if (tendencies.get(tend) or 0) < threshold - 10
+    ]
+    matches = [
+        tend for tend, threshold in expected.items()
+        if (tendencies.get(tend) or 0) >= threshold + 10
+    ]
+
+    if misses and not matches:
+        return "mismatch"
+    if matches and not misses:
+        return "match"
+    return None
+
+
 @register_signal("role_fit")
 def detect(ctx: SignalContext):
     """Surface mismatch (+0.04 buy-low) or clean match (+0.05) between tendencies and role."""
@@ -33,22 +70,13 @@ def detect(ctx: SignalContext):
     incoming_role = ctx.incoming_role
     incoming_player = ctx.incoming_player
 
-    if not incoming_role or incoming_role not in _ROLE_EXPECTED_TENDENCIES:
+    classification = classify_role_fit(incoming_player, incoming_role)
+    if classification is None:
         return None
-
-    expected = _ROLE_EXPECTED_TENDENCIES[incoming_role]
-    misses = [
-        tend for tend, threshold in expected.items()
-        if (incoming_player.get(tend) or 0) < threshold - 10
-    ]
-    matches = [
-        tend for tend, threshold in expected.items()
-        if (incoming_player.get(tend) or 0) >= threshold + 10
-    ]
 
     role_label = incoming_role.replace("_", " ")
 
-    if misses and not matches:
+    if classification == "mismatch":
         return ContextSignal(
             delta=+0.04,
             reason=(
@@ -57,10 +85,8 @@ def detect(ctx: SignalContext):
             ),
             code="role_mismatch",
         )
-    if matches and not misses:
-        return ContextSignal(
-            delta=+0.05,
-            reason=f"his tendencies are a clean fit for the {role_label} role.",
-            code="role_fit_match",
-        )
-    return None
+    return ContextSignal(
+        delta=+0.05,
+        reason=f"his tendencies are a clean fit for the {role_label} role.",
+        code="role_fit_match",
+    )

@@ -468,6 +468,137 @@ def test_low_minutes_penalty_applied_in_decline_stage():
     )
 
 
+# ---------------------------------------------------------------------------
+# P6 (larger version) — role-fit compounding signal
+#
+# classify_role_fit's own threshold logic lives in
+# services/trade_signals/role_fit.py and is exercised there / via the trade
+# signal registry; these tests only cover _build_deltas_*'s +/-1 nudge
+# (docs/design/progression-logic-rules.md P6) — a flat, unconditional offset
+# on the "overall" delta applied AFTER the low_minutes-influenced draw, so
+# re-seeding random identically before each role_fit variant produces exact
+# pairwise-comparable sequences (no statistical cushion needed).
+# ---------------------------------------------------------------------------
+
+
+def test_role_fit_mismatch_and_match_nudge_growth_overall():
+    """
+    _build_deltas_growth's overall delta shifts by exactly -1 for
+    role_fit="mismatch" and +1 for role_fit="match" relative to role_fit=None,
+    for both low_minutes states — mismatch compounds in the same (worse)
+    direction low_minutes already nudges; match offsets it.
+    """
+    player = _make_bare_player()
+    for low_minutes in (False, True):
+        random.seed(3131)
+        baseline = [
+            progression_service._build_deltas_growth(player, 0.6, low_minutes)["overall"]
+            for _ in range(200)
+        ]
+        random.seed(3131)
+        mismatch = [
+            progression_service._build_deltas_growth(player, 0.6, low_minutes, role_fit="mismatch")["overall"]
+            for _ in range(200)
+        ]
+        random.seed(3131)
+        match = [
+            progression_service._build_deltas_growth(player, 0.6, low_minutes, role_fit="match")["overall"]
+            for _ in range(200)
+        ]
+        assert all(m == b - 1 for b, m in zip(baseline, mismatch)), (
+            f"growth mismatch nudge not exactly -1 vs baseline (low_minutes={low_minutes})"
+        )
+        assert all(m == b + 1 for b, m in zip(baseline, match)), (
+            f"growth match nudge not exactly +1 vs baseline (low_minutes={low_minutes})"
+        )
+
+
+def test_role_fit_mismatch_and_match_nudge_stable_overall():
+    """Same +/-1 compounding contract as growth, for _build_deltas_stable."""
+    player = _make_bare_player()
+    for low_minutes in (False, True):
+        random.seed(5151)
+        baseline = [
+            progression_service._build_deltas_stable(player, low_minutes)["overall"]
+            for _ in range(200)
+        ]
+        random.seed(5151)
+        mismatch = [
+            progression_service._build_deltas_stable(player, low_minutes, role_fit="mismatch")["overall"]
+            for _ in range(200)
+        ]
+        random.seed(5151)
+        match = [
+            progression_service._build_deltas_stable(player, low_minutes, role_fit="match")["overall"]
+            for _ in range(200)
+        ]
+        assert all(m == b - 1 for b, m in zip(baseline, mismatch)), (
+            f"stable mismatch nudge not exactly -1 vs baseline (low_minutes={low_minutes})"
+        )
+        assert all(m == b + 1 for b, m in zip(baseline, match)), (
+            f"stable match nudge not exactly +1 vs baseline (low_minutes={low_minutes})"
+        )
+
+
+def test_role_fit_mismatch_and_match_nudge_decline_overall():
+    """Same +/-1 compounding contract as growth/stable, for _build_deltas_decline."""
+    player = _make_bare_player()
+    for low_minutes in (False, True):
+        random.seed(7171)
+        baseline = [
+            progression_service._build_deltas_decline(player, age=34, low_minutes=low_minutes)["overall"]
+            for _ in range(200)
+        ]
+        random.seed(7171)
+        mismatch = [
+            progression_service._build_deltas_decline(
+                player, age=34, low_minutes=low_minutes, role_fit="mismatch"
+            )["overall"]
+            for _ in range(200)
+        ]
+        random.seed(7171)
+        match = [
+            progression_service._build_deltas_decline(
+                player, age=34, low_minutes=low_minutes, role_fit="match"
+            )["overall"]
+            for _ in range(200)
+        ]
+        assert all(m == b - 1 for b, m in zip(baseline, mismatch)), (
+            f"decline mismatch nudge not exactly -1 vs baseline (low_minutes={low_minutes})"
+        )
+        assert all(m == b + 1 for b, m in zip(baseline, match)), (
+            f"decline match nudge not exactly +1 vs baseline (low_minutes={low_minutes})"
+        )
+
+
+def test_role_fit_none_is_exact_pre_p6_fallback():
+    """
+    role_fit=None (the default, e.g. uncovered role or no player_roles row)
+    must produce byte-for-byte the same deltas as calling _build_deltas_*
+    without the role_fit argument at all — the regression-proof for "falls
+    back to today's exact behavior."
+    """
+    player = _make_bare_player()
+
+    random.seed(9191)
+    growth_old = progression_service._build_deltas_growth(player, 0.5, low_minutes=True)
+    random.seed(9191)
+    growth_new = progression_service._build_deltas_growth(player, 0.5, low_minutes=True, role_fit=None)
+    assert growth_old == growth_new
+
+    random.seed(9191)
+    stable_old = progression_service._build_deltas_stable(player, low_minutes=False)
+    random.seed(9191)
+    stable_new = progression_service._build_deltas_stable(player, low_minutes=False, role_fit=None)
+    assert stable_old == stable_new
+
+    random.seed(9191)
+    decline_old = progression_service._build_deltas_decline(player, age=40, low_minutes=True)
+    random.seed(9191)
+    decline_new = progression_service._build_deltas_decline(player, age=40, low_minutes=True, role_fit=None)
+    assert decline_old == decline_new
+
+
 async def test_barely_played_player_gets_penalty_not_exemption(db_pool):
     """
     A deep-bench player with <=10 games played (but a perfectly healthy
