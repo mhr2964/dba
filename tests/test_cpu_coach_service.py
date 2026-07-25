@@ -3,8 +3,9 @@ Characterization + behavior tests for services.cpu_coach_service.
 
 Zero coverage existed for this module before this file, despite it being the
 LIVE per-game gameplan decision path (sim_orchestrator._sim_single_game calls
-cpu_coach_service.decide_gameplans unconditionally; auto_strategy.infer_archetype
-is dead code by comparison -- see docs/design for the realism-audit background).
+cpu_coach_service.decide_gameplans unconditionally; the old auto_strategy.py
+archetype-inference module was dead code by comparison and was deleted in
+CA7 -- see docs/design/coaching-ai-logic-rules.md for the realism-audit background).
 """
 from __future__ import annotations
 

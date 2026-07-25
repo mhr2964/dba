@@ -3,17 +3,7 @@ from __future__ import annotations
 import asyncpg
 
 from data.repositories import strategy_repo
-from services.auto_strategy import infer_archetype
 from services.sim_engine import _scheme_fit_factor
-
-# Module-level inference cache keyed by (league_id, team_id).
-# Cleared at the start of each batch run via clear_archetype_cache().
-_archetype_cache: dict[tuple[int, int], dict] = {}
-
-
-def clear_archetype_cache() -> None:
-    """Call once at the start of a batch sim run so stale inferences don't persist."""
-    _archetype_cache.clear()
 
 
 async def get_sim_modifiers(
@@ -27,15 +17,21 @@ async def get_sim_modifiers(
     Returns a dict of modifier values that sim_engine applies on top of base math.
     All values default to zero/one (no effect) when no strategy row exists.
 
-    When `override_strategy` is provided, the DB read and archetype cache are
-    skipped entirely — modifiers are computed directly from the override dict.
-    This path is used by the CPU coach so the DB is not consulted mid-sim.
+    When `override_strategy` is provided, the DB read is skipped entirely --
+    modifiers are computed directly from the override dict. This path is used
+    by the CPU coach so the DB is not consulted mid-sim.
 
-    When `players` is provided and the team's strategy is all defaults (indicating
-    no custom strategy has been set), auto-strategy inference is applied instead.
-    The returned dict includes `archetype_label` for Pat Chen enrichment.
+    CA7 (coaching AI realism sweep): this used to also run auto-strategy
+    inference (services/auto_strategy.py, since deleted) when a team's
+    strategy was all defaults and a player list was provided -- confirmed
+    dead code, since the only real caller that ever passes `players=`
+    (sim_orchestrator._build_pre_sim_inputs) ALWAYS also passes
+    `override_strategy`, which short-circuits before that branch could ever
+    run. `archetype_label`/`get_team_archetype_label` are kept as an
+    always-None stub below since sim_content_pipeline.py's Pat Chen
+    enrichment still calls the latter and already handles a None result.
 
-    When `players` is provided (regardless of override_strategy), it is ALSO used
+    When `players` is provided (regardless of override_strategy), it is used
     to condition the press/switch_all defensive-scheme modifiers on the team's own
     roster (finding #2, realism audit): press's opp_turnover_adj benefit and its
     new foul_adj downside scale with the roster's average `speed`; switch_all's
@@ -44,35 +40,10 @@ async def get_sim_modifiers(
     magnitudes (preserves behavior for callers that don't have roster data handy,
     e.g. bot/cogs/strategy_cog.py's preview embeds).
     """
-    archetype_label: str | None = None
-
     if override_strategy is not None:
         strategy = override_strategy
     else:
         strategy = await strategy_repo.get_strategy(pool, league_id, team_id)
-
-        # Auto-strategy inference: if the team has no custom strategy (all fields are
-        # defaults) and a player list was provided, infer from roster attributes.
-        _is_default = (
-            strategy["offensive_pace"] == "balanced"
-            and strategy["offensive_scheme"] == "balanced"
-            and strategy["defensive_scheme"] == "man_to_man"
-            and strategy["defensive_intensity"] == "normal"
-        )
-        if _is_default and players:
-            cache_key = (league_id, team_id)
-            if cache_key not in _archetype_cache:
-                _archetype_cache[cache_key] = infer_archetype(players)
-            inferred = _archetype_cache[cache_key]
-            # Overlay inferred values on top of the defaults so any partial custom
-            # setting would still take precedence (though here all are default).
-            strategy = dict(strategy)
-            strategy["offensive_scheme"] = inferred["offensive_scheme"]
-            strategy["offensive_pace"] = inferred["offensive_pace"]
-            strategy["defensive_scheme"] = inferred["defensive_scheme"]
-            strategy["defensive_intensity"] = inferred["defensive_intensity"]
-            strategy["star_usage"] = inferred["star_usage"]
-            archetype_label = inferred["archetype_label"]
 
     pace_adjustment: float = 0.0
     ppp_offense_mult: float = 1.0
@@ -216,7 +187,11 @@ async def get_sim_modifiers(
         "opp_turnover_adj": opp_turnover_adj,
         "foul_adj": foul_adj,
         "star_usage_mult": star_usage_mult,
-        "archetype_label": archetype_label,
+        # CA7: archetype inference (services/auto_strategy.py) was deleted as
+        # confirmed dead code -- this key is always None now. Kept in the
+        # return shape so existing callers (e.g. sim_content_pipeline.py's
+        # Pat Chen enrichment) don't need a contract change.
+        "archetype_label": None,
         "offensive_scheme": scheme,
         "defensive_scheme": defense,
         "transition_aggression": strategy.get("transition_aggression", "balanced"),
@@ -225,5 +200,9 @@ async def get_sim_modifiers(
 
 
 def get_team_archetype_label(league_id: int, team_id: int) -> str | None:
-    """Return the cached archetype label for a team if inference was run this batch."""
-    return _archetype_cache.get((league_id, team_id), {}).get("archetype_label")
+    """Always None post-CA7 -- auto-strategy archetype inference (the only
+    thing that ever populated this) was deleted as confirmed dead code.
+    Kept as a stub so sim_content_pipeline.py's Pat Chen enrichment (its only
+    caller) doesn't need a contract change; it already treats a None result
+    as "no archetype label available" and filters it out."""
+    return None

@@ -309,7 +309,6 @@ async def sim_until_rival(
     bot: Optional[discord.Client] = None,
     suppress_matchup_alert: bool = False,
 ) -> dict:
-    strategy_service.clear_archetype_cache()
     pool = await get_pool()
     total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
     deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
@@ -489,7 +488,6 @@ async def sim_range(
     bot: Optional[discord.Client] = None,
     force: bool = False,
 ) -> dict:
-    strategy_service.clear_archetype_cache()
     pool = await get_pool()
     total_regular_games = await game_repo.get_total_regular_season_games(pool, league_id, season)
     deadline_game_index = await game_repo.get_deadline_game_index(pool, league_id, season)
