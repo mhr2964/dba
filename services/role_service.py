@@ -143,7 +143,14 @@ async def derive_roles(
         log.warning("role_service: unknown philosophy '%s', falling back", philosophy)
         philosophy = "tendency_respecter"
 
-    # Fetch rostered players (slots 1-15)
+    # Fetch rostered players (slots 1-15). D3 Option B (docs/design/
+    # draft-logic-rules.md): also pull is_rookie/years_pro (players table) and
+    # pick_number (draft_selections, joined via drafts to scope to this
+    # player's own draft -- a player is selected at most once, so this LEFT
+    # JOIN resolves to at most one row per player regardless of league/season
+    # filters) so _score_role_fit's rookie-pedigree bias has the signal it
+    # needs. NULL pick_number/years_pro (undrafted seed players, legacy data)
+    # is handled as a no-op by _rookie_pedigree_bonus.
     rows = await conn.fetch(
         """
         SELECT
@@ -161,9 +168,13 @@ async def derive_roles(
             p.defense_tendency,
             p.usage_weight,
             p.defensive_archetype,
+            p.is_rookie,
+            p.years_pro,
+            ds.pick_number,
             l.slot
         FROM lineups l
         JOIN players p ON p.id = l.player_id
+        LEFT JOIN draft_selections ds ON ds.player_id = p.id
         WHERE l.league_id = $1
           AND l.team_id   = $2
           AND l.slot BETWEEN 1 AND 15
@@ -199,6 +210,9 @@ async def derive_roles(
             "defense_tendency": r["defense_tendency"],
             "usage_weight": r["usage_weight"],
             "defensive_archetype": r["defensive_archetype"],
+            "is_rookie": r["is_rookie"],
+            "years_pro": r["years_pro"],
+            "pick_number": r["pick_number"],
             "slot": r["slot"],
         })
 
