@@ -52,11 +52,14 @@ _ALL_ATTRS = [
 ]
 
 # OVR range per draft slot tier: (base_min, base_max)
+# D2 (docs/design/draft-logic-rules.md): widened ~3-4pts on each end vs. the
+# original bands so draft slot no longer so tightly predetermines realized
+# `overall` — a tuning change, ranges still ordered same as before.
 _TIER_RANGES = [
-    (5,  72, 82),   # picks 1-5: elite
-    (14, 66, 75),   # picks 6-14: lottery
-    (30, 60, 70),   # picks 15-30: first round second half
-    (60, 55, 65),   # picks 31-60: second round
+    (5,  68, 86),   # picks 1-5: elite
+    (14, 62, 79),   # picks 6-14: lottery
+    (30, 56, 74),   # picks 15-30: first round second half
+    (60, 51, 69),   # picks 31-60: second round
 ]
 
 
@@ -64,7 +67,23 @@ def _tier_for_slot(slot: int) -> tuple[int, int]:
     for cutoff, lo, hi in _TIER_RANGES:
         if slot <= cutoff:
             return lo, hi
-    return 55, 65
+    return 51, 69
+
+
+# D2: mean potential-delta (potential - overall) by draft slot tier. Early
+# picks trend toward a higher ceiling on average (scouting isn't pure noise),
+# but sigma=10 in generate_draft_class means real busts (delta < 0) and real
+# late-pick booms (delta > 0) both happen — unlike the old
+# `overall + randint(0, 15)` formula, which made potential < overall
+# impossible for every prospect in the class.
+def _slot_tier_bust_boom_mu(slot: int) -> int:
+    if slot <= 5:
+        return 6
+    if slot <= 14:
+        return 3
+    if slot <= 30:
+        return 0
+    return -2
 
 
 def _clamp(val: int, lo: int, hi: int) -> int:
@@ -105,7 +124,8 @@ def generate_draft_class(year: int, num_players: int = 60) -> list[dict]:
                 used_names.add(full)
                 break
 
-        potential = _clamp(overall + random.randint(0, 15), 50, 99)
+        potential_delta = round(random.gauss(mu=_slot_tier_bust_boom_mu(slot), sigma=10))
+        potential = _clamp(overall + potential_delta, 50, 99)
         peak_start = random.randint(24, 28)
         peak_end = peak_start + random.randint(4, 6)
 
