@@ -114,3 +114,109 @@ async def test_young_player_not_inducted(db_pool) -> None:
         league_id, player_id,
     )
     assert row is None, "No hall_of_fame row should exist for an ineligible player"
+
+
+# ---------------------------------------------------------------------------
+# PA10 -- All-NBA / All-Star selection-count induction path
+# PA11 -- retirement/age gate on every non-longevity path
+# ---------------------------------------------------------------------------
+
+
+async def _insert_award_result(pool, league_id: int, season: int, award_type: str, player_id: int) -> None:
+    """Insert one award_votings + award_results row, same shape _count_mvp_votes
+    already reads for the mvp path -- used here to seed All-NBA/All-Star/MVP
+    selection counts across several seasons."""
+    voting_id = await pool.fetchval(
+        """
+        INSERT INTO award_votings (league_id, season, award_type, status)
+        VALUES ($1, $2, $3, 'closed')
+        RETURNING id
+        """,
+        league_id, season, award_type,
+    )
+    await pool.execute(
+        """
+        INSERT INTO award_results (voting_id, player_id, place, vote_count, vote_share)
+        VALUES ($1, $2, 1, 10, 1.0)
+        """,
+        voting_id, player_id,
+    )
+
+
+async def test_all_nba_selection_path_inducts_retired_player(db_pool) -> None:
+    """PA10: 5+ All-NBA selections is sufficient for induction on its own."""
+    league_id, _team_id, player_id = await _insert_league_team_player(
+        db_pool, years_pro=10, overall=78, roster_status="retired"
+    )
+    for season in range(2015, 2020):  # 5 seasons
+        await _insert_award_result(db_pool, league_id, season, "all_nba_2", player_id)
+
+    inducted = await check_and_induct(db_pool, league_id, 2025)
+
+    assert any(r["player_id"] == player_id for r in inducted)
+    row = await db_pool.fetchrow(
+        "SELECT induction_reason FROM hall_of_fame WHERE league_id=$1 AND player_id=$2",
+        league_id, player_id,
+    )
+    assert "all-nba" in row["induction_reason"].lower()
+
+
+async def test_all_star_selection_path_inducts_retired_player(db_pool) -> None:
+    """PA10: 8+ All-Star selections is sufficient on its own."""
+    league_id, _team_id, player_id = await _insert_league_team_player(
+        db_pool, years_pro=10, overall=76, roster_status="retired"
+    )
+    for season in range(2012, 2020):  # 8 seasons
+        await _insert_award_result(db_pool, league_id, season, "all_star_east", player_id)
+
+    inducted = await check_and_induct(db_pool, league_id, 2025)
+
+    assert any(r["player_id"] == player_id for r in inducted)
+
+
+async def test_pa11_gate_blocks_early_career_all_nba_stack(db_pool) -> None:
+    """PA11: a still-active player with years_pro < 8 must NOT be inducted
+    off All-NBA selections alone, even with 5+ of them -- pre-fix, no
+    retirement/age gate existed on this (or any non-longevity) path."""
+    league_id, _team_id, player_id = await _insert_league_team_player(
+        db_pool, years_pro=4, overall=88, roster_status="active"
+    )
+    for season in range(2021, 2026):
+        await _insert_award_result(db_pool, league_id, season, "all_nba_1", player_id)
+
+    inducted = await check_and_induct(db_pool, league_id, 2025)
+
+    assert not any(r["player_id"] == player_id for r in inducted), (
+        "An active player with years_pro < 8 should not be inducted off "
+        "All-NBA selections alone (PA11 gate)"
+    )
+
+
+async def test_pa11_gate_blocks_early_career_mvp_votes(db_pool) -> None:
+    """PA11 also gates the pre-existing MVP-votes path, not just the new PA10 path."""
+    league_id, _team_id, player_id = await _insert_league_team_player(
+        db_pool, years_pro=3, overall=90, roster_status="active"
+    )
+    for season in range(2022, 2031):  # 9 seasons of mvp votes -- exceeds the 8-vote threshold
+        await _insert_award_result(db_pool, league_id, season, "mvp", player_id)
+
+    inducted = await check_and_induct(db_pool, league_id, 2025)
+
+    assert not any(r["player_id"] == player_id for r in inducted), (
+        "An active player with years_pro < 8 should not be inducted off "
+        "career MVP votes alone (PA11 gate)"
+    )
+
+
+async def test_pa11_gate_satisfied_by_years_pro_even_if_still_active(db_pool) -> None:
+    """PA11's gate is roster_status='retired' OR years_pro >= 8 -- years_pro
+    alone should satisfy it for a still-active player."""
+    league_id, _team_id, player_id = await _insert_league_team_player(
+        db_pool, years_pro=9, overall=80, roster_status="active"
+    )
+    for season in range(2015, 2020):
+        await _insert_award_result(db_pool, league_id, season, "all_nba_3", player_id)
+
+    inducted = await check_and_induct(db_pool, league_id, 2025)
+
+    assert any(r["player_id"] == player_id for r in inducted)

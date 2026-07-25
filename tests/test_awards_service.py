@@ -76,6 +76,29 @@ async def _insert_test_league_team_player(
     return league_id, team_ids, player_id
 
 
+async def _insert_extra_players(pool, league_id: int, team_ids: list[int], count: int) -> list[int]:
+    """Insert `count` additional low-OVR players, one per team_ids[1:1+count]."""
+    player_ids: list[int] = []
+    for i in range(count):
+        row = await pool.fetchrow(
+            """
+            INSERT INTO players (
+                league_id, first_name, last_name, position, team_id,
+                overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+                finishing, playmaking, defense, rebounding, iq, potential,
+                peak_age_start, peak_age_end, loyalty, money_drive, win_drive
+            ) VALUES (
+                $1, $2, 'Stray', 'PG', $3,
+                70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 25, 30, 50, 50, 50
+            )
+            RETURNING id
+            """,
+            league_id, f"Player{i}", team_ids[i + 1],
+        )
+        player_ids.append(row["id"])
+    return player_ids
+
+
 def _patch_pool(pool):
     """Returns a context manager that injects pool into awards_service.get_pool."""
     return patch(
@@ -219,3 +242,83 @@ async def test_close_voting_sets_status_closed(db_pool):
 
     row = await db_pool.fetchrow("SELECT status FROM award_votings WHERE id=$1", voting_id)
     assert row["status"] == "closed"
+
+
+# ---------------------------------------------------------------------------
+# PA8 -- close_voting caps single-winner awards to top 5
+# ---------------------------------------------------------------------------
+
+
+async def test_close_voting_single_winner_caps_at_top_five(db_pool):
+    """PA8: mvp/dpoy/roy/6moy must cap persisted award_results rows to the
+    top 5, mirroring the All-NBA branch's existing [:5] -- pre-fix, every
+    player with even one stray vote got a permanent award_results row."""
+    league_id, team_ids, first_player_id = await _insert_test_league_team_player(db_pool, num_teams=6)
+    player_ids = [first_player_id] + await _insert_extra_players(db_pool, league_id, team_ids, count=5)
+
+    with _patch_pool(db_pool):
+        voting_id = await awards_service.open_voting(league_id, season=2025, award_type="mvp")
+        # 6 teams, 6 distinct players, one vote each -- a stray-vote scenario.
+        for team_id, player_id in zip(team_ids, player_ids):
+            await awards_service.cast_vote(voting_id, team_id=team_id, player_id=player_id)
+
+        results = await awards_service.close_voting(voting_id)
+
+    assert len(results) == 5, "Single-winner awards must cap to top 5 results"
+
+    row_count = await db_pool.fetchval(
+        "SELECT COUNT(*) FROM award_results WHERE voting_id = $1", voting_id
+    )
+    assert row_count == 5
+
+
+async def test_close_voting_all_star_remains_uncapped(db_pool):
+    """PA8 scope check: All-Star voting is NOT capped (multiple players
+    legitimately make each conference team) -- only mvp/dpoy/roy/6moy are."""
+    league_id, team_ids, first_player_id = await _insert_test_league_team_player(db_pool, num_teams=6)
+    player_ids = [first_player_id] + await _insert_extra_players(db_pool, league_id, team_ids, count=5)
+
+    with _patch_pool(db_pool):
+        voting_id = await awards_service.open_voting(league_id, season=2025, award_type="all_star_east")
+        for team_id, player_id in zip(team_ids, player_ids):
+            await awards_service.cast_vote(voting_id, team_id=team_id, player_id=player_id)
+
+        results = await awards_service.close_voting(voting_id)
+
+    assert len(results) == 6
+
+
+# ---------------------------------------------------------------------------
+# PA6 -- _mvp_team_adjustments (unified team-component formula)
+# ---------------------------------------------------------------------------
+
+
+def test_mvp_team_adjustments_tank_floor_applies_under_25_wins():
+    assert awards_service._mvp_team_adjustments(0.30, 15) == -15.0
+
+
+def test_mvp_team_adjustments_no_floor_at_25_wins_or_more():
+    result = awards_service._mvp_team_adjustments(0.45, 25)
+    assert result > -15.0
+
+
+def test_mvp_team_adjustments_sub_500_penalty():
+    at_500 = awards_service._mvp_team_adjustments(0.500, 41)
+    below_500 = awards_service._mvp_team_adjustments(0.400, 33)
+    assert below_500 < at_500
+
+
+# ---------------------------------------------------------------------------
+# PA7 -- AI awards-odds prompt no longer claims a false team_win_pct term
+# ---------------------------------------------------------------------------
+
+
+def test_pa7_ai_prompt_matches_real_mvp_score_formula():
+    """The prompt text must describe _mvp_score's ACTUAL formula (no
+    team_win_pct term) instead of the stale, wrong-multiplier description
+    that used to claim ppg*1.0 + apg*0.6 + rpg*0.4 + team_win_pct*20 + ts_pct*10."""
+    import inspect
+
+    source = inspect.getsource(awards_service.generate_awards_race_odds)
+    assert "team_win_pct*20" not in source
+    assert "ppg*1.0 + apg*0.6 + rpg*0.4 + ts_pct*10" in source

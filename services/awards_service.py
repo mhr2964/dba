@@ -242,18 +242,32 @@ def _mvp_team_adjustments(win_pct: float, wins: int) -> float:
     """Return the team-record component of MVP scoring.
 
     Separated so cpu_voter and any future callers can import one source of truth.
+    PA6: cpu_voter.score_player_for_award's MVP branch now actually calls this
+    (previously it duplicated the win_pct*32 + sub-.500 formula inline, and
+    this function -- including its `wins` param -- was dead code with zero
+    call sites despite a cpu_voter.py comment claiming the two were "kept in
+    sync").
 
     win_pct * 32 — wider spread between contenders and lottery teams than the
     old *20 multiplier (contender +19.5 vs lottery +7.8 instead of +12.2 / +4.9).
 
     Sub-.500 penalty: shaves additional points off bad-team candidates.
-    Tank-team hard cap at 35: a player on a <25-win team cannot exceed this
-    ceiling regardless of stats, keeping them below realistic MVP candidates
-    (who sit in the 45-55 range).
+
+    Tank-team floor: this function only sees win_pct/wins, not a player's box
+    score terms, so it can't reproduce the full "score capped at 35 no matter
+    the stats" clamp cpu_voter used to apply to the WHOLE mvp score. Scoped to
+    what this function actually owns: a team on fewer than 25 wins gets its
+    team-component floored at -15 (rather than the small single-digit value
+    win_pct*32 minus the sub-.500 penalty would otherwise produce) -- low
+    enough that even an elite statistical season (roughly 45-50 raw points
+    under the ppg/apg/rpg/ts_pct weights cpu_voter applies) still lands the
+    full MVP score under the ~35 floor real MVP-caliber seasons clear.
     """
     base = win_pct * 32
     if win_pct < 0.500:
         base -= (0.500 - win_pct) * 25
+    if wins < 25:
+        base = min(base, -15.0)
     return base
 
 
@@ -423,7 +437,8 @@ async def generate_awards_race_odds(
         "You are an NBA writer setting awards-race odds. For each award below, output "
         "the percentage chance each candidate wins, summing to 100% per award. "
         "MANDATORY: For MVP, the canonical ranking formula is "
-        "ppg*1.0 + apg*0.6 + rpg*0.4 + team_win_pct*20 + ts_pct*10. "
+        "ppg*1.0 + apg*0.6 + rpg*0.4 + ts_pct*10 (team record is not a factor "
+        "at this race-leader stage -- see awards_service._mvp_score). "
         "The candidates are already sorted by this formula (positional rank #N). "
         "You must not deviate dramatically from this ordering — the player ranked #1 "
         "should have the highest win probability unless recent form strongly indicates otherwise. "
@@ -552,6 +567,38 @@ async def generate_cpu_votes(
         for r in record_rows
     }
 
+    # PA14: get_cpu_profile now derives each CPU voter's lean from its own
+    # team's offense/defense rating gap and win_pct instead of `team_id % 4`.
+    # These are the VOTING team's own signals, not the candidate's team, so
+    # they're fetched separately from records_by_team above (keyed on
+    # candidate team_ids, which won't reliably cover every voting team).
+    cpu_team_ids = [t["id"] for t in cpu_teams]
+    voter_signal_rows = await pool.fetch(
+        """
+        SELECT t.id AS team_id, t.team_offense_rating, t.team_defense_rating,
+               sc.wins, sc.losses
+        FROM teams t
+        LEFT JOIN standings_cache sc
+            ON sc.team_id = t.id AND sc.league_id = $1 AND sc.season = $2
+        WHERE t.id = ANY($3)
+        """,
+        league_id,
+        season,
+        cpu_team_ids,
+    )
+    voter_signals: dict[int, dict] = {
+        r["team_id"]: {
+            "offense_rating": r["team_offense_rating"] or 75,
+            "defense_rating": r["team_defense_rating"] or 75,
+            "win_pct": (
+                r["wins"] / (r["wins"] + r["losses"])
+                if (r["wins"] or r["losses"])
+                else 0.5
+            ),
+        }
+        for r in voter_signal_rows
+    }
+
     # For DPOY: identify top-10 teams by fewest points allowed per game.
     # We approximate from game_box_scores: average opponent points per game.
     dpoy_def_team_ids: set[int] = set()
@@ -595,7 +642,13 @@ async def generate_cpu_votes(
         if team_id in already_voted:
             continue
 
-        profile: VoterProfile = get_cpu_profile(team_id)
+        _vs = voter_signals.get(team_id, {"offense_rating": 75, "defense_rating": 75, "win_pct": 0.5})
+        profile: VoterProfile = get_cpu_profile(
+            team_id,
+            offense_rating=_vs["offense_rating"],
+            defense_rating=_vs["defense_rating"],
+            win_pct=_vs["win_pct"],
+        )
 
         best_player_id: Optional[int] = None
         best_score = float("-inf")
@@ -681,9 +734,14 @@ async def close_voting(voting_id: int) -> list[dict]:
                 "vote_share": share,
             })
     else:
-        # Single-winner and All-Star: rank by vote count.
+        # Single-winner (mvp/dpoy/roy/6moy): cap to top-5, same as All-NBA
+        # above -- PA8, previously uncapped, so every player with even one
+        # stray vote got a permanent award_results row. All-Star stays
+        # uncapped (multiple players legitimately make each conference team).
         counts = Counter(r["player_id"] for r in vote_rows)
         ranked = counts.most_common()
+        if award_type in _SINGLE_WINNER_AWARDS:
+            ranked = ranked[:5]
         results = []
         for place, (player_id, vc) in enumerate(ranked, start=1):
             share = vc / total_votes if total_votes else 0.0

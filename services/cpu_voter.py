@@ -10,10 +10,38 @@ class VoterProfile(str, Enum):
     WINNING = "winning"
 
 
-def get_cpu_profile(team_id: int) -> VoterProfile:
-    """Deterministic from team_id so it doesn't change between sessions."""
-    profiles = list(VoterProfile)
-    return profiles[team_id % len(profiles)]
+def get_cpu_profile(
+    team_id: int,
+    offense_rating: float = 75.0,
+    defense_rating: float = 75.0,
+    win_pct: float = 0.5,
+) -> VoterProfile:
+    """Deterministic voter lean from real team signals (PA14).
+
+    Previously `team_id % 4` -- arbitrary, didn't reflect anything about the
+    team. Pure function (no I/O): the caller (awards_service.generate_cpu_votes)
+    fetches offense/defense ratings and win_pct upstream, the same way it
+    already fetches standings_cache records for other scoring inputs.
+
+    - win_pct >= 0.60 (a real contender) leans WINNING -- a winning team's
+      front office values team success in its award ballot.
+    - Otherwise, a meaningful offense/defense rating gap (>= 3) leans SCORER
+      (offense-heavy identity) or DEFENSE (defense-heavy identity).
+    - A balanced, non-winning team leans EFFICIENCY -- the "no strong signal"
+      default.
+
+    team_id is kept as the first positional arg so the call shape stays
+    stable for the one existing call site (awards_service.generate_cpu_votes);
+    it plays no role in the branch logic since the real signals now do that.
+    """
+    if win_pct >= 0.60:
+        return VoterProfile.WINNING
+    rating_gap = offense_rating - defense_rating
+    if rating_gap >= 3:
+        return VoterProfile.SCORER
+    if rating_gap <= -3:
+        return VoterProfile.DEFENSE
+    return VoterProfile.EFFICIENCY
 
 
 def score_player_for_award(
@@ -53,17 +81,20 @@ def score_player_for_award(
         fouls_pg = float(player.get("fouls_per_game") or 0.0)
         foul_penalty = max(0.0, (fouls_pg - 2.8) * 3.0)
 
-        # --- Center positional penalty ---
-        # Kept but reduced: position alone shouldn't override role/stats.
-        position = (player.get("position") or "").upper()
-        position_penalty = -3 if position == "C" else 0
+        # PA12: the old flat -3 penalty for position == 'C' was backwards --
+        # real DPOY voting history is dominated by rim-protecting centers
+        # (Gobert, Mutombo, Ben Wallace), not biased against them. Removed
+        # outright rather than replaced with a bonus: the elite_blocker_bonus
+        # below already rewards the specific skill (shot-blocking) that makes
+        # centers legitimate DPOY candidates, without re-introducing a
+        # position-based thumb on the scale.
 
         # Raised stat weights: produced defensive stats now clearly outrank
         # attribute-only reputation. spg: 3.5 → 4.5, bpg: 3.0 → 4.0 → 4.5.
         # Elite shot-blocker bonus: Gobert/Wemby-type 2+ bpg gets explicit +3 nudge
         # that stat-stuffers without blocks cannot replicate.
         elite_blocker_bonus = 3.0 if bpg >= 2.0 else 0.0
-        base = spg * 4.5 + bpg * 4.5 + defense_boost + position_penalty + elite_blocker_bonus
+        base = spg * 4.5 + bpg * 4.5 + defense_boost + elite_blocker_bonus
         base -= foul_penalty
 
         # Team defensive rating boost: softened from +5 → +3.
@@ -103,24 +134,25 @@ def score_player_for_award(
     # MVP / All-NBA / All-Star — all profiles use the canonical MVP composite as
     # the base so race leaders and final vote agree on top candidates.
     #
-    # Canonical formula (kept in sync with awards_service._mvp_team_adjustments):
-    #   ppg*1.0 + apg*0.6 + rpg*0.4 + ts_pct*10 + win_pct*32
-    #   sub-.500 penalty: -(0.500 - win_pct)*25 when win_pct < 0.500
-    #   tank-team cap: score capped at 35 when wins < 25
+    # PA6: the team-component (win_pct*32 + sub-.500 penalty + tank-team
+    # floor) now actually calls awards_service._mvp_team_adjustments instead
+    # of duplicating the formula inline -- previously that function was dead
+    # code (zero call sites, unused `wins` param) despite this comment
+    # claiming the two were "kept in sync." Deferred import avoids a circular
+    # import (awards_service imports this module at module level).
+    #
+    # Canonical formula:
+    #   ppg*1.0 + apg*0.6 + rpg*0.4 + ts_pct*10 + team_component
+    #   where team_component = awards_service._mvp_team_adjustments(win_pct, wins)
     rpg = box_score_stats.get("rpg", 0.0)
     losses = team_record.get("losses", 0)
     total_games = (wins + losses) or 1
     win_pct = wins / total_games
 
-    team_component = win_pct * 32
-    if win_pct < 0.500:
-        team_component -= (0.500 - win_pct) * 25
+    from services import awards_service
+    team_component = awards_service._mvp_team_adjustments(win_pct, wins)
 
     base_mvp = ppg * 1.0 + apg * 0.6 + rpg * 0.4 + ts_pct * 10 + team_component
-
-    # Tank-team hard cap: prevents stat-padders on terrible teams from winning.
-    if wins < 25:
-        base_mvp = min(base_mvp, 35.0)
 
     # Conference-rank gate: relative standing matters — being last in conference
     # is disqualifying even if absolute record looks tolerable.
