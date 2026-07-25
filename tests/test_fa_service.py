@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from core.errors import DBAError
+from data.repositories import fa_repo
 from services import fa_service
 
 
@@ -328,3 +329,358 @@ async def test_claim_waiver_rejects_non_waived_player(db_pool):
     # Player is now a free_agent after open_fa, not waived.
     with pytest.raises(DBAError, match="not on waivers"):
         await fa_service.claim_waiver(league_id, team_id, player_id)
+
+
+# ---------------------------------------------------------------------------
+# FA6 — respond_to_counter must re-validate cap space before accepting
+# ---------------------------------------------------------------------------
+
+
+async def test_respond_to_counter_rejects_when_over_cap(db_pool):
+    """
+    FA6 regression: respond_to_counter used to sign a countered offer without
+    re-checking cap space at all, unlike submit_offer. A counter that would
+    push the team over the cap must raise the same DBAError shape and leave
+    both the counter and the player untouched.
+    """
+    league_id, team_id, player_id = await _setup_fa_open(db_pool)
+
+    # Fill the team's cap almost entirely with a blocker contract so the
+    # counter (well under a normal offer) still overflows the remaining room.
+    blocker_id = await db_pool.fetchval(
+        """
+        INSERT INTO players (
+            league_id, team_id, first_name, last_name, position,
+            years_pro, roster_status,
+            overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+            finishing, playmaking, defense, rebounding, iq,
+            potential, peak_age_start, peak_age_end,
+            loyalty, money_drive, win_drive
+        ) VALUES (
+            $1, $2, 'Cap', 'Blocker', 'C',
+            5, 'active',
+            75, 70, 65, 60, 65,
+            70, 65, 70, 70, 70,
+            80, 27, 32,
+            50, 50, 50
+        )
+        RETURNING id
+        """,
+        league_id,
+        team_id,
+    )
+    blocker_salary = 139_000_000  # league salary_cap in _setup is 140,000,000
+    await db_pool.execute(
+        """
+        INSERT INTO contracts
+            (league_id, player_id, team_id, salary, years_remaining, total_years,
+             contract_type, signed_in_season, is_active)
+        VALUES ($1, $2, $3, $4, 2, 2, 'standard', 2024, TRUE)
+        """,
+        league_id,
+        blocker_id,
+        team_id,
+        blocker_salary,
+    )
+
+    offer_id = await fa_service.submit_offer(
+        league_id, 2025, team_id, player_id, salary=500_000, years=1
+    )
+    # Manually create a counter well above the ~$1M of remaining cap room.
+    counter_id = await fa_repo.create_counter(db_pool, offer_id, salary=10_000_000, years=2)
+
+    with pytest.raises(DBAError, match="salary cap"):
+        await fa_service.respond_to_counter(league_id, counter_id, team_id, accept=True)
+
+    counter_row = await db_pool.fetchrow(
+        "SELECT team_response FROM fa_counters WHERE id = $1", counter_id
+    )
+    assert counter_row["team_response"] == "pending"
+
+    status = await db_pool.fetchval(
+        "SELECT roster_status FROM players WHERE id = $1", player_id
+    )
+    assert status == "free_agent"
+
+
+# ---------------------------------------------------------------------------
+# FA7 — CPU-team counters must get auto-resolved by advance_day
+# ---------------------------------------------------------------------------
+
+
+async def test_cpu_counters_get_resolved_by_advance_day(db_pool):
+    """
+    FA7 regression: a countered offer to a CPU team (no manager_user_id, so
+    nobody can invoke /fa counter-accept|counter-decline) used to sit
+    status='countered' forever — advance_day only ever expired 'waiting'
+    offers. advance_day must now resolve it one way or the other.
+    """
+    league_id, team_id, player_id = await _setup_fa_open(db_pool)
+    # team_id has no manager_user_id set (NULL by default) — a CPU team.
+
+    offer_id = await fa_service.submit_offer(
+        league_id, 2025, team_id, player_id, salary=10_000_000, years=2
+    )
+    await fa_repo.update_offer_status(db_pool, offer_id, "countered")
+    # 10.5M is under 115% of the 10M original offer — should auto-accept.
+    counter_id = await fa_repo.create_counter(db_pool, offer_id, salary=10_500_000, years=2)
+
+    await fa_service.advance_day(league_id, 2025)
+
+    counter_row = await db_pool.fetchrow(
+        "SELECT team_response FROM fa_counters WHERE id = $1", counter_id
+    )
+    assert counter_row["team_response"] == "accepted"
+
+    signed_player = await db_pool.fetchrow(
+        "SELECT roster_status, team_id FROM players WHERE id = $1", player_id
+    )
+    assert signed_player["roster_status"] == "active"
+    assert signed_player["team_id"] == team_id
+
+
+async def test_cpu_counters_declined_when_too_far_above_original(db_pool):
+    """FA7: a CPU counter demanding more than 115% of the original offer gets
+    declined rather than auto-accepted."""
+    league_id, team_id, player_id = await _setup_fa_open(db_pool)
+
+    offer_id = await fa_service.submit_offer(
+        league_id, 2025, team_id, player_id, salary=10_000_000, years=2
+    )
+    await fa_repo.update_offer_status(db_pool, offer_id, "countered")
+    # 13M is well above 115% of the 10M original — should be declined.
+    counter_id = await fa_repo.create_counter(db_pool, offer_id, salary=13_000_000, years=2)
+
+    await fa_service.advance_day(league_id, 2025)
+
+    counter_row = await db_pool.fetchrow(
+        "SELECT team_response FROM fa_counters WHERE id = $1", counter_id
+    )
+    assert counter_row["team_response"] == "declined"
+
+    status = await db_pool.fetchval(
+        "SELECT roster_status FROM players WHERE id = $1", player_id
+    )
+    assert status == "free_agent"
+
+
+# ---------------------------------------------------------------------------
+# FA1 — CPU offer terms follow live team_intel posture, not the static
+# team.cpu_mode column
+# ---------------------------------------------------------------------------
+
+
+async def test_submit_cpu_offers_respects_posture_mode(db_pool):
+    """
+    FA1 regression: both teams share the same static cpu_mode='contending'
+    column value, but their live records put them in very different postures
+    (contending vs. rebuilding). A sub-floor free agent (OVR 55, below the
+    OVR-70 contender floor) should draw a bid from the rebuilding-posture team
+    and NOT from the contending-posture team — proving mode is read from live
+    posture, not the static column.
+    """
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues
+            (discord_guild_id, name, start_season_year, current_season,
+             commissioner_user_id, salary_cap, current_phase)
+        VALUES (888100, 'Posture Test League', 2025, 2025, 99999, 140000000, 'FA_OPEN')
+        RETURNING id
+        """
+    )
+    league_id = league_row["id"]
+
+    contender_id = await db_pool.fetchval(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division, cpu_mode)
+        VALUES ($1, 'CTD', 'Contenders', 'Winville', 'East', 'Atlantic', 'contending')
+        RETURNING id
+        """,
+        league_id,
+    )
+    rebuild_id = await db_pool.fetchval(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division, cpu_mode)
+        VALUES ($1, 'RBD', 'Rebuilders', 'Loseville', 'East', 'Atlantic', 'contending')
+        RETURNING id
+        """,
+        league_id,
+    )
+
+    await db_pool.execute(
+        """
+        INSERT INTO standings_cache (league_id, season, team_id, wins, losses, conference, division)
+        VALUES ($1, 2025, $2, 45, 15, 'East', 'Atlantic')
+        """,
+        league_id,
+        contender_id,
+    )
+    await db_pool.execute(
+        """
+        INSERT INTO standings_cache (league_id, season, team_id, wins, losses, conference, division)
+        VALUES ($1, 2025, $2, 5, 55, 'East', 'Atlantic')
+        """,
+        league_id,
+        rebuild_id,
+    )
+
+    # A single scrub free agent, OVR well below the contender floor (70).
+    fa_id = await db_pool.fetchval(
+        """
+        INSERT INTO players
+            (league_id, first_name, last_name, position, years_pro, is_rookie,
+             roster_status, overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+             finishing, playmaking, defense, rebounding, iq, potential,
+             peak_age_start, peak_age_end, loyalty, money_drive, win_drive,
+             market_pref, star_leverage)
+        VALUES ($1, 'Scrub', 'Player', 'SG', 3, FALSE,
+                'free_agent', 55, 60, 60, 60, 60, 60, 60, 60, 60, 60, 65, 24, 29,
+                50, 50, 50, 'neutral', 50)
+        RETURNING id
+        """,
+        league_id,
+    )
+
+    await db_pool.execute(
+        """
+        INSERT INTO fa_state (league_id, season, current_day, phase, total_days)
+        VALUES ($1, 2025, 1, 'offers_open', 8)
+        """,
+        league_id,
+    )
+
+    await fa_service.submit_cpu_offers(league_id, 2025)
+
+    offer_rows = await db_pool.fetch(
+        "SELECT team_id FROM fa_offers WHERE league_id = $1 AND player_id = $2",
+        league_id,
+        fa_id,
+    )
+    offering_team_ids = {r["team_id"] for r in offer_rows}
+
+    assert rebuild_id in offering_team_ids, "Rebuilding-posture team should bid under the OVR-70 floor"
+    assert contender_id not in offering_team_ids, "Contending-posture team should NOT bid on a sub-floor scrub"
+
+
+# ---------------------------------------------------------------------------
+# FA2 — positional need re-sorts each CPU team's free-agent target list
+# ---------------------------------------------------------------------------
+
+
+async def test_submit_cpu_offers_prioritizes_positional_need(db_pool):
+    """
+    FA2 regression: a team already 3-deep at center (surplus) and with zero
+    point guards (a hole) should prioritize a lower-OVR point guard over a
+    higher-OVR center free agent — the raw global OVR-sorted list would have
+    tried the center first and never reached the point guard once cap space
+    ran out.
+    """
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues
+            (discord_guild_id, name, start_season_year, current_season,
+             commissioner_user_id, salary_cap, current_phase)
+        VALUES (888200, 'Need Test League', 2025, 2025, 99999, 140000000, 'FA_OPEN')
+        RETURNING id
+        """
+    )
+    league_id = league_row["id"]
+
+    team_id = await db_pool.fetchval(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division, cpu_mode)
+        VALUES ($1, 'NED', 'Needers', 'Thinville', 'West', 'Pacific', 'rebuilding')
+        RETURNING id
+        """,
+        league_id,
+    )
+
+    # 3 active centers already rostered — surplus at C. Zero point guards — a hole.
+    filler_salary = 40_000_000
+    for i in range(3):
+        pid = await db_pool.fetchval(
+            """
+            INSERT INTO players
+                (league_id, first_name, last_name, position, years_pro, is_rookie,
+                 roster_status, team_id, overall, speed, shooting_2pt, shooting_3pt,
+                 shooting_mid, finishing, playmaking, defense, rebounding, iq, potential,
+                 peak_age_start, peak_age_end, loyalty, money_drive, win_drive,
+                 market_pref, star_leverage)
+            VALUES ($1, $2, 'Filler', 'C', 6, FALSE, 'active', $3,
+                    72, 70, 65, 60, 65, 70, 65, 78, 78, 70, 75, 26, 31,
+                    50, 50, 50, 'neutral', 50)
+            RETURNING id
+            """,
+            league_id,
+            f"Center{i}",
+            team_id,
+        )
+        await db_pool.execute(
+            """
+            INSERT INTO contracts
+                (league_id, player_id, team_id, salary, years_remaining, total_years,
+                 contract_type, signed_in_season, is_active)
+            VALUES ($1, $2, $3, $4, 2, 2, 'fa', 2024, TRUE)
+            """,
+            league_id,
+            pid,
+            team_id,
+            filler_salary,
+        )
+    # cap_used = 120,000,000; remaining = 20,000,000.
+
+    # Free agent A: a PG (position of need) at a modest OVR.
+    pg_id = await db_pool.fetchval(
+        """
+        INSERT INTO players
+            (league_id, first_name, last_name, position, years_pro, is_rookie,
+             roster_status, overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+             finishing, playmaking, defense, rebounding, iq, potential,
+             peak_age_start, peak_age_end, loyalty, money_drive, win_drive,
+             market_pref, star_leverage)
+        VALUES ($1, 'Need', 'Guard', 'PG', 4, FALSE, 'free_agent',
+                70, 78, 70, 68, 65, 65, 78, 68, 60, 72, 78, 25, 30,
+                50, 50, 50, 'neutral', 50)
+        RETURNING id
+        """,
+        league_id,
+    )
+    # Free agent B: a C (already-surplus position) at a HIGHER raw OVR.
+    c_id = await db_pool.fetchval(
+        """
+        INSERT INTO players
+            (league_id, first_name, last_name, position, years_pro, is_rookie,
+             roster_status, overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+             finishing, playmaking, defense, rebounding, iq, potential,
+             peak_age_start, peak_age_end, loyalty, money_drive, win_drive,
+             market_pref, star_leverage)
+        VALUES ($1, 'Surplus', 'Big', 'C', 5, FALSE, 'free_agent',
+                82, 65, 68, 55, 60, 75, 55, 72, 82, 70, 84, 26, 31,
+                50, 50, 50, 'neutral', 50)
+        RETURNING id
+        """,
+        league_id,
+    )
+
+    await db_pool.execute(
+        """
+        INSERT INTO fa_state (league_id, season, current_day, phase, total_days)
+        VALUES ($1, 2025, 1, 'offers_open', 8)
+        """,
+        league_id,
+    )
+
+    await fa_service.submit_cpu_offers(league_id, 2025)
+
+    offer_rows = await db_pool.fetch(
+        "SELECT player_id FROM fa_offers WHERE league_id = $1 AND team_id = $2",
+        league_id,
+        team_id,
+    )
+    offered_player_ids = {r["player_id"] for r in offer_rows}
+
+    # Need-weighted scoring (PG: 70*1.4=98) outranks the raw-higher-OVR
+    # surplus center (C: 82*0.6=49.2), so the PG is tried — and signed —
+    # first; by the time the higher-OVR center is tried, cap room is gone.
+    assert pg_id in offered_player_ids
+    assert c_id not in offered_player_ids

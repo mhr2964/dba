@@ -242,26 +242,39 @@ async def add_waiver_claim(
 
 
 async def get_cpu_teams(pool: asyncpg.Pool, league_id: int) -> list[dict]:
-    """Returns CPU-controlled teams (manager_user_id IS NULL) with current cap usage."""
+    """Returns CPU-controlled teams (manager_user_id IS NULL) with current cap usage.
+
+    Real-bug fix (found during the FA1-FA4 realism pass, 2026-07-25): the
+    previous version LEFT JOINed both `contracts` and `players` in the same
+    query, matched only on team_id/league_id (not on a shared key between the
+    two joined tables). That's a classic join fan-out — N active contracts x
+    M active players produces N*M joined rows per team before the GROUP BY,
+    so both COALESCE(SUM(c.salary)) and COUNT(p.id) were inflated by the
+    *other* table's row count whenever a team had more than one of each
+    (i.e. any normal, non-trivial CPU roster). In practice this meant
+    active_player_count usually exceeded _ROSTER_MAX well before a real
+    15-player roster filled up, and cap_used was wildly overcounted, so CPU
+    teams silently stopped submitting offers long before they should have.
+    Independent correlated subqueries avoid the fan-out entirely.
+    """
     rows = await pool.fetch(
         """
         SELECT
             t.id,
             t.cpu_mode,
-            COALESCE(SUM(c.salary), 0) AS cap_used,
-            COUNT(p.id) AS active_player_count
+            COALESCE(
+                (SELECT SUM(c.salary) FROM contracts c
+                 WHERE c.team_id = t.id AND c.league_id = t.league_id AND c.is_active = TRUE),
+                0
+            ) AS cap_used,
+            COALESCE(
+                (SELECT COUNT(*) FROM players p
+                 WHERE p.team_id = t.id AND p.league_id = t.league_id AND p.roster_status = 'active'),
+                0
+            ) AS active_player_count
         FROM teams t
-        LEFT JOIN contracts c
-            ON c.team_id = t.id
-           AND c.league_id = t.league_id
-           AND c.is_active = TRUE
-        LEFT JOIN players p
-            ON p.team_id = t.id
-           AND p.league_id = t.league_id
-           AND p.roster_status = 'active'
         WHERE t.league_id = $1
           AND t.manager_user_id IS NULL
-        GROUP BY t.id, t.cpu_mode
         """,
         league_id,
     )

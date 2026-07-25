@@ -265,6 +265,39 @@ async def get_active_contract(
     return _contract_from_record(row) if row else None
 
 
+async def get_active_roster_position_counts(
+    pool: asyncpg.Pool, league_id: int, team_ids: list[int]
+) -> dict[int, dict[str, int]]:
+    """Batched active-roster position counts for multiple teams in one query.
+
+    FA2: CPU free-agent targeting needs each team's current position depth to
+    weight need vs. surplus (services/fa_needs.py::_position_need_multiplier).
+    Batched across all team_ids in a single GROUP BY query, matching the
+    "no per-team loops" convention team_intel.py's build_team_intel documents.
+
+    Returns {team_id: {position: count}}. Teams with zero active players at a
+    position simply have no key for it — callers should use .get(pos, 0).
+    """
+    if not team_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT team_id, position, COUNT(*) AS cnt
+        FROM players
+        WHERE league_id = $1
+          AND team_id = ANY($2::int[])
+          AND roster_status = 'active'
+        GROUP BY team_id, position
+        """,
+        league_id,
+        team_ids,
+    )
+    result: dict[int, dict[str, int]] = {tid: {} for tid in team_ids}
+    for r in rows:
+        result[r["team_id"]][r["position"]] = int(r["cnt"])
+    return result
+
+
 async def get_team_cap_usage(
     pool: asyncpg.Pool, league_id: int, team_id: int
 ) -> int:
