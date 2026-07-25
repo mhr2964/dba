@@ -6,6 +6,16 @@ import discord
 
 
 def rollover_complete_embed(summary: dict) -> discord.Embed:
+    """
+    RO10: reads the fields rollover_service.run_rollover actually returns
+    today (season_archived, next_season, contracts_expired,
+    extensions_activated, picks_seeded, new_salary_cap) -- the previous
+    version read summary["players_progressed"], a key removed from the
+    return dict in a prior refactor, causing an uncaught KeyError on every
+    real /offseason rollover invocation. hof_inducted is NOT surfaced here
+    (RO3 moved HOF induction to run after progression, so it's no longer
+    part of this summary at all -- see progression_embeds instead).
+    """
     embed = discord.Embed(
         title="Season Rollover Complete",
         color=discord.Color.teal(),
@@ -26,11 +36,26 @@ def rollover_complete_embed(summary: dict) -> discord.Embed:
         inline=True,
     )
     embed.add_field(
-        name="Players Progressed",
-        value=str(summary["players_progressed"]),
+        name="Extensions Activated",
+        value=str(summary["extensions_activated"]),
         inline=True,
     )
-    embed.set_footer(text="League is now in PRESEASON_READY phase.")
+    embed.add_field(
+        name="Picks Seeded",
+        value=str(summary["picks_seeded"]),
+        inline=True,
+    )
+    embed.add_field(
+        name="New Salary Cap",
+        value=f"${summary['new_salary_cap']:,}",
+        inline=True,
+    )
+    # Matches phase/helpers.py's _NEXT_COMMAND_HINT["PROGRESSION_PENDING"] text
+    # -- the real next phase after rollover is PROGRESSION_PENDING, not the
+    # stale "PRESEASON_READY" this footer previously (and incorrectly) said.
+    embed.set_footer(
+        text="League is now in PROGRESSION_PENDING phase. Run `/progression run` to apply player development."
+    )
     return embed
 
 

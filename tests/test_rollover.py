@@ -3,12 +3,18 @@ Integration tests for services.rollover_service and data.repositories.history_re
 
 No external service patching required — progression_service.run_progression was
 removed from rollover_service in the 2026-05 refactor. run_rollover is now
-self-contained: it ages contracts, archives history, and calls hof_service.
+self-contained: it ages contracts and archives history. HOF induction
+(hof_service.check_and_induct) is NOT called from here (RO3) -- it runs from
+the /offseason progression command handler, after progression has updated
+years_pro/retirement state. See test_hof_induction_runs_after_progression_not_rollover
+below for the mandatory cross-service sequencing proof.
 """
 from __future__ import annotations
 
-from data.repositories import history_repo, league_repo
-from services import progression_service, rollover_service
+from unittest.mock import patch
+
+from data.repositories import extension_repo, history_repo, league_repo
+from services import hof_service, progression_service, rollover_service
 
 
 # ---------------------------------------------------------------------------
@@ -165,9 +171,25 @@ async def test_rollover_advances_phase(db_pool):
 
 
 async def test_rollover_clears_standings_cache(db_pool):
-    """run_rollover deletes all standings_cache rows for the league."""
-    league_id, team_id, _, _ = await _create_minimal_league(db_pool)
+    """
+    RO2/RO8: run_rollover clears the current league's standings_cache scoped
+    to the new season only (prior seasons' rows survive for /offseason
+    history) and clears trade_block entirely (pure current-state table, like
+    ready_status -- its read paths never filter by season).
+    """
+    league_id, team_id, player_id, _ = await _create_minimal_league(db_pool)
 
+    # Prior-season row -- must survive rollover.
+    await db_pool.execute(
+        """
+        INSERT INTO standings_cache
+            (league_id, season, team_id, wins, losses, conference, division)
+        VALUES ($1, 2024, $2, 38, 44, 'East', 'Atlantic')
+        """,
+        league_id,
+        team_id,
+    )
+    # Current-season row -- would previously be wiped by the unscoped DELETE.
     await db_pool.execute(
         """
         INSERT INTO standings_cache
@@ -177,13 +199,28 @@ async def test_rollover_clears_standings_cache(db_pool):
         league_id,
         team_id,
     )
+    await db_pool.execute(
+        """
+        INSERT INTO trade_block (league_id, team_id, player_id, note)
+        VALUES ($1, $2, $3, 'shopping this player')
+        """,
+        league_id,
+        team_id,
+        player_id,
+    )
 
     await rollover_service.run_rollover(league_id)
 
-    count = await db_pool.fetchval(
-        "SELECT COUNT(*) FROM standings_cache WHERE league_id = $1", league_id
+    prior_season_count = await db_pool.fetchval(
+        "SELECT COUNT(*) FROM standings_cache WHERE league_id = $1 AND season = 2024",
+        league_id,
     )
-    assert count == 0
+    assert prior_season_count == 1, "Prior season's standings_cache row must survive rollover"
+
+    trade_block_count = await db_pool.fetchval(
+        "SELECT COUNT(*) FROM trade_block WHERE league_id = $1", league_id
+    )
+    assert trade_block_count == 0, "trade_block listings must be cleared at rollover"
 
 
 async def test_history_record_created(db_pool):
@@ -214,8 +251,9 @@ async def test_get_all_seasons_ordered(db_pool):
 async def test_rollover_returns_summary_dict(db_pool):
     """run_rollover return value has the expected shape."""
     # why: progression_service removed from rollover in 2026-05; summary dict no
-    #      longer includes 'players_progressed'. Now includes extensions_activated,
-    #      picks_seeded, and hof_inducted.
+    #      longer includes 'players_progressed'. RO3 further removed
+    #      'hof_inducted' -- HOF induction now runs from the /offseason
+    #      progression handler, not rollover. RO6 added 'new_salary_cap'.
     league_id, _, _, _ = await _create_minimal_league(db_pool)
 
     summary = await rollover_service.run_rollover(league_id)
@@ -225,7 +263,8 @@ async def test_rollover_returns_summary_dict(db_pool):
     assert isinstance(summary["contracts_expired"], int)
     assert isinstance(summary["extensions_activated"], int)
     assert isinstance(summary["picks_seeded"], int)
-    assert isinstance(summary["hof_inducted"], list)
+    assert isinstance(summary["new_salary_cap"], int)
+    assert "hof_inducted" not in summary
 
 
 async def test_multiple_expired_contracts(db_pool):
@@ -387,3 +426,277 @@ async def test_rollover_then_progression_uses_correct_season(db_pool):
     reason_set = {r["reason"] for r in reasons}
     assert "low_minutes" in reason_set, f"Expected low_minutes penalty, got {reason_set}"
     assert "injury_setback" in reason_set, f"Expected injury_setback penalty, got {reason_set}"
+
+
+# ---------------------------------------------------------------------------
+# RO6 — salary cap grows season-over-season
+# ---------------------------------------------------------------------------
+
+
+async def test_rollover_grows_salary_cap(db_pool):
+    """
+    run_rollover grows leagues.salary_cap by _SALARY_CAP_GROWTH_RATE (3%),
+    rounded to the nearest $100k, in the same statement as the current_season
+    advance, and returns the new value as summary['new_salary_cap'].
+    """
+    league_id, _, _, _ = await _create_minimal_league(db_pool)
+
+    cap_before = await db_pool.fetchval(
+        "SELECT salary_cap FROM leagues WHERE id = $1", league_id
+    )
+
+    summary = await rollover_service.run_rollover(league_id)
+
+    cap_after = await db_pool.fetchval(
+        "SELECT salary_cap FROM leagues WHERE id = $1", league_id
+    )
+    expected = round(cap_before * 1.03 / 100_000) * 100_000
+    assert cap_after == expected
+    assert summary["new_salary_cap"] == expected
+
+
+# ---------------------------------------------------------------------------
+# RO1 — MANDATORY live smoke test: extension activation ordering
+# ---------------------------------------------------------------------------
+
+
+async def test_rollover_extension_activates_with_full_new_years_term(db_pool):
+    """
+    RO1 -- MANDATORY live smoke test. Seeds a real league with a contract at
+    years_remaining=1 plus a pending extension (new_years=4), calls the REAL
+    rollover_service.run_rollover, and asserts the resulting contract has
+    years_remaining == 4 (not 3) and the correct signed_in_season.
+
+    Proven to fail against the pre-fix call order: with
+    extension_repo.process_extensions_for_season running BEFORE
+    _age_contracts (the old order in run_rollover), _age_contracts then
+    unconditionally decrements every active contract in the league --
+    including the just-inserted 4-year extension contract -- producing
+    years_remaining == 3, not 4. Temporarily reverting run_rollover's call
+    order back to extensions-then-aging (keeping everything else, including
+    the new signed_in_season param) and rerunning this test reproduces that
+    failure; restoring the fixed order passes it. tests/test_strategy.py's
+    test_process_extensions_activates calls the repo function in isolation
+    and structurally cannot catch this ordering bug.
+    """
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues (
+            discord_guild_id, name, start_season_year, current_season,
+            current_phase, commissioner_user_id
+        ) VALUES (777010, 'RO1 Smoke League', 2025, 2025, 'PROGRESSION_PENDING', 99999)
+        RETURNING id
+        """
+    )
+    league_id: int = league_row["id"]
+
+    team_id = await db_pool.fetchval(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+        VALUES ($1, 'TST', 'Testers', 'Testville', 'East', 'Atlantic')
+        RETURNING id
+        """,
+        league_id,
+    )
+    await db_pool.execute(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+        VALUES ($1, 'OPP', 'Opponents', 'Othertown', 'West', 'Pacific')
+        """,
+        league_id,
+    )
+
+    player_id = await db_pool.fetchval(
+        """
+        INSERT INTO players (
+            league_id, first_name, last_name, position, team_id,
+            roster_status,
+            overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+            finishing, playmaking, defense, rebounding, iq,
+            potential, peak_age_start, peak_age_end,
+            loyalty, money_drive, win_drive
+        ) VALUES (
+            $1, 'Extension', 'Guy', 'PG', $2,
+            'active',
+            82, 78, 74, 68, 70,
+            75, 80, 72, 62, 78,
+            85, 25, 30,
+            60, 40, 70
+        )
+        RETURNING id
+        """,
+        league_id,
+        team_id,
+    )
+
+    # Active contract at years_remaining=1 -- ends this season.
+    await db_pool.execute(
+        """
+        INSERT INTO contracts (
+            league_id, player_id, team_id,
+            salary, years_remaining, total_years,
+            contract_type, signed_in_season, is_active
+        ) VALUES ($1, $2, $3, 9000000, 1, 3, 'standard', 2023, TRUE)
+        """,
+        league_id,
+        player_id,
+        team_id,
+    )
+
+    # Pending extension activating after the season that's about to roll over.
+    await extension_repo.create_extension(
+        db_pool,
+        league_id=league_id,
+        player_id=player_id,
+        team_id=team_id,
+        salary=15_000_000,
+        years=4,
+        season=2025,
+        activates_after=2025,
+    )
+
+    await rollover_service.run_rollover(league_id)
+
+    new_contract = await db_pool.fetchrow(
+        """
+        SELECT years_remaining, signed_in_season, is_active
+        FROM contracts
+        WHERE player_id = $1 AND contract_type = 'extension'
+        """,
+        player_id,
+    )
+    assert new_contract is not None
+    assert new_contract["is_active"] is True
+    assert new_contract["years_remaining"] == 4, (
+        f"Expected the extension to activate with its full 4-year term, got "
+        f"{new_contract['years_remaining']} -- this is RO1's bug: "
+        f"_age_contracts decrementing a contract that was just inserted."
+    )
+    assert new_contract["signed_in_season"] == 2026
+
+    player_row = await db_pool.fetchrow(
+        "SELECT roster_status, team_id FROM players WHERE id = $1", player_id
+    )
+    assert player_row["roster_status"] == "active"
+    assert player_row["team_id"] == team_id
+
+
+# ---------------------------------------------------------------------------
+# RO3 — MANDATORY live smoke test: HOF induction sequencing
+# ---------------------------------------------------------------------------
+
+
+async def test_hof_induction_runs_after_progression_not_rollover(db_pool):
+    """
+    RO3 -- MANDATORY live smoke test, cross-service sequencing proof.
+
+    Seeds a player one cycle away from crossing the veteran-longevity HOF
+    threshold (years_pro >= 15, overall >= 80), runs the REAL
+    rollover_service.run_rollover, and proves it never calls
+    hof_service.check_and_induct at all -- patched to raise if called, which
+    is exactly what the pre-fix code did (check_and_induct ran inside
+    run_rollover, evaluating every candidate against progression-stale
+    years_pro). It then runs the REAL progression_service.run_progression for
+    that season (bumping years_pro 14 -> 15) and calls the REAL relocated
+    induction check exactly as offseason_cog's progression handler now does,
+    proving the player is inducted only once progression has actually
+    updated their state -- a genuine cross-service sequencing proof that
+    tests/test_hof.py's isolated check_and_induct tests cannot provide.
+    """
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues (
+            discord_guild_id, name, start_season_year, current_season,
+            current_phase, commissioner_user_id
+        ) VALUES (777011, 'RO3 Smoke League', 2025, 2025, 'PROGRESSION_PENDING', 99999)
+        RETURNING id
+        """
+    )
+    league_id: int = league_row["id"]
+
+    team_id = await db_pool.fetchval(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+        VALUES ($1, 'TST', 'Testers', 'Testville', 'East', 'Atlantic')
+        RETURNING id
+        """,
+        league_id,
+    )
+    await db_pool.execute(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+        VALUES ($1, 'OPP', 'Opponents', 'Othertown', 'West', 'Pacific')
+        """,
+        league_id,
+    )
+
+    # years_pro=14 with no birth_date -- _compute_age falls back to 20+years_pro
+    # (34), which is decline-stage (>peak_age_end=31) but well below the
+    # retirement-consideration floor (_RETIREMENT_MIN_AGE=36), so this player
+    # cannot randomly retire mid-test. overall/potential=90 leaves enough
+    # margin above the veteran-longevity path's overall>=80 floor to survive a
+    # worst-case single-season decline delta.
+    player_id = await db_pool.fetchval(
+        """
+        INSERT INTO players (
+            league_id, first_name, last_name, position, team_id,
+            roster_status, years_pro,
+            overall, speed, shooting_2pt, shooting_3pt, shooting_mid,
+            finishing, playmaking, defense, rebounding, iq,
+            potential, peak_age_start, peak_age_end,
+            loyalty, money_drive, win_drive
+        ) VALUES (
+            $1, 'Almost', 'Legend', 'SF', $2,
+            'active', 14,
+            90, 75, 78, 70, 72,
+            80, 75, 78, 74, 80,
+            90, 26, 31,
+            55, 45, 65
+        )
+        RETURNING id
+        """,
+        league_id,
+        team_id,
+    )
+
+    # RO3's dispositive assertion: run_rollover must not touch hof_service at
+    # all. Pre-fix, hof_service.check_and_induct ran inside run_rollover --
+    # patching it to raise reproduces that pre-fix call if it's still there.
+    with patch(
+        "services.hof_service.check_and_induct",
+        side_effect=AssertionError("check_and_induct must not run inside run_rollover (RO3)"),
+    ):
+        await rollover_service.run_rollover(league_id)
+
+    hof_row = await db_pool.fetchrow(
+        "SELECT * FROM hall_of_fame WHERE league_id = $1 AND player_id = $2",
+        league_id,
+        player_id,
+    )
+    assert hof_row is None, "Player must not be inducted before progression runs"
+
+    league = await league_repo.get_by_guild(db_pool, 777011)
+    assert league.pending_progression_season == 2025
+
+    # Real progression run -- bumps years_pro 14 -> 15, crossing the
+    # veteran-longevity threshold (years_pro >= 15, overall >= 80).
+    await progression_service.run_progression(league_id, league.pending_progression_season)
+
+    years_pro_after = await db_pool.fetchval(
+        "SELECT years_pro FROM players WHERE id = $1", player_id
+    )
+    assert years_pro_after == 15
+
+    # The exact call offseason_cog's progression handler now makes, AFTER
+    # progression completes and before advancing to FA_OPEN.
+    inducted = await hof_service.check_and_induct(db_pool, league_id, league.current_season)
+
+    assert any(r["player_id"] == player_id for r in inducted), (
+        "Player should be inducted now that progression has updated years_pro"
+    )
+    hof_row = await db_pool.fetchrow(
+        "SELECT * FROM hall_of_fame WHERE league_id = $1 AND player_id = $2",
+        league_id,
+        player_id,
+    )
+    assert hof_row is not None

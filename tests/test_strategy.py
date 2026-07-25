@@ -502,7 +502,9 @@ async def test_process_extensions_activates(db_pool):
         activates_after=2025,
     )
 
-    count = await extension_repo.process_extensions_for_season(db_pool, league_id, season=2025)
+    count = await extension_repo.process_extensions_for_season(
+        db_pool, league_id, season=2025, signed_in_season=2026
+    )
     assert count == 1
 
     # Old contract should be deactivated.
@@ -512,7 +514,9 @@ async def test_process_extensions_activates(db_pool):
     )
     assert old_active == 0
 
-    # New contract should be active with the extension salary.
+    # New contract should be active with the extension salary, anchored to the
+    # season it actually starts in (signed_in_season), not the season param
+    # used to match activates_after_season.
     new_row = await db_pool.fetchrow(
         "SELECT * FROM contracts WHERE player_id = $1 AND is_active = TRUE",
         player_id,
@@ -521,6 +525,7 @@ async def test_process_extensions_activates(db_pool):
     assert new_row["salary"] == 12_000_000
     assert new_row["years_remaining"] == 4
     assert new_row["contract_type"] == "extension"
+    assert new_row["signed_in_season"] == 2026
 
     # Extension row should be deleted.
     ext_row = await extension_repo.get_extension(db_pool, league_id, player_id)

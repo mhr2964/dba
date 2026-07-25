@@ -9,23 +9,34 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import extension_repo, history_repo, trade_repo
 from phase.states import Phase
-from services import hof_service
 
 log = get_logger(__name__)
+
+# RO6: disclosed placeholder cap-growth rate. Real NBA cap growth runs roughly
+# 5-10%/year, but a smaller flat rate here avoids destabilizing existing
+# trade-value formulas that assume a roughly-stable cap.
+_SALARY_CAP_GROWTH_RATE = 0.03
 
 
 async def run_rollover(league_id: int) -> dict:
     """
     Full season rollover. Returns summary dict with keys:
-      season_archived, next_season, players_progressed, contracts_expired
+      season_archived, next_season, contracts_expired, extensions_activated,
+      picks_seeded, new_salary_cap
     Steps run inside a single connection but individual statements are not
     wrapped in one transaction — history and contract aging are idempotent
     enough that partial retries are safe, and progression is an external call.
+
+    Hall of Fame induction (hof_service.check_and_induct) intentionally does
+    NOT run here (RO3) — it now runs from the /offseason progression command
+    handler, after progression_service.run_progression has updated years_pro/
+    retirement state for the season. Running it here evaluated every
+    candidate against stale, pre-progression state.
     """
     pool = await get_pool()
 
     league_row = await pool.fetchrow(
-        "SELECT current_season FROM leagues WHERE id = $1", league_id
+        "SELECT current_season, salary_cap FROM leagues WHERE id = $1", league_id
     )
     if league_row is None:
         raise DBAError(f"League {league_id} not found.")
@@ -35,16 +46,32 @@ async def run_rollover(league_id: int) -> dict:
 
     await _record_history(pool, league_id, season)
 
-    # Process pending extensions whose current contract ends this season before aging contracts.
-    extensions_activated = await extension_repo.process_extensions_for_season(pool, league_id, season)
-
+    # RO1: age existing contracts BEFORE activating pending extensions. The
+    # previous order activated extensions first (inserting the new contract
+    # with its full new_years term), then unconditionally decremented every
+    # active contract by 1 -- including the one just inserted, silently
+    # losing a year of term on every activated extension.
     contracts_expired = await _age_contracts(pool, league_id)
+
+    # Because _age_contracts now runs first, any contract that naturally hit 0
+    # this cycle already flipped its player to roster_status='free_agent' /
+    # team_id=NULL before this call -- process_extensions_for_season restores
+    # the player to active on the new contract's team when their extension
+    # activates.
+    extensions_activated = await extension_repo.process_extensions_for_season(
+        pool, league_id, season, signed_in_season=next_season
+    )
 
     await _reset_game_state(pool, league_id, next_season)
 
+    # RO6: grow the cap alongside the season advance, in the same statement
+    # block. Rounded to the nearest $100k so displayed values look like real
+    # cap numbers rather than an odd multiplication artifact.
+    new_salary_cap = round(league_row["salary_cap"] * (1 + _SALARY_CAP_GROWTH_RATE) / 100_000) * 100_000
     await pool.execute(
-        "UPDATE leagues SET current_season = $1 WHERE id = $2",
+        "UPDATE leagues SET current_season = $1, salary_cap = $2 WHERE id = $3",
         next_season,
+        new_salary_cap,
         league_id,
     )
 
@@ -63,12 +90,11 @@ async def run_rollover(league_id: int) -> dict:
     # Seed the new frontier draft season so the 7-season pick window rolls forward.
     await trade_repo.seed_picks_for_league(pool, league_id, next_season + 6, num_seasons=1)
 
-    inducted = await hof_service.check_and_induct(pool, league_id, next_season)
-
     log.info(
         f"Rollover complete: league={league_id} season={season}->{next_season} "
         f"expired={contracts_expired} "
-        f"extensions_activated={extensions_activated} picks_seeded=1 hof_inducted={len(inducted)}"
+        f"extensions_activated={extensions_activated} picks_seeded=1 "
+        f"new_salary_cap={new_salary_cap}"
     )
 
     return {
@@ -77,7 +103,7 @@ async def run_rollover(league_id: int) -> dict:
         "contracts_expired": contracts_expired,
         "extensions_activated": extensions_activated,
         "picks_seeded": 1,
-        "hof_inducted": inducted,
+        "new_salary_cap": new_salary_cap,
     }
 
 
@@ -224,14 +250,26 @@ async def _reset_game_state(
     pool: asyncpg.Pool, league_id: int, new_season: int
 ) -> None:
     """
-    Clear standings_cache and ready_status for this league.
-    Games and box_scores are kept as historical data.
+    Clear standings_cache (scoped to new_season only -- prior seasons' rows
+    are retained for /offseason history), ready_status, and trade_block for
+    this league. Games and box_scores are kept as historical data.
     """
+    # RO2: new_season's rows don't exist yet at this point in rollover (this
+    # is defensive-only), but scoping by season stops every prior season's
+    # standings_cache rows from being wiped on every rollover.
     await pool.execute(
-        "DELETE FROM standings_cache WHERE league_id = $1",
+        "DELETE FROM standings_cache WHERE league_id = $1 AND season = $2",
         league_id,
+        new_season,
     )
     await pool.execute(
         "DELETE FROM ready_status WHERE league_id = $1",
+        league_id,
+    )
+    # RO8: trade_block listings are pure "current state" like ready_status --
+    # its read paths never filter by season -- so stale listings from the
+    # season that just ended must be cleared at rollover.
+    await pool.execute(
+        "DELETE FROM trade_block WHERE league_id = $1",
         league_id,
     )

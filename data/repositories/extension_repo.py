@@ -79,12 +79,21 @@ async def cancel_extension(
 
 
 async def process_extensions_for_season(
-    pool: asyncpg.Pool, league_id: int, season: int
+    pool: asyncpg.Pool, league_id: int, season: int, signed_in_season: int
 ) -> int:
     """
     Convert pending extensions whose activates_after_season == season into active
     contracts. Deactivates the old contract and inserts the new one.
-    Called during rollover after contracts are aged but before the season counter advances.
+    Called during rollover, after contracts are aged, before the season counter
+    advances -- `season` matches against activates_after_season (the season
+    that just ended), while `signed_in_season` anchors the new contract row to
+    the season it actually starts in (next_season), since these two are no
+    longer the same value now that rollover ages contracts first (RO1).
+    Also restores the player to active on the extended contract's team: since
+    _age_contracts now runs before this call, a contract that naturally hit
+    years_remaining=0 this cycle has already flipped the player to
+    roster_status='free_agent'/team_id=NULL -- without this restore, a player
+    whose extension just activated would incorrectly remain a free agent.
     Returns the count of extensions processed.
     """
     rows = await pool.fetch(
@@ -128,17 +137,26 @@ async def process_extensions_for_season(
                     team_id,
                     new_salary,
                     new_years,
-                    season,
+                    signed_in_season,
                 )
                 await conn.execute(
                     "DELETE FROM contract_extensions WHERE id = $1",
                     row["id"],
                 )
+                await conn.execute(
+                    """
+                    UPDATE players
+                    SET roster_status = 'active', team_id = $1
+                    WHERE id = $2
+                    """,
+                    team_id,
+                    player_id,
+                )
 
         processed += 1
         log.info(
             f"Extension activated: player={player_id} team={team_id} "
-            f"salary={new_salary} years={new_years} season={season}"
+            f"salary={new_salary} years={new_years} signed_in_season={signed_in_season}"
         )
 
     return processed
