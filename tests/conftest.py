@@ -113,6 +113,7 @@ _GET_POOL_PATCH_TARGETS = [
     "services.progression_service.get_pool",
     "services.rollover_service.get_pool",
     "services.draft_service.get_pool",
+    "services.playoff_service.get_pool",
     "services.schedule_service.get_pool",
     "services.notifier_service.get_pool",
     "bot.cogs.setup_cog.get_pool",
