@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import os
 import subprocess
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -96,33 +97,45 @@ async def clean_db(db_pool):
     yield
 
 
+# Every module below binds its own module-level `get_pool` at import time
+# (no shared registry), so each one needs its own patch target here. Kept as
+# a plain list + ExitStack loop rather than one long parenthesized `with (...)`
+# -- a 19th entry previously tipped that form into a CPython 3.12 codegen
+# crash (segfault) once combined with pytest's assertion-rewrite recompile of
+# this file; a loop has no such ceiling.
+_GET_POOL_PATCH_TARGETS = [
+    "data.db.get_pool",
+    "services.league_service.get_pool",
+    "services.roster_service.get_pool",
+    "services.awards_service.get_pool",
+    "services.trade_service.get_pool",
+    "services.fa_service.get_pool",
+    "services.progression_service.get_pool",
+    "services.rollover_service.get_pool",
+    "services.draft_service.get_pool",
+    "services.schedule_service.get_pool",
+    "services.notifier_service.get_pool",
+    "bot.cogs.setup_cog.get_pool",
+    "bot.cogs.team_cog.get_pool",
+    "bot.cogs.roster_cog.get_pool",
+    "bot.cogs.draft_cog.get_pool",
+    "bot.cogs.offseason_cog.get_pool",
+    "bot.cogs.strategy_cog.get_pool",
+    "bot.cogs.feedback_cog.get_pool",
+    "bot.ui.stats_views.get_pool",
+    "phase.helpers.get_pool",
+]
+
+
 @pytest.fixture(autouse=True)
 async def patch_get_pool(db_pool):
     if db_pool is None:
         yield
         return
     pool_mock = AsyncMock(return_value=db_pool)
-    with (
-        patch("data.db.get_pool", pool_mock),
-        patch("services.league_service.get_pool", pool_mock),
-        patch("services.roster_service.get_pool", pool_mock),
-        patch("services.awards_service.get_pool", pool_mock),
-        patch("services.trade_service.get_pool", pool_mock),
-        patch("services.fa_service.get_pool", pool_mock),
-        patch("services.progression_service.get_pool", pool_mock),
-        patch("services.rollover_service.get_pool", pool_mock),
-        patch("services.draft_service.get_pool", pool_mock),
-        patch("services.schedule_service.get_pool", pool_mock),
-        patch("services.notifier_service.get_pool", pool_mock),
-        patch("bot.cogs.setup_cog.get_pool", pool_mock),
-        patch("bot.cogs.team_cog.get_pool", pool_mock),
-        patch("bot.cogs.roster_cog.get_pool", pool_mock),
-        patch("bot.cogs.draft_cog.get_pool", pool_mock),
-        patch("bot.cogs.strategy_cog.get_pool", pool_mock),
-        patch("bot.cogs.feedback_cog.get_pool", pool_mock),
-        patch("bot.ui.stats_views.get_pool", pool_mock),
-        patch("phase.helpers.get_pool", pool_mock),
-    ):
+    with ExitStack() as stack:
+        for target in _GET_POOL_PATCH_TARGETS:
+            stack.enter_context(patch(target, pool_mock))
         yield
 
 
