@@ -196,3 +196,68 @@ async def test_get_roster_scoped_to_team(db_pool):
     players = await roster_service.get_roster(league_id, team_id)
     assert len(players) == 1
     assert players[0].team_id == team_id
+
+
+# ---------------------------------------------------------------------------
+# get_teams_below_roster_floor() — RO5
+# ---------------------------------------------------------------------------
+
+
+async def test_get_teams_below_roster_floor_flags_understaffed_team(db_pool):
+    """A team with fewer active players than `floor` is returned; a healthy team is not."""
+    league_id, thin_team_id = await _seed_league_and_team(db_pool)
+
+    # Second, healthy team.
+    healthy_team_row = await db_pool.fetchrow(
+        """
+        INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+        VALUES ($1, 'BOS', 'Celtics', 'Boston', 'East', 'Atlantic')
+        RETURNING id
+        """,
+        league_id,
+    )
+    healthy_team_id: int = healthy_team_row["id"]
+
+    for _ in range(3):
+        await _insert_player(db_pool, league_id, thin_team_id)
+    for _ in range(10):
+        await _insert_player(db_pool, league_id, healthy_team_id)
+
+    under_floor = await roster_service.get_teams_below_roster_floor(db_pool, league_id, floor=8)
+
+    flagged_ids = {t["team_id"] for t in under_floor}
+    assert thin_team_id in flagged_ids
+    assert healthy_team_id not in flagged_ids
+
+    thin_entry = next(t for t in under_floor if t["team_id"] == thin_team_id)
+    assert thin_entry["active_count"] == 3
+    assert thin_entry["team_name"] == "Los Angeles Lakers"
+
+
+async def test_get_teams_below_roster_floor_ignores_non_active_players(db_pool):
+    """Free-agent/waived roster_status rows do not count toward the active total."""
+    league_id, team_id = await _seed_league_and_team(db_pool)
+
+    for _ in range(3):
+        await _insert_player(db_pool, league_id, team_id)
+    for _ in range(10):
+        pid = await _insert_player(db_pool, league_id, team_id)
+        await db_pool.execute(
+            "UPDATE players SET roster_status = 'free_agent' WHERE id = $1", pid
+        )
+
+    under_floor = await roster_service.get_teams_below_roster_floor(db_pool, league_id, floor=8)
+
+    flagged_ids = {t["team_id"] for t in under_floor}
+    assert team_id in flagged_ids
+
+
+async def test_get_teams_below_roster_floor_empty_when_no_teams_understaffed(db_pool):
+    """Returns an empty list when every team meets the floor."""
+    league_id, team_id = await _seed_league_and_team(db_pool)
+
+    for _ in range(8):
+        await _insert_player(db_pool, league_id, team_id)
+
+    under_floor = await roster_service.get_teams_below_roster_floor(db_pool, league_id, floor=8)
+    assert under_floor == []

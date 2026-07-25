@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from data.db import get_pool
 from data.repositories import game_repo, team_repo
+from services import roster_service
 from core.logging import get_logger
 
 log = get_logger(__name__)
@@ -250,6 +251,17 @@ async def generate_season(league_id: int, season: int) -> int:
     if len(teams) != 30:
         raise ValueError(
             f"Expected 30 teams, got {len(teams)} — run /league delete and /league create again"
+        )
+
+    # RO5: guard-rail — block season generation if any team's active roster is
+    # below the floor (rollover/FA can leave a team unable to field a lineup;
+    # this does not auto-backfill, it just stops an unplayable season from locking in).
+    under_floor = await roster_service.get_teams_below_roster_floor(pool, league_id)
+    if under_floor:
+        team_names = ", ".join(t["team_name"] for t in under_floor)
+        raise ValueError(
+            f"Teams below the minimum roster size ({roster_service.ROSTER_FLOOR_DEFAULT} active players): "
+            f"{team_names} — sign more free agents before starting the season"
         )
 
     # Idempotent: remove any previously-generated games for this league+season
