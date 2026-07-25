@@ -9,8 +9,26 @@ import asyncpg
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo
+from services.trade_signals.role_fit import classify_role_fit
 
 log = get_logger(__name__)
+
+# Fields classify_role_fit needs from a Player — kept as one tuple so the
+# tendencies dict built in _process_player can't silently drift out of sync
+# with _ROLE_EXPECTED_TENDENCIES' keys in trade_signals/role_fit.py.
+_ROLE_FIT_TENDENCY_FIELDS = (
+    "tendency_3pt",
+    "tendency_drive",
+    "tendency_mid",
+    "tendency_post",
+    "tendency_pass",
+    "usage_weight",
+    "blk_tendency",
+    "stl_tendency",
+    "ast_tendency",
+    "reb_tendency",
+    "defense_tendency",
+)
 
 RATING_ATTRIBUTES = [
     "overall",
@@ -128,10 +146,33 @@ def _clamp(value: int, floor: int = 40, ceiling: int = 99) -> int:
     return max(floor, min(ceiling, value))
 
 
+def _apply_role_fit_nudge(deltas: dict[str, int], role_fit: Optional[str]) -> None:
+    """P6 larger version — role-fit compounding signal (see
+    docs/design/progression-logic-rules.md P6).
+
+    Nudges the `overall` delta ONLY (not a full re-shape of every
+    sub-attribute distribution) by a flat +/-1 when classify_role_fit found a
+    covered-role classification. This is a deliberately conservative,
+    explicitly-labeled PLACEHOLDER magnitude pending real evidence/playtesting
+    — not a tuned constant. Compounds with (never replaces) the low_minutes
+    penalty already baked into the caller's deltas: "mismatch" nudges the
+    same direction low_minutes already nudges (down, i.e. worse for
+    growth/stable/decline alike), "match" nudges the opposite direction
+    (better). role_fit=None (uncovered role in _ROLE_EXPECTED_TENDENCIES, or
+    no player_roles row yet — e.g. a brand-new rookie) applies no adjustment
+    at all, falling back to today's low-minutes-only behavior exactly.
+    """
+    if role_fit == "mismatch":
+        deltas["overall"] -= 1
+    elif role_fit == "match":
+        deltas["overall"] += 1
+
+
 def _build_deltas_growth(
     player: player_repo.Player,
     potential_weight: float,
     low_minutes: bool,
+    role_fit: Optional[str] = None,
 ) -> dict[str, int]:
     """Return per-attribute deltas for pre-peak players."""
     deltas: dict[str, int] = {}
@@ -149,10 +190,16 @@ def _build_deltas_growth(
         for attr in deltas:
             deltas[attr] = deltas[attr] // 2
 
+    _apply_role_fit_nudge(deltas, role_fit)
+
     return deltas
 
 
-def _build_deltas_stable(player: player_repo.Player, low_minutes: bool) -> dict[str, int]:
+def _build_deltas_stable(
+    player: player_repo.Player,
+    low_minutes: bool,
+    role_fit: Optional[str] = None,
+) -> dict[str, int]:
     deltas: dict[str, int] = {}
     # overall: biased toward 0 (weights: -1=1, 0=2, +1=1). A stable-stage player
     # not getting real run should be more likely to slip than a starter, not
@@ -171,10 +218,18 @@ def _build_deltas_stable(player: player_repo.Player, low_minutes: bool) -> dict[
             deltas[attr] = random.choices([-1, 0, 1], weights=[2, 2, 1])[0]
         else:
             deltas[attr] = random.randint(-1, 1)
+
+    _apply_role_fit_nudge(deltas, role_fit)
+
     return deltas
 
 
-def _build_deltas_decline(player: player_repo.Player, age: int, low_minutes: bool) -> dict[str, int]:
+def _build_deltas_decline(
+    player: player_repo.Player,
+    age: int,
+    low_minutes: bool,
+    role_fit: Optional[str] = None,
+) -> dict[str, int]:
     deltas: dict[str, int] = {}
 
     if age >= _STEEP_DECLINE_AGE:
@@ -212,6 +267,8 @@ def _build_deltas_decline(player: player_repo.Player, age: int, low_minutes: boo
 
         deltas[attr] = random.randint(-1, 0)
 
+    _apply_role_fit_nudge(deltas, role_fit)
+
     return deltas
 
 
@@ -220,11 +277,16 @@ async def _process_player(
     player: player_repo.Player,
     season: int,
     league_id: int,
+    role_by_player: dict[int, str],
 ) -> tuple[str, int, int]:
     """
     Process one player's end-of-season progression.
     Returns (stage, age, final_overall) so run_progression can run the
     post-processing retirement check (P5) without a second attribute read.
+
+    role_by_player: batched {player_id: role} map from run_progression's
+    single player_roles query (see P6 larger version in
+    docs/design/progression-logic-rules.md) — never queried per-player.
     """
     age = _compute_age(player.birth_date, player.years_pro)
     potential_weight = _potential_growth_weight(player.potential)
@@ -247,15 +309,24 @@ async def _process_player(
     barely_played = games_played <= 10
     low_minutes = low_minutes or barely_played
 
+    # --- role-fit check (P6 larger version) ---
+    # role_by_player has no entry for a brand-new rookie who hasn't had roles
+    # derived yet, or a team whose player_roles rows haven't been (re)derived
+    # this season — classify_role_fit's own "uncovered role" fallback then
+    # takes over identically via the None its .get() default feeds it.
+    role = role_by_player.get(player.id)
+    tendencies = {field: getattr(player, field) for field in _ROLE_FIT_TENDENCY_FIELDS}
+    role_fit = classify_role_fit(tendencies, role)
+
     # --- build base deltas ---
     if stage == "growth":
-        deltas = _build_deltas_growth(player, potential_weight, low_minutes)
+        deltas = _build_deltas_growth(player, potential_weight, low_minutes, role_fit)
         base_reason = "pre_peak_growth"
     elif stage == "stable":
-        deltas = _build_deltas_stable(player, low_minutes)
+        deltas = _build_deltas_stable(player, low_minutes, role_fit)
         base_reason = "peak_stable"
     else:
-        deltas = _build_deltas_decline(player, age, low_minutes)
+        deltas = _build_deltas_decline(player, age, low_minutes, role_fit)
         base_reason = "post_peak_decline"
 
     log_entries: list[tuple[str, int, int, str]] = []
@@ -332,6 +403,20 @@ async def _process_player(
     if low_minutes and log_entries:
         log_entries = [
             (attr, bv, av, "low_minutes" if reason == base_reason else reason)
+            for attr, bv, av, reason in log_entries
+        ]
+
+    # --- role-fit log entry (P6 larger version) ---
+    # The +/-1 nudge already happened above inside _build_deltas_* (folded
+    # into the "overall" delta, compounding with any low_minutes effect); this
+    # only relabels the overall entry so the log records which signal drove
+    # it. Skipped when low_minutes already claimed the label above — one
+    # reason per row, not a combinatorial string; the numeric delta already
+    # reflects both signals regardless of which label wins.
+    if role_fit and log_entries:
+        role_fit_reason = f"role_fit_{role_fit}"
+        log_entries = [
+            (attr, bv, av, role_fit_reason if attr == "overall" and reason == base_reason else reason)
             for attr, bv, av, reason in log_entries
         ]
 
@@ -466,9 +551,27 @@ async def run_progression(league_id: int, season: int) -> int:
 
     players = [player_repo._player_from_record(r) for r in rows]
 
+    # P6 larger version: one batched player_roles read for the whole league,
+    # matching the batch shape the players query above already uses — never
+    # per-player. `season` here is the same pending_progression_season value
+    # already threaded through this call (see P1) that player_roles rows were
+    # derived/persisted under during that season, so no extra season-number
+    # translation is needed at this call site.
+    role_rows = await pool.fetch(
+        """
+        SELECT player_id, role FROM player_roles
+        WHERE league_id = $1 AND season = $2
+        """,
+        league_id,
+        season,
+    )
+    role_by_player: dict[int, str] = {r["player_id"]: r["role"] for r in role_rows}
+
     for player in players:
         try:
-            stage, age, post_overall = await _process_player(pool, player, season, league_id)
+            stage, age, post_overall = await _process_player(
+                pool, player, season, league_id, role_by_player
+            )
             await _maybe_retire_player(pool, player, stage, age, post_overall, season, league_id)
         except Exception:
             log.exception(
