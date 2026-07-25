@@ -483,9 +483,22 @@ async def derive_and_persist_all(
             count += 1
 
         except Exception as exc:
-            log.warning(
-                "franchise_plan derive failed: league=%d team=%d season=%d — %s",
-                league_id, team.id, season, exc,
+            # FP2: this failure leaves the team's plan stale (last_derived_game_index
+            # never advances in the DB since persist didn't happen), which means the
+            # checkpoint gate above will naturally re-attempt derivation for this team
+            # on every subsequent call (top-level or, post-FP1, sub-batch) until it
+            # succeeds -- there is no permanent-staleness risk requiring a separate
+            # retry mechanism. Scoped to observability only: log.error (a stale plan
+            # silently feeds trade decisions -- worth surfacing above warning level)
+            # with exc_info for a real traceback, team code for readability, and the
+            # game index so a failure can be correlated to the sim batch that caused it.
+            log.error(
+                "franchise_plan derive failed: league=%d team=%s(id=%d) season=%d "
+                "game=%s — %s",
+                league_id, team.nba_team_code, team.id, season,
+                str(current_game_index) if current_game_index is not None else "offseason",
+                exc,
+                exc_info=True,
             )
 
     log.info(
