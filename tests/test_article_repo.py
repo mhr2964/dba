@@ -5,29 +5,15 @@ tracking regex-parsed the LLM's own rendered markdown instead of storing
 structured data).
 
 Uses db_pool directly -- article_repo takes pool as an explicit argument
-(no module-level get_pool binding to patch).
-
-NOTE on migration bootstrap: conftest.py's session-scoped setup_test_db fixture
-runs `alembic upgrade head` from a hardcoded main-checkout path, so a worktree
-agent's brand-new migration isn't visible to it (git worktrees each have their
-own working-tree files). This module upgrades the test DB to this worktree's
-head (which includes migration 046) before its tests run, and downgrades back
-to 045 afterward in a try/finally so the shared conftest bootstrap — which
-only knows revisions up to 045 from the main checkout — keeps working for
-every other test file in the same session, pass or fail.
+(no module-level get_pool binding to patch). Migration 046 (structured_data)
+is part of master now, so conftest.py's session-scoped `alembic upgrade head`
+bootstrap already covers it -- no per-file migrate/downgrade dance needed.
 """
 from __future__ import annotations
-
-import os
-import subprocess
 
 import pytest
 
 from data.repositories import article_repo
-
-_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
-_ALEMBIC_EXE = r"C:\Users\Owner\Desktop\AI\Projects\dba\.venv\Scripts\alembic.exe"
-_TEST_DB_URL = "postgresql://dba:dba@localhost:5434/dba_test"
 
 
 def _db_available() -> bool:
@@ -41,17 +27,6 @@ def _db_available() -> bool:
 
 
 pytestmark = pytest.mark.skipif(not _db_available(), reason="Postgres not available at localhost:5434")
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _migrate_to_worktree_head():
-    env = os.environ.copy()
-    env["DATABASE_URL"] = _TEST_DB_URL
-    subprocess.run([_ALEMBIC_EXE, "upgrade", "head"], cwd=_REPO_ROOT, env=env, check=True, capture_output=True)
-    try:
-        yield
-    finally:
-        subprocess.run([_ALEMBIC_EXE, "downgrade", "045"], cwd=_REPO_ROOT, env=env, check=True, capture_output=True)
 
 
 async def _insert_test_league(pool) -> int:
