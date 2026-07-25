@@ -761,12 +761,20 @@ async def close_fa(league_id: int, season: int) -> dict:
     """
     FA period is over.
     - Waive unsigned players OVR >= 65.
-    - Retire unsigned players OVR < 65 with years_pro > 8.
+    - Retire unsigned players OVR < 65 who are age-eligible (RO4: age-gated,
+      consistent with progression_service's P5 active-roster retirement rule
+      — no more force-retiring on tenure alone).
     - Update FA state phase='complete'.
     - Advance league phase to FA_CLOSED.
     Returns summary dict with counts.
     """
     pool = await get_pool()
+
+    # RO4: local import, matching this module's existing style for avoiding
+    # circular deps (see the advance_phase import below). Reuses progression's
+    # already-shipped age gate/age-computation helper instead of the old bare
+    # years_pro > 8 tenure check, which had no age/birth_date awareness at all.
+    from services.progression_service import _RETIREMENT_MIN_AGE, _compute_age
 
     unsigned = await fa_repo.get_unsigned_players(pool, league_id)
 
@@ -776,7 +784,7 @@ async def close_fa(league_id: int, season: int) -> dict:
     for player_data in unsigned:
         pid = player_data["id"]
         ovr = player_data["overall"]
-        years_pro = player_data["years_pro"]
+        age = _compute_age(player_data.get("birth_date"), player_data["years_pro"])
 
         if ovr >= 65:
             await pool.execute(
@@ -784,14 +792,14 @@ async def close_fa(league_id: int, season: int) -> dict:
                 pid,
             )
             waived_count += 1
-        elif years_pro > 8:
+        elif age >= _RETIREMENT_MIN_AGE:
             await pool.execute(
                 "UPDATE players SET roster_status = 'retired' WHERE id = $1",
                 pid,
             )
             retired_count += 1
         else:
-            # Young low-OVR player remains a free agent; will be available next cycle.
+            # Still young enough — remains a free agent; will be available next cycle.
             pass
 
     await fa_repo.update_fa_state(pool, league_id, "complete")
