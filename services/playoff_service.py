@@ -10,7 +10,8 @@ from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import game_repo, league_repo, series_repo, team_repo
-from services import sim_engine
+from services import records_service, sim_engine, sim_orchestrator
+from services.sim_persistence import _persist_injuries
 from bot.embeds import sim_embeds
 
 log = get_logger(__name__)
@@ -235,10 +236,26 @@ async def _run_one_game(
     away_team: team_repo.Team,
     series_id: int,
     season_type: str = "playoff",
+    guild: Optional[discord.Guild] = None,
 ) -> Tuple[int, dict]:
     """
     Inserts a game row, runs sim_engine, persists result. Returns (game_id, result).
     season_type distinguishes play-in from playoff for record-keeping.
+
+    PA1: pre-sim inputs (CPU/human gameplans, directive application, strategy
+    modifiers, role-stamping, coach minutes plan, back-to-back fatigue) are
+    built via the same shared helper the regular season uses
+    (sim_orchestrator._build_pre_sim_inputs) before calling sim_engine.sim_game.
+    Before this fix, this function called sim_game with only 5 positional
+    args, so no player ever had _role_touch_share stamped and every playoff/
+    play-in game silently ran sim_engine's legacy fallback path.
+
+    Persistence deliberately does NOT route through
+    sim_persistence._persist_game_result -- that call chain touches
+    game_repo.update_standings, which must never see playoff/play-in results
+    (they must not perturb regular-season standings_cache). PA4 (injuries)
+    and PA5 (all-time records) are wired in directly instead, since both are
+    standalone with no standings coupling.
     """
     home_players = await _load_lineup(pool, league_id, home_team.id)
     away_players = await _load_lineup(pool, league_id, away_team.id)
@@ -251,7 +268,7 @@ async def _run_one_game(
     # Use a sim-calendar date so player game logs stay coherent with regular-season dates.
     sim_date = await _get_playoff_sim_date(pool, league_id, season)
 
-    game_id = await game_repo.insert_game(pool, {
+    game_dict = {
         "league_id": league_id,
         "season": season,
         "season_type": season_type,
@@ -263,7 +280,13 @@ async def _run_one_game(
         "status": "scheduled",
         "is_user_matchup": False,
         "rng_seed": rng_seed,
-    })
+    }
+    game_id = await game_repo.insert_game(pool, game_dict)
+    game_dict["id"] = game_id
+
+    pre_sim = await sim_orchestrator._build_pre_sim_inputs(
+        pool, league_id, season, game_dict, home_team, away_team, home_players, away_players
+    )
 
     result = sim_engine.sim_game(
         _team_to_sim_dict(home_team, home_ovr),
@@ -271,6 +294,11 @@ async def _run_one_game(
         home_players,
         away_players,
         rng_seed,
+        fatigue=pre_sim["fatigue"],
+        home_strategy=pre_sim["home_strategy"],
+        away_strategy=pre_sim["away_strategy"],
+        home_minutes=pre_sim["home_minutes"],
+        away_minutes=pre_sim["away_minutes"],
     )
 
     # Enrich box score lines with player names so columnists can reference them.
@@ -311,6 +339,34 @@ async def _run_one_game(
         away_stats["plus_minus"] = result["away_score"] - result["home_score"]
         await game_repo.insert_team_game_stats(pool, game_id, away_team.id, away_stats)
 
+    # PA4: playoff injuries were previously never persisted (result["injuries"]
+    # went unread). Resolve the same "injuries" channel (falls back to news)
+    # the regular-season path uses, so playoff injuries are announced, not
+    # just silently written to the injuries table.
+    injury_channel = None
+    if guild is not None:
+        try:
+            from services.sim_channel_announcer import _get_injury_channel
+            injury_channel = await _get_injury_channel(guild, pool, league_id)
+        except Exception as exc:
+            log.warning(f"Failed to resolve injury channel for playoff game {game_id}: {exc}")
+    await _persist_injuries(pool, game_dict, game_id, season, result, injury_channel=injury_channel, guild=guild)
+
+    # PA5: playoff performances were previously never checked against all-time
+    # records. check_and_update_records needs home_team_id/away_team_id on
+    # result to resolve team names -- inject them the same way
+    # sim_persistence._persist_game_result does for the regular-season path.
+    result["home_team_id"] = home_team.id
+    result["away_team_id"] = away_team.id
+    try:
+        _season_announcements, at_announcements = await records_service.check_and_update_records(
+            pool, league_id, season, game_id, result
+        )
+        for at_announcement in at_announcements:
+            log.info(f"Playoff all-time record: {at_announcement}")
+    except Exception as exc:
+        log.warning(f"records_service.check_and_update_records failed for playoff game {game_id}: {exc}")
+
     return game_id, result
 
 
@@ -350,7 +406,7 @@ async def sim_series_game(
         home_team, away_team = low_team, high_team
 
     game_id, result = await _run_one_game(
-        pool, league_id, season, home_team, away_team, series_id, "playoff"
+        pool, league_id, season, home_team, away_team, series_id, "playoff", guild=guild
     )
 
     updated_series = await series_repo.record_game_result(
@@ -441,6 +497,10 @@ async def _compute_series_mvp(
     winning_team_id: int,
 ) -> Optional[dict]:
     """Find the best performer from the winning team across all games in this series."""
+    # PA3: scope directly to this series (g.series_id) and playoff/play-in
+    # games (g.season_type) -- the previous EXISTS clause only checked that a
+    # game's two teams matched the series' two teams, which let regular-season
+    # head-to-head games between the same two teams leak into "series" stats.
     rows = await pool.fetch(
         """
         SELECT b.player_id,
@@ -452,12 +512,8 @@ async def _compute_series_mvp(
         JOIN players p ON p.id = b.player_id
         WHERE g.league_id = $1 AND g.season = $2
           AND b.team_id = $3
-          AND EXISTS (
-              SELECT 1 FROM series ps
-              WHERE ps.id = $4
-                AND (g.home_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
-                AND (g.away_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
-          )
+          AND g.series_id = $4
+          AND g.season_type IN ('playoff', 'play_in')
         GROUP BY b.player_id, p.first_name, p.last_name
         ORDER BY mvp_score DESC
         LIMIT 1
@@ -477,6 +533,7 @@ async def _get_series_stats_for_player(
     player_id: int,
 ) -> dict:
     """Compute PPG/RPG/APG and games played for a player across a specific series."""
+    # PA3: same series/season_type scoping fix as _compute_series_mvp above.
     row = await pool.fetchrow(
         """
         SELECT
@@ -488,12 +545,8 @@ async def _get_series_stats_for_player(
         JOIN games g ON g.id = b.game_id
         WHERE g.league_id = $1 AND g.season = $2
           AND b.player_id = $3
-          AND EXISTS (
-              SELECT 1 FROM series ps
-              WHERE ps.id = $4
-                AND (g.home_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
-                AND (g.away_team_id IN (ps.high_seed_team_id, ps.low_seed_team_id))
-          )
+          AND g.series_id = $4
+          AND g.season_type IN ('playoff', 'play_in')
         """,
         league_id, season, player_id, series_id,
     )
@@ -568,6 +621,43 @@ async def _announce_series_mvp(
         await channel.send(embed=embed)
     except Exception as exc:
         log.warning(f"Failed to post {award_type} announcement: {exc}")
+
+
+async def _finals_home_seed(
+    pool,
+    league_id: int,
+    season: int,
+    east_winner_id: int,
+    west_winner_id: int,
+) -> Tuple[int, int]:
+    """
+    PA2: return (high_seed_id, low_seed_id) for the Finals matchup based on
+    each finalist's actual regular-season record, instead of unconditionally
+    treating the East winner as the high seed.
+
+    Uses the same (-wins, losses) ordering _standings_to_seeds already applies
+    to rank teams within a conference. Falls back to the pre-PA2 default
+    (East as high seed) only if standings data is missing for either team --
+    should not happen in normal flow, since both teams just finished a full
+    regular season.
+    """
+    standings = await game_repo.get_standings(pool, league_id, season)
+    records = {r["team_id"]: r for r in standings}
+    east_rec = records.get(east_winner_id)
+    west_rec = records.get(west_winner_id)
+    if east_rec is None or west_rec is None:
+        log.warning(
+            f"_finals_home_seed: missing standings for east={east_winner_id} or "
+            f"west={west_winner_id} in league={league_id} season={season} -- "
+            "falling back to East-as-high-seed default"
+        )
+        return east_winner_id, west_winner_id
+
+    east_key = (-east_rec["wins"], east_rec["losses"])
+    west_key = (-west_rec["wins"], west_rec["losses"])
+    if west_key < east_key:
+        return west_winner_id, east_winner_id
+    return east_winner_id, west_winner_id
 
 
 async def advance_playoff_round(
@@ -699,21 +789,25 @@ async def advance_playoff_round(
                 except Exception as exc:
                     log.warning(f"Failed to upsert cfmvp_west into history_seasons: {exc}")
 
-        # Higher win total gets home court; treat East winner as high seed for simplicity.
+        # PA2: home court goes to whichever finalist actually earned it via
+        # regular-season record, not unconditionally to the East winner.
+        finals_high_seed, finals_low_seed = await _finals_home_seed(
+            pool, league_id, season, east_winner, west_winner
+        )
         await series_repo.create_series(
             pool, league_id, season, "nba_finals",
-            high_seed_id=east_winner,
-            low_seed_id=west_winner,
+            high_seed_id=finals_high_seed,
+            low_seed_id=finals_low_seed,
         )
         if guild:
             try:
                 from services import sim_content_pipeline as _scp
-                _east_t = await team_repo.get_by_id(pool, east_winner)
-                _west_t = await team_repo.get_by_id(pool, west_winner)
-                if _east_t and _west_t:
+                _high_t = await team_repo.get_by_id(pool, finals_high_seed)
+                _low_t = await team_repo.get_by_id(pool, finals_low_seed)
+                if _high_t and _low_t:
                     await _scp._maybe_post_prelude(pool, league_id, season, guild, {
-                        "high_seed_team": getattr(_east_t, "nba_team_code", str(east_winner)),
-                        "low_seed_team": getattr(_west_t, "nba_team_code", str(west_winner)),
+                        "high_seed_team": getattr(_high_t, "nba_team_code", str(finals_high_seed)),
+                        "low_seed_team": getattr(_low_t, "nba_team_code", str(finals_low_seed)),
                         "round": "DBA Finals",
                     })
             except Exception as _exc:
@@ -871,7 +965,7 @@ async def sim_play_in(
         t7 = await team_repo.get_by_id(pool, s_7v8.high_seed_team_id)
         t8 = await team_repo.get_by_id(pool, s_7v8.low_seed_team_id)
         if s_7v8.status != "complete":
-            _, r1 = await _run_one_game(pool, league_id, season, t7, t8, s_7v8.id, "play_in")
+            _, r1 = await _run_one_game(pool, league_id, season, t7, t8, s_7v8.id, "play_in", guild=guild)
             s_7v8 = await series_repo.record_game_result(pool, s_7v8.id, r1["winner_team_id"])
             if box_channel:
                 embed = sim_embeds.game_recap(
@@ -887,7 +981,7 @@ async def sim_play_in(
         t9 = await team_repo.get_by_id(pool, s_9v10.high_seed_team_id)
         t10 = await team_repo.get_by_id(pool, s_9v10.low_seed_team_id)
         if s_9v10.status != "complete":
-            _, r2 = await _run_one_game(pool, league_id, season, t9, t10, s_9v10.id, "play_in")
+            _, r2 = await _run_one_game(pool, league_id, season, t9, t10, s_9v10.id, "play_in", guild=guild)
             s_9v10 = await series_repo.record_game_result(pool, s_9v10.id, r2["winner_team_id"])
             if box_channel:
                 embed = sim_embeds.game_recap(
@@ -918,7 +1012,7 @@ async def sim_play_in(
                 games_needed=2,
             )
             _, r3 = await _run_one_game(
-                pool, league_id, season, loser_team, winner_team, s_g3.id, "play_in"
+                pool, league_id, season, loser_team, winner_team, s_g3.id, "play_in", guild=guild
             )
             s_g3 = await series_repo.record_game_result(pool, s_g3.id, r3["winner_team_id"])
             if box_channel:

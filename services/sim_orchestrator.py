@@ -69,42 +69,53 @@ _INJURY_GAMES_MISSED: dict[str, tuple[int, int]] = {
 _ANNOUNCE_SEVERITIES = frozenset({"week_4_8", "season_ending"})
 
 
-async def _sim_single_game(
+async def _build_pre_sim_inputs(
     pool,
-    game: dict,
     league_id: int,
     season: int,
-    news_channel: Optional[discord.TextChannel],
-    injury_channel: Optional[discord.TextChannel] = None,
-    records_channel: Optional[discord.TextChannel] = None,
-    guild: Optional[discord.Guild] = None,
-) -> Optional[dict]:
-    home_team = await team_repo.get_by_id(pool, game["home_team_id"])
-    away_team = await team_repo.get_by_id(pool, game["away_team_id"])
-    if not home_team or not away_team:
-        log.error(f"Could not load teams for game {game['id']}")
-        return None
+    game_row: dict,
+    home_team: team_repo.Team,
+    away_team: team_repo.Team,
+    home_players: List[dict],
+    away_players: List[dict],
+) -> dict:
+    """
+    Pre-sim input-building shared by the regular-season path (_sim_single_game
+    below) and the playoff path (services.playoff_service._run_one_game):
+    CPU/human gameplan decision, directive application, strategy modifiers,
+    role-stamping, coach minutes plan, and back-to-back fatigue.
 
-    await _ensure_lineup(pool, league_id, home_team.id)
-    await _ensure_lineup(pool, league_id, away_team.id)
+    PA1 (playoffs/awards/HOF realism audit): before this extraction, playoff
+    games never received any of this -- they called sim_engine.sim_game with
+    only 5 positional args, so sim_engine's `_has_role_data` check always came
+    back False and every playoff/play-in game silently ran the "should not be
+    reached in normal operation" legacy fallback (no CPU gameplans, no player
+    directives, no scheme modifiers, no coach-set minutes plan, no fatigue).
 
-    home_players = await _load_lineup_for_team(pool, league_id, home_team.id)
-    away_players = await _load_lineup_for_team(pool, league_id, away_team.id)
+    Mutates home_players/away_players in place (directive application +
+    _role_* stamping), matching pre-extraction behavior -- callers pass in
+    the same list objects they'll hand to sim_engine.sim_game afterward.
 
-    home_ovr = await _compute_team_ovr(pool, league_id, home_team.id)
-    away_ovr = await _compute_team_ovr(pool, league_id, away_team.id)
+    game_row must have: id, home_team_id, away_team_id, scheduled_date,
+    rng_seed (regular season passes the games-table row; playoff_service
+    passes the dict it builds for game_repo.insert_game, with "id" added
+    after insert).
 
-    game_date = game.get("scheduled_date")
+    Returns the sim_game() kwargs this step produces (fatigue/home_strategy/
+    away_strategy/home_minutes/away_minutes) plus the two gameplans so
+    callers can persist/announce them.
+    """
+    game_date = game_row.get("scheduled_date")
     fatigue = {
-        "home_b2b": await game_repo.is_back_to_back(pool, league_id, season, game["home_team_id"], game_date),
-        "away_b2b": await game_repo.is_back_to_back(pool, league_id, season, game["away_team_id"], game_date),
+        "home_b2b": await game_repo.is_back_to_back(pool, league_id, season, home_team.id, game_date),
+        "away_b2b": await game_repo.is_back_to_back(pool, league_id, season, away_team.id, game_date),
     }
 
     home_gameplan, away_gameplan = await cpu_coach_service.decide_gameplans(
-        pool, league_id, season, game, home_players, away_players
+        pool, league_id, season, game_row, home_players, away_players
     )
-    await gameplan_repo.record_gameplan(pool, game["id"], home_team.id, home_gameplan)
-    await gameplan_repo.record_gameplan(pool, game["id"], away_team.id, away_gameplan)
+    await gameplan_repo.record_gameplan(pool, game_row["id"], home_team.id, home_gameplan)
+    await gameplan_repo.record_gameplan(pool, game_row["id"], away_team.id, away_gameplan)
 
     if home_gameplan["source"] == "cpu":
         _apply_cpu_directives(home_players, home_gameplan["player_directives"])
@@ -136,9 +147,51 @@ async def _sim_single_game(
 
     home_player_ids = [p["id"] for p in home_players]
     away_player_ids = [p["id"] for p in away_players]
-    game_rng_seed = game.get("rng_seed") or (game["id"] * 31337)
+    game_rng_seed = game_row.get("rng_seed") or (game_row["id"] * 31337)
     home_minutes = await strategy_repo.get_team_minutes_plan(pool, league_id, home_team.id, home_player_ids, game_seed=game_rng_seed)
     away_minutes = await strategy_repo.get_team_minutes_plan(pool, league_id, away_team.id, away_player_ids, game_seed=game_rng_seed ^ 0xABCD)
+
+    return {
+        "fatigue": fatigue,
+        "home_strategy": home_strategy,
+        "away_strategy": away_strategy,
+        "home_minutes": home_minutes,
+        "away_minutes": away_minutes,
+        "home_gameplan": home_gameplan,
+        "away_gameplan": away_gameplan,
+    }
+
+
+async def _sim_single_game(
+    pool,
+    game: dict,
+    league_id: int,
+    season: int,
+    news_channel: Optional[discord.TextChannel],
+    injury_channel: Optional[discord.TextChannel] = None,
+    records_channel: Optional[discord.TextChannel] = None,
+    guild: Optional[discord.Guild] = None,
+) -> Optional[dict]:
+    home_team = await team_repo.get_by_id(pool, game["home_team_id"])
+    away_team = await team_repo.get_by_id(pool, game["away_team_id"])
+    if not home_team or not away_team:
+        log.error(f"Could not load teams for game {game['id']}")
+        return None
+
+    await _ensure_lineup(pool, league_id, home_team.id)
+    await _ensure_lineup(pool, league_id, away_team.id)
+
+    home_players = await _load_lineup_for_team(pool, league_id, home_team.id)
+    away_players = await _load_lineup_for_team(pool, league_id, away_team.id)
+
+    home_ovr = await _compute_team_ovr(pool, league_id, home_team.id)
+    away_ovr = await _compute_team_ovr(pool, league_id, away_team.id)
+
+    pre_sim = await _build_pre_sim_inputs(
+        pool, league_id, season, game, home_team, away_team, home_players, away_players
+    )
+    home_gameplan = pre_sim["home_gameplan"]
+    away_gameplan = pre_sim["away_gameplan"]
 
     seed = game.get("rng_seed") or (game["id"] * 31337)
     result = sim_engine.sim_game(
@@ -147,11 +200,11 @@ async def _sim_single_game(
         home_players,
         away_players,
         seed,
-        fatigue=fatigue,
-        home_strategy=home_strategy,
-        away_strategy=away_strategy,
-        home_minutes=home_minutes,
-        away_minutes=away_minutes,
+        fatigue=pre_sim["fatigue"],
+        home_strategy=pre_sim["home_strategy"],
+        away_strategy=pre_sim["away_strategy"],
+        home_minutes=pre_sim["home_minutes"],
+        away_minutes=pre_sim["away_minutes"],
     )
 
     # Enrich box lines with player names from already-loaded lineup dicts.

@@ -21,6 +21,15 @@ log = get_logger(__name__)
 # 10 games ensures the month has enough data for a meaningful award.
 _MIN_GAMES = 10
 
+# PA13: composite POTM scoring weights, reusing cpu_voter's philosophy
+# (raw counting stats + shooting efficiency + team success) but NOT the
+# season-MVP formula's exact weights -- a month is 10-20 games vs a full
+# 82-game season, so team win_pct is a noisier signal here and gets a
+# smaller weight (10 vs cpu_voter's 32) rather than pretending
+# month-scoped win_pct deserves the same trust as a season-long record.
+_POTM_TS_PCT_WEIGHT = 10.0
+_POTM_WIN_PCT_WEIGHT = 10.0
+
 
 def _prev_month(year_month: str) -> str:
     """Return the month before 'YYYY-MM' as 'YYYY-MM'."""
@@ -168,13 +177,18 @@ async def check_and_get_potm_awards(
             """
             SELECT
                 p.id          AS player_id,
+                t.id          AS team_id,
                 p.first_name || ' ' || p.last_name AS player_name,
                 t.nba_team_code AS team_code,
                 t.conference,
                 AVG(b.points)                               AS ppg,
                 AVG(b.rebounds_off + b.rebounds_def)        AS rpg,
-                AVG(b.assists)                              AS apg,
-                COUNT(b.game_id)                            AS games_played
+                AVG(b.assists)                               AS apg,
+                COUNT(b.game_id)                            AS games_played,
+                CASE WHEN (SUM(b.fga) + 0.44 * SUM(b.fta)) > 0
+                     THEN SUM(b.points)::REAL /
+                          (2.0 * (SUM(b.fga) + 0.44 * SUM(b.fta)))
+                     ELSE 0 END                              AS ts_pct
             FROM game_box_scores b
             JOIN games g  ON g.id = b.game_id
             JOIN players p ON p.id = b.player_id
@@ -184,12 +198,42 @@ async def check_and_get_potm_awards(
               AND g.scheduled_date BETWEEN $3 AND $4
               AND g.status = 'simmed'
               AND g.season_type = 'regular'
-            GROUP BY p.id, p.first_name, p.last_name, t.nba_team_code, t.conference
+            GROUP BY p.id, t.id, p.first_name, p.last_name, t.nba_team_code, t.conference
             HAVING COUNT(b.game_id) >= $5
             ORDER BY AVG(b.points) DESC
             """,
             league_id, season, month_start, month_end, _MIN_GAMES,
         )
+
+        # PA13: month-scoped team win_pct, one row per team, for the
+        # composite score below. Regular-season games only, matching the
+        # player query's season_type filter.
+        team_month_record_rows = await pool.fetch(
+            """
+            SELECT team_id,
+                   SUM(CASE WHEN win THEN 1 ELSE 0 END) AS wins,
+                   COUNT(*) AS games
+            FROM (
+                SELECT home_team_id AS team_id, (home_score > away_score) AS win
+                FROM games
+                WHERE league_id = $1 AND season = $2
+                  AND scheduled_date BETWEEN $3 AND $4
+                  AND status = 'simmed' AND season_type = 'regular'
+                UNION ALL
+                SELECT away_team_id AS team_id, (away_score > home_score) AS win
+                FROM games
+                WHERE league_id = $1 AND season = $2
+                  AND scheduled_date BETWEEN $3 AND $4
+                  AND status = 'simmed' AND season_type = 'regular'
+            ) t
+            GROUP BY team_id
+            """,
+            league_id, season, month_start, month_end,
+        )
+        team_month_win_pct: dict[int, float] = {
+            r["team_id"]: (r["wins"] / r["games"] if r["games"] else 0.5)
+            for r in team_month_record_rows
+        }
 
         log.info(
             f"POTM {ym}: eligible players found: {len(rows)} "
@@ -232,12 +276,27 @@ async def check_and_get_potm_awards(
             f"West POTM eligible: {len(west_candidates)}"
         )
 
+        def _potm_score(r) -> float:
+            """PA13 composite: raw production + shooting efficiency + team
+            success, reusing cpu_voter's efficiency/win_pct weighting
+            philosophy at a month-appropriate scale (see _POTM_*_WEIGHT
+            comment above) instead of a bare ppg/apg max()."""
+            ppg = float(r["ppg"] or 0)
+            rpg = float(r["rpg"] or 0)
+            apg = float(r["apg"] or 0)
+            ts_pct = float(r["ts_pct"] or 0)
+            win_pct = team_month_win_pct.get(r["team_id"], 0.5)
+            return (
+                ppg * 1.0 + apg * 0.6 + rpg * 0.4
+                + ts_pct * _POTM_TS_PCT_WEIGHT
+                + win_pct * _POTM_WIN_PCT_WEIGHT
+            )
+
         for conference in ("East", "West"):
             conf_players = east_candidates if conference == "East" else west_candidates
             if not conf_players:
                 continue
-            # Primary sort: ppg; tiebreaker: apg
-            winner = max(conf_players, key=lambda r: (float(r["ppg"]), float(r["apg"])))
+            winner = max(conf_players, key=_potm_score)
             awards.append({
                 "month_label": month_label,
                 "conference": conference,
