@@ -444,9 +444,9 @@ _PERSONA_WORD_TARGET: dict[str, int] = {
     "hot_take_hour":  140,   # hot_take_hour.py: 4 turns, hard 35-word cap each
     "jordan_rivera":   90,   # jordan_rivera.py: take + why-it-matters + bold prediction, 1-2 sentences each
     "keisha_williams": 110,  # keisha_williams.py: metric block + definition + 2 standouts + why-it-matters
-    "pat_chen":       130,   # pat_chen.py Observation/Evidence/Implication (POTM shape is longer but still tight per side)
+    "pat_chen":       120,   # pat_chen.py: explicit "Hard cap: total body ≤120 words" in voice_notes (A4)
     "carla_knox":     150,   # carla_knox.py: scoreboard table + 2-3 bullets + league pulse sentence
-    "coach_beat":     150,   # coach_beat.py: 2 paragraphs (2-3 sentences each) + closer
+    "coach_beat":     120,   # coach_beat.py: explicit "Hard cap: total body <=120 words" in voice_notes (A5)
     "big_picture":    180,   # big_picture.py: "~600-800 characters of prose, plus 3 bullets" (its OWN stated target)
     "the_prelude":    150,   # the_prelude.py: record table + 4 short sections
     "marcus_cole":     90,   # marcus_cole.py: "1-2 sentences MAX" per team + grades

@@ -33,6 +33,11 @@ the_ledger = register_persona(Persona(
         "Grade each move on a letter scale (A through F, with + and -). Be decisive: no 'incomplete' grades. "
         "Analytical and dry — you are an accountant who watches basketball. No cheerleading.\n\n"
         "Use ONLY real moves from the context. Do not fabricate trades.\n\n"
+        "SEASON CALLBACK (when present): If 'season_history' is in context AND non-empty, it lists completed "
+        "seasons with each champion. If one of the front offices you're grading this window was last season's "
+        "champion (or fell short after being one), work the trajectory into the grade — 'still building off last "
+        "season's title' reads differently than 'a repeat champion standing pat.' If 'season_history' is absent "
+        "or empty (season 1, nothing completed yet), grade purely on this window's moves — no invented history.\n\n"
         "FORMAT YOUR BODY EXACTLY LIKE THIS (use real data):\n"
         "*Window: {phase label — e.g. 'Trade Deadline' or 'First month post-deadline'}*\n\n"
         "```\n"
@@ -54,6 +59,7 @@ the_ledger = register_persona(Persona(
         "notice they were avoiding these."
     ),
     categories=("front_office_grade",),
+    context_keys=("season_history",),
     format_style="passthrough",
     output_shape_override=_LEDGER_SHAPE,
 ))

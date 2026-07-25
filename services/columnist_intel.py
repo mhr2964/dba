@@ -31,6 +31,9 @@ Built-in providers (registered at module level below):
   "season_history"       — champion/MVP/Finals MVP per completed season (history_repo)
   "hall_of_fame"         — league HOF inductees (hof_repo)
   "all_time_records"     — current league all-time records (all_time_records_repo)
+  "scheme_history"       — this team's most-used offense/defense scheme this
+                           season and its W-L record while running each
+                           (gameplan_repo.get_scheme_history)
 
 "context_signals" is NOT a team-intel provider — it is sourced from the caller's
 extra_context dict (trade signals computed per player) and handled upstream in
@@ -48,6 +51,16 @@ None-safe: a league with no completed seasons yet (season 1, nothing
 finished) gets an empty list back, never an error — a persona's voice_notes
 can check "if season_history:" before referencing it (Phase 2 concern; this
 module's job is just making the data reliably retrievable).
+
+Team-scoped scheme history (Phase 2 fix C3)
+--------------------------------------------
+"scheme_history" is genuinely team-scoped, unlike the three league-wide
+providers above — CPU-selected offensive/defensive schemes are a per-game,
+per-team decision (see cpu_coach_service.py's _decide_strategy), not shared
+league state. It is built the same way as the original five built-in
+providers: one query per team_id via gameplan_repo.get_scheme_history, not a
+broadcast-to-all-teams list. A team with no simmed games yet this season
+gets {} (dropped entirely, same as any other empty provider result).
 """
 from __future__ import annotations
 
@@ -57,7 +70,7 @@ from typing import Any
 from core.logging import get_logger
 from services.personas.base import Persona
 from services import team_intel
-from data.repositories import history_repo, hof_repo, all_time_records_repo
+from data.repositories import history_repo, hof_repo, all_time_records_repo, gameplan_repo
 
 log = get_logger(__name__)
 
@@ -178,6 +191,26 @@ async def _provide_all_time_records(pool, league, season: int, team_ids: list[in
     """
     records = await all_time_records_repo.get_all(pool, league.id)
     return {tid: records for tid in team_ids}
+
+
+@register_intel_provider("scheme_history")
+async def _provide_scheme_history(pool, league, season: int, team_ids: list[int]) -> dict[int, Any]:
+    """Team-scoped scheme history -- this season's most-used offensive and
+    defensive scheme per team and the team's W-L record while running each
+    (gameplan_repo.get_scheme_history).
+
+    Unlike the three league-wide history providers above, this is genuinely
+    per-team data, so it's built the original way: one query per team_id, not
+    a single broadcast list. Teams with no simmed games yet this season are
+    simply omitted from the result (falsy {} is dropped, matching how
+    build_columnist_intel already treats any other empty provider result).
+    """
+    result: dict[int, Any] = {}
+    for tid in team_ids:
+        history = await gameplan_repo.get_scheme_history(pool, league.id, season, tid)
+        if history:
+            result[tid] = history
+    return result
 
 
 # ---------------------------------------------------------------------------
