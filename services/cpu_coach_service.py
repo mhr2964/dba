@@ -5,6 +5,8 @@ import os
 import random
 from types import SimpleNamespace
 
+from data.repositories import gameplan_repo
+
 _HEADLESS = os.environ.get("DBA_HEADLESS_MODE") == "1"
 
 
@@ -140,8 +142,17 @@ async def _compute_cpu_gameplan(
 
     hot_cold = await _get_hot_cold(pool, top8_self[:5], season)
 
+    # CA5 (coaching AI realism sweep): scheme stickiness. get_scheme_history
+    # already existed for Coach Beat's columnist copy ("has this team run this
+    # scheme before, did it work") but was never read here -- the CPU picked a
+    # fresh scheme every game with zero memory of its own recent tendencies.
+    # Degrades gracefully to {} (no bonus) early in a season with no simmed
+    # games yet, same as its existing caller.
+    scheme_history = await gameplan_repo.get_scheme_history(pool, league_id, season, team_id)
+
     strategy, rationale_parts = _decide_strategy(
-        self_analysis, opp_analysis, posture, back_to_back, win_streak, loss_streak, rng
+        self_analysis, opp_analysis, posture, back_to_back, win_streak, loss_streak, rng,
+        scheme_history=scheme_history,
     )
 
     player_directives = _decide_player_directives(
@@ -401,6 +412,30 @@ def _weighted_choice(rng: random.Random, options: list[tuple[str, int]]) -> str:
     return options[-1][0]
 
 
+# CA5 (coaching AI realism sweep) -- disclosed placeholder, not derived from a formula.
+_SCHEME_HISTORY_BONUS = 2
+
+
+def _apply_scheme_history_bonus(
+    options: list[tuple[str, int]], historical_scheme: str | None
+) -> list[tuple[str, int]]:
+    """CA5 (coaching AI realism sweep): give a team's historically-favored
+    scheme (from gameplan_repo.get_scheme_history) a flat weight bonus in the
+    weighted-choice pool -- CPU teams picked a scheme fresh every single game
+    with zero memory of what they'd actually been running. Only applies if
+    the historical scheme is still one of the options on offer THIS game --
+    for defense_options that's already been pruned by the finding #1
+    personnel gate (a team that lost the personnel to run its old favorite
+    scheme doesn't get it artificially propped back up).
+    """
+    if historical_scheme is None:
+        return options
+    return [
+        (scheme, weight + _SCHEME_HISTORY_BONUS) if scheme == historical_scheme else (scheme, weight)
+        for scheme, weight in options
+    ]
+
+
 def _decide_strategy(
     self_a: dict,
     opp_a: dict,
@@ -409,8 +444,12 @@ def _decide_strategy(
     win_streak: int,
     loss_streak: int,
     rng: random.Random,
+    scheme_history: dict | None = None,
 ) -> tuple[dict, list[str]]:
     rationale_parts: list[str] = []
+    _scheme_history = scheme_history or {}
+    _historical_offense = _scheme_history.get("offensive_scheme", {}).get("scheme")
+    _historical_defense = _scheme_history.get("defensive_scheme", {}).get("scheme")
 
     pace_options: list[tuple[str, int]]
     if self_a["has_elite_scorer"] and posture == "contender":
@@ -457,7 +496,7 @@ def _decide_strategy(
     else:
         scheme_options = [("balanced", 3), ("ball_movement", 1)]
 
-    offensive_scheme = _weighted_choice(rng, scheme_options)
+    offensive_scheme = _weighted_choice(rng, _apply_scheme_history_bonus(scheme_options, _historical_offense))
 
     # Personnel gate: can THIS roster actually execute press / switch_all?
     # A slow team pressing full-court, or a poor-defense team switching every
@@ -498,7 +537,7 @@ def _decide_strategy(
         if can_switch_all:
             defense_options.append(("switch_all", 1))
 
-    defensive_scheme = _weighted_choice(rng, defense_options)
+    defensive_scheme = _weighted_choice(rng, _apply_scheme_history_bonus(defense_options, _historical_defense))
 
     intensity_options: list[tuple[str, int]]
     if posture == "tanking":

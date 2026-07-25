@@ -8,9 +8,11 @@ is dead code by comparison -- see docs/design for the realism-audit background).
 """
 from __future__ import annotations
 
+import datetime
 import random
 from unittest.mock import AsyncMock
 
+from data.repositories import game_repo, gameplan_repo
 from services import cpu_coach_service as ccs
 from services import team_intel
 
@@ -222,3 +224,142 @@ def test_decide_strategy_always_returns_a_valid_defensive_scheme():
                 self_a, opp_a, posture, False, 0, 0, random.Random(seed)
             )
             assert strategy["defensive_scheme"] in ("man_to_man", "zone", "press", "switch_all")
+
+
+# ---------------------------------------------------------------------------
+# CA5 (coaching AI realism sweep) -- scheme stickiness. get_scheme_history's
+# {"scheme": ..., "games": ..., "wins": ..., "losses": ...} shape (per
+# gameplan_repo.get_scheme_history) feeds a flat weight bonus for a team's
+# historically-favored scheme, only when that scheme is still on offer.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_scheme_history_bonus_bumps_matching_option():
+    options = [("three_heavy", 2), ("balanced", 1)]
+    result = ccs._apply_scheme_history_bonus(options, "balanced")
+    assert dict(result)["balanced"] == 1 + ccs._SCHEME_HISTORY_BONUS
+    assert dict(result)["three_heavy"] == 2
+
+
+def test_apply_scheme_history_bonus_no_op_when_scheme_not_offered():
+    """A historically-favored scheme the roster/opponent context no longer
+    offers this game (e.g. pruned by the personnel gate) gets no bonus --
+    the options list is returned completely unchanged, not appended to."""
+    options = [("man_to_man", 3), ("zone", 1)]
+    result = ccs._apply_scheme_history_bonus(options, "switch_all")
+    assert result == options
+
+
+def test_apply_scheme_history_bonus_no_op_when_no_history():
+    options = [("isolation", 3), ("inside_out", 1)]
+    assert ccs._apply_scheme_history_bonus(options, None) == options
+
+
+def test_decide_strategy_scheme_history_shifts_offensive_scheme_frequency():
+    """A team with no standout roster signal (falls to the balanced/ball_movement
+    default scheme_options) should pick its historically-favored scheme more
+    often than a team with no history, averaged over many seeds."""
+    self_a = _self_analysis()  # no elite passer/scorer/big/iso -> falls to default branch
+    opp_a = _opp_analysis()
+
+    def _frequency(history: dict | None) -> float:
+        picks = [
+            ccs._decide_strategy(self_a, opp_a, "mid", False, 0, 0, random.Random(seed), scheme_history=history)[0]["offensive_scheme"]
+            for seed in _SEEDS
+        ]
+        return sum(1 for p in picks if p == "ball_movement") / len(picks)
+
+    freq_no_history = _frequency(None)
+    freq_with_history = _frequency({"offensive_scheme": {"scheme": "ball_movement", "games": 10, "wins": 6, "losses": 4}})
+
+    assert freq_with_history > freq_no_history, (
+        f"ball_movement should be picked more often with matching scheme history "
+        f"({freq_with_history:.2f}) than without ({freq_no_history:.2f})"
+    )
+
+
+async def test_compute_cpu_gameplan_reads_real_scheme_history_from_db(db_pool):
+    """CA5 real-DB integration test (standard, not a mandatory smoke test --
+    this is a new signal being added, not a previously-dead path). Seeds 6
+    real, simmed games with real game_cpu_gameplans rows (written via
+    gameplan_repo.record_gameplan, the actual production write path) all
+    running "ball_movement" for one team. Calls the real, unmocked
+    _compute_cpu_gameplan against the real DB across many trials and checks
+    the empirical offensive_scheme frequency shifts toward that real history
+    compared to a team with no games recorded at all."""
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues (
+            discord_guild_id, name, start_season_year, current_season,
+            current_phase, commissioner_user_id
+        ) VALUES (999301, 'CA5 Scheme Stickiness League', 2025, 2025, 'REGULAR_SEASON_ACTIVE', 12345)
+        RETURNING id
+        """
+    )
+    league_id: int = league_row["id"]
+    season = 2025
+
+    async def _seed_team(code: str) -> int:
+        return await db_pool.fetchval(
+            """
+            INSERT INTO teams (league_id, nba_team_code, name, city, conference, division)
+            VALUES ($1, $2, $3, $3, 'East', 'Atlantic') RETURNING id
+            """,
+            league_id, code, f"{code} City",
+        )
+
+    team_with_history_id = await _seed_team("HST")
+    team_no_history_id = await _seed_team("NOH")
+    opp_team_id = await _seed_team("OPP")
+
+    for i in range(6):
+        game_id = await game_repo.insert_game(db_pool, {
+            "league_id": league_id, "season": season, "season_type": "regular",
+            "game_index": i, "home_team_id": team_with_history_id, "away_team_id": opp_team_id,
+            "scheduled_date": datetime.date(2025, 10, 1) + datetime.timedelta(days=i),
+            "status": "simmed", "is_user_matchup": False, "rng_seed": i,
+        })
+        await gameplan_repo.record_gameplan(db_pool, game_id, team_with_history_id, {
+            "source": "cpu",
+            "strategy": {
+                "offensive_pace": "balanced", "offensive_scheme": "ball_movement",
+                "defensive_scheme": "man_to_man", "defensive_intensity": "normal", "star_usage": 50,
+            },
+            "player_directives": {},
+            "rationale": "",
+        })
+
+    # Bland roster (no standout signal) so _decide_strategy falls to the
+    # default scheme_options = [("balanced", 3), ("ball_movement", 1)] branch.
+    def _bland_players(team_id: int) -> list[dict]:
+        return [
+            {"id": 10_000 + team_id * 100 + i, "overall": 75, "position": "SF",
+             "playmaking": 60, "finishing": 70, "shooting_3pt": 60, "speed": 60,
+             "defense": 60, "defensive_effort": 50}
+            for i in range(8)
+        ]
+
+    opp_players = _bland_players(opp_team_id)
+
+    async def _pick_offense(team_id: int, n_trials: int = 60) -> float:
+        picks = []
+        for i in range(n_trials):
+            game_row = {
+                "id": 900_000 + team_id * 1000 + i,
+                "home_team_id": team_id,
+                "away_team_id": opp_team_id,
+                "scheduled_date": datetime.date(2025, 11, 1) + datetime.timedelta(days=i),
+            }
+            gameplan = await ccs._compute_cpu_gameplan(
+                db_pool, league_id, season, game_row, team_id, _bland_players(team_id), opp_players,
+            )
+            picks.append(gameplan["strategy"]["offensive_scheme"])
+        return sum(1 for p in picks if p == "ball_movement") / len(picks)
+
+    freq_with_history = await _pick_offense(team_with_history_id)
+    freq_no_history = await _pick_offense(team_no_history_id)
+
+    assert freq_with_history > freq_no_history, (
+        f"Team with real DB-persisted ball_movement history should pick it more often "
+        f"({freq_with_history:.2f}) than a team with zero recorded games ({freq_no_history:.2f})"
+    )
