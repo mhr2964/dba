@@ -173,6 +173,26 @@ async def _player_autocomplete_for_team(
     ]
 
 
+def _renormalized_touch_shares(roles: list[dict]) -> list[float]:
+    """Renormalize stored touch_share values so the team total is 1.0 for display.
+
+    `/coach role assign` locks a manually-assigned role with the raw
+    ROLE_REGISTRY touch_share constant, and role_service.persist_roles' UPSERT
+    guard (`WHERE locked = FALSE`) means a locked row is never touched by the
+    auto-derive renormalization pass again. That leaves the DB-stored total
+    across a team's roles potentially != 1.0 whenever any role is locked.
+    Sim math is unaffected (sim_persistence._stamp_role_data renormalizes at
+    stamp time regardless of lock state) -- this is purely a display-time fix
+    so what's rendered in /coach role show still sums to 100%, matching the
+    "touch_share normalised so the team total equals 1.0" invariant documented
+    in role_service.derive_roles.
+    """
+    total = sum(float(r.get("touch_share") or 0) for r in roles)
+    if total <= 0:
+        return [0.0 for _ in roles]
+    return [float(r.get("touch_share") or 0) / total for r in roles]
+
+
 def _roles_embed(team: dict, roles: list[dict], season: int) -> discord.Embed:
     """Render a role table embed for a team's current-season assignments."""
     team_name = f"{team.get('city', '')} {team.get('name', '')}".strip()
@@ -185,12 +205,13 @@ def _roles_embed(team: dict, roles: list[dict], season: int) -> discord.Embed:
         embed.description = "No role assignments found for this team."
         return embed
 
+    shares = _renormalized_touch_shares(roles)
     lines: list[str] = []
-    for r in roles:
+    for r, share in zip(roles, shares):
         lock_icon = "🔒" if r.get("locked") else "  "
         assigned_by = r.get("assigned_by") or "cpu"
         by_label = "human" if assigned_by.startswith("human:") else "cpu"
-        share_pct = int(round((r.get("touch_share") or 0) * 100))
+        share_pct = int(round(share * 100))
         role_display = (r.get("role") or "?").replace("_", " ")
         lines.append(
             f"{lock_icon} `{r.get('position', '?'):2}` **{r.get('name', '?')}**"
