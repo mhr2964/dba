@@ -12,7 +12,7 @@ from core.errors import DBAError
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import draft_repo, league_repo, team_repo
-from services import notifier_service
+from services import notifier_service, team_intel
 
 log = get_logger(__name__)
 
@@ -22,6 +22,50 @@ _LOTTERY_ODDS = [
     14.0, 14.0, 14.0, 12.5, 10.5, 9.0, 7.5,
     6.0, 4.5, 3.0, 2.0, 1.5, 1.0, 0.5,
 ]
+
+# D1 (docs/design/draft-logic-rules.md): positional-need scoring multipliers
+# for _cpu_select. Structural cousin of trade_proposal_scoring.py's
+# _roster_hole_penalty, but as a straight scoring multiplier instead of a
+# hole/pass check, and with a wider surplus floor (4 vs. trade's 3) — draft
+# rosters carry more bench depth than a trade-active lineup, so a team
+# shouldn't get penalized for having 3 competent players at a position.
+_POSITION_NEED_HOLE_FLOOR = 2
+_POSITION_NEED_SURPLUS_FLOOR = 4
+_POSITION_NEED_HOLE_MULT = 1.25
+_POSITION_NEED_SURPLUS_MULT = 0.85
+
+# D1: GM-philosophy bias applied on top of the need-weighted score in
+# _cpu_select. Each entry may set:
+#   noise_range: (lo, hi) override for the existing BPA randomness band
+#     (default (-2.0, 2.0)) — star_maxer dampens it toward pure
+#     best-player-available, chaos widens it.
+#   defense_floor / defense_floor_bonus: prospects whose `defense` attribute
+#     clears the floor get a scoring bonus — vet_overrater and defense_first
+#     both lean toward "prove it on D first."
+# youth_developer, tendency_respecter, and egalitarian intentionally have no
+# entry here (no bias, falls back to defaults): rookies are already young so
+# youth_developer's real-roster bias doesn't need a draft-specific rule, and
+# tendency_respecter/egalitarian have no tendency/archetype signal to read
+# off a not-yet-rostered prospect.
+_PHILOSOPHY_DRAFT_BIAS: dict[str, dict] = {
+    "star_maxer": {"noise_range": (-0.5, 0.5)},
+    "chaos": {"noise_range": (-6.0, 6.0)},
+    "vet_overrater": {"defense_floor": 60, "defense_floor_bonus": 1.10},
+    "defense_first": {"defense_floor": 65, "defense_floor_bonus": 1.15},
+}
+
+
+def _position_need_multiplier(position: str, position_counts: dict[str, int]) -> float:
+    """D1: scoring multiplier based on how many active roster players the
+    team already has at this prospect's position. Mirrors the shape of
+    trade_proposal_scoring._roster_hole_penalty's hole/surplus thresholds.
+    """
+    count = position_counts.get(position, 0)
+    if count < _POSITION_NEED_HOLE_FLOOR:
+        return _POSITION_NEED_HOLE_MULT
+    if count >= _POSITION_NEED_SURPLUS_FLOOR:
+        return _POSITION_NEED_SURPLUS_MULT
+    return 1.0
 
 
 async def run_lottery(league_id: int, season: int) -> list[dict]:
@@ -238,7 +282,16 @@ async def advance_pick(
             }
 
         # CPU team — auto-select best prospect with positional need weighting.
-        best = _cpu_select(prospects, team)
+        # _cpu_select stays a pure function; we do the DB fetches here and pass
+        # plain data in (D1).
+        position_rows = await pool.fetch(
+            "SELECT position, COUNT(*) AS cnt FROM players "
+            "WHERE team_id = $1 AND roster_status = 'active' GROUP BY position",
+            on_clock_team_id,
+        )
+        position_counts = {r["position"]: int(r["cnt"]) for r in position_rows}
+        philosophy = await team_intel.get_team_philosophy(pool, on_clock_team_id)
+        best = _cpu_select(prospects, team, position_counts=position_counts, philosophy=philosophy)
         await draft_repo.record_selection(
             pool,
             draft_id=draft.id,
@@ -273,15 +326,38 @@ async def advance_pick(
         draft = await draft_repo.get_draft(pool, league_id, season)
 
 
-def _cpu_select(prospects: list[dict], team: object) -> dict:
+def _cpu_select(
+    prospects: list[dict],
+    team: object,
+    position_counts: Optional[dict[str, int]] = None,
+    philosophy: Optional[str] = None,
+) -> dict:
     """
     Selects the best available prospect for a CPU team.
-    Best OVR wins with ±2 noise to add slight unpredictability.
-    Roster-need weighting is not implemented here; add if team roster data is available at call site.
+
+    D1: score = overall * positional-need multiplier (see
+    _position_need_multiplier) * philosophy bias (see _PHILOSOPHY_DRAFT_BIAS),
+    plus noise for unpredictability (±2 by default, philosophy-adjustable).
+
+    Pure function — position_counts and philosophy are optional plain data
+    passed in by the caller (advance_pick fetches them; this function never
+    touches the DB), so it stays unit-testable without a pool. Both params
+    default to None/no-op, matching pre-D1 best-player-available behavior for
+    any caller that doesn't pass them.
     """
+    bias = _PHILOSOPHY_DRAFT_BIAS.get(philosophy or "", {})
+    noise_lo, noise_hi = bias.get("noise_range", (-2.0, 2.0))
+    defense_floor = bias.get("defense_floor")
+    defense_bonus = bias.get("defense_floor_bonus", 1.0)
+
     scored = []
     for p in prospects:
-        score = p["overall"] + random.uniform(-2.0, 2.0)
+        score = float(p["overall"])
+        if position_counts is not None:
+            score *= _position_need_multiplier(p["position"], position_counts)
+        if defense_floor is not None and p.get("defense", 0) >= defense_floor:
+            score *= defense_bonus
+        score += random.uniform(noise_lo, noise_hi)
         scored.append((score, p))
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[0][1]
