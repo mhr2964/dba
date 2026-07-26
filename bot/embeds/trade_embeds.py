@@ -60,7 +60,12 @@ def trade_block_team_embed(
         name = player["full_name"] if player else f"Player #{pid}"
         ovr = player.get("overall", "?") if player else "?"
         line = f"**{name}** (OVR {ovr})"
-        if entry.get("asking_price") is not None:
+        # TB3: asking_price is only ever a real dollar figure for human-submitted
+        # entries. CPU-generated entries (team.manager_user_id is None) store an
+        # unscaled player_trade_value comparison score there post-TB2, so never
+        # render it for CPU teams regardless of the stored value. See
+        # docs/design/trade-block-logic-rules.md TB3.
+        if team.manager_user_id is not None and entry.get("asking_price") is not None:
             line += f" — asking ${entry['asking_price']:,}"
         if entry.get("note"):
             line += f"\n  _{entry['note']}_"
@@ -94,7 +99,9 @@ def trade_block_league_embed(
             name = player["full_name"] if player else f"Player #{pid}"
             ovr = player.get("overall", "?") if player else "?"
             line = f"`{name}` OVR {ovr}"
-            if entry.get("asking_price") is not None:
+            # TB3: same CPU-vs-human gate as trade_block_team_embed, but per-entry
+            # since a league embed mixes teams -- look up each entry's own team.
+            if team is not None and team.manager_user_id is not None and entry.get("asking_price") is not None:
                 line += f" — ${entry['asking_price']:,}"
             if entry.get("note"):
                 line += f" _{entry['note']}_"

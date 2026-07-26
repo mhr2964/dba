@@ -7,9 +7,10 @@ Written 2026-07-25 as Plan F of the realism-sweep initiative (Plans C, D, E —
 phase-transition, role-assignment, free-agency — shipped separately; see
 `Brain/General Session Notes` for the sweep's full scope).
 
-**Current implementation status (as of 2026-07-25):** TB1-TB2 addressed (TB1
+**Current implementation status (as of 2026-07-26):** TB1-TB3 addressed (TB1
 shipped as a real-bug fix; TB2 verified and also fixed after confirming a
-genuine units mismatch).
+genuine units mismatch; TB3 is the display-layer follow-up TB2 flagged as
+deferred).
 
 ---
 
@@ -147,12 +148,80 @@ own valuation of the same player) is `27`.
 
 ---
 
+## TB3. [Display bug, follow-up to TB2] Trade-block embeds rendered every `asking_price` as a dollar figure, even for CPU-generated entries now holding an unscaled score
+
+**Status:** SHIPPED
+
+**Evidence:** TB2 removed the `* 1_000_000` multiplier from
+`cpu_block_service.refresh_team_block`, correctly making `asking_price`
+numerically consistent with every other `player_trade_value` call site — but
+`bot/embeds/trade_embeds.py`'s `trade_block_team_embed` and
+`trade_block_league_embed` both unconditionally formatted every entry's
+`asking_price` as `${entry['asking_price']:,}`, with no awareness that the
+value's unit now depends on which path produced the entry. Post-TB2, a
+CPU-generated entry shows a small unscaled comparison score (e.g. `27`) while
+a human `/block add` entry shows a real annual salary (e.g. `18,000,000`) —
+both rendered with the identical `$X,XXX` format, so `/block view` and
+`/block league` now display visibly broken-looking numbers like `"— asking
+$27"` next to `"— asking $18,000,000"` in the same embed.
+
+**Rule:**
+- A team is CPU-controlled iff `team.manager_user_id is None` (confirmed via
+  `cpu_block_service.refresh_team_block`, which explicitly skips any team
+  where `manager_user_id is not None`). This is already available at render
+  time with zero schema change.
+- **Approved fix (user decision, not reconsidered here):** hide the
+  asking-price line entirely for CPU-generated entries. Human-submitted
+  entries keep their existing `$X,XXX,XXX` format completely unchanged.
+  CPU-generated entries show just the player and their existing qualitative
+  `note` field, with no price line at all.
+- Two alternatives were considered and explicitly rejected by the user in
+  favor of the above: (1) a non-dollar labeled score (e.g. `"trade value:
+  27"`) — rejected as adding a number Discord users would still misread as
+  a price; (2) deriving a real dollar figure from the player's contract
+  salary at render time — rejected because it would require inventing a new
+  points-to-dollar (or salary-passthrough) conversion with no established
+  precedent in the codebase, purely for cosmetic display, when the
+  underlying `asking_price` column is intentionally not a salary for CPU
+  listings.
+- `trade_block_team_embed(team, block_entries, players_by_id)`: the
+  asking-price branch now also requires `team.manager_user_id is not None`
+  (the function already receives a single `team` for all entries).
+- `trade_block_league_embed(entries_by_team, teams_by_id, players_by_id)`:
+  same gate, but per-entry — looked up via `teams_by_id.get(team_id)` inside
+  the existing per-team loop (mirrors the lookup already done there for the
+  team name). If a `team_id` has no matching `Team` in `teams_by_id`, the
+  price line is also hidden defensively (treated the same as an unknown/CPU
+  team, not the same as a confirmed human team).
+- `trade_block_added_embed` (the `/block add` confirmation embed) is
+  untouched — it is only ever called from the human `/block add` path with a
+  real dollar figure the user typed, never from CPU-generated listings.
+
+**Test:** `tests/test_trade_embeds.py` (new file) — pure/synchronous unit
+tests, no live-DB smoke test needed (display-only change, same reasoning as
+TB1/TB2's own precedent for pairing DB-backed logic fixes with lighter tests
+for pure display functions):
+- `test_team_embed_cpu_team_hides_asking_price_but_keeps_note` — CPU team
+  (`manager_user_id=None`) with a non-`None` `asking_price`: asserts no `$` /
+  "asking" text appears, but the player's `note` and name still render.
+- `test_team_embed_human_team_keeps_formatted_asking_price` — human team
+  (`manager_user_id=555`): asserts the existing `— asking $18,000,000`
+  format renders exactly as before (regression guard for the human path).
+- `test_league_embed_mixed_cpu_and_human_teams` — both team types passed to
+  `trade_block_league_embed` in the same call: asserts the CPU team's field
+  has no `$` while the human team's field in the same embed still does.
+- `test_asking_price_none_still_omits_price_line_for_both_team_types` —
+  `asking_price=None` (e.g. a human `/block add` with no price given)
+  renders no price line for either team type, confirming the pre-existing
+  `None` behavior is unchanged by the new gate.
+
+**Files:** `bot/embeds/trade_embeds.py` (display-only change),
+`tests/test_trade_embeds.py` (new).
+
+---
+
 ## Deferred (explicitly not built this pass)
 
-**CPU-listed `asking_price` display scale.** See TB2's "known side effect"
-note above — the fix makes `asking_price` numerically consistent with the
-rest of the trade system's internal valuation math, but leaves the Discord
-embed display no longer resembling a literal salary figure for CPU-generated
-listings. Needs a follow-up design decision (display-only reformat vs. a new
-points-to-dollar conversion), not attempted here to keep this pass scoped to
-the units-consistency bug itself.
+None currently outstanding. TB1-TB3 cover every issue found across the two
+verification passes (Plan F, Plan G) into `services/cpu_block_service.py` and
+its downstream Discord rendering.
