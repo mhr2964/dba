@@ -304,10 +304,10 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
     @app_commands.command(name="series", description="Show a specific series")
     @app_commands.describe(series_id="ID of the series to display")
     async def series(self, interaction: discord.Interaction, series_id: int) -> None:
-        await _require_league(interaction.guild_id)
+        league = await _require_league(interaction.guild_id)
         pool = await get_pool()
 
-        s = await series_repo.get_series(pool, series_id)
+        s = await series_repo.get_series(pool, league.id, series_id)
         if s is None:
             await interaction.response.send_message(
                 f"Series `{series_id}` not found.", ephemeral=True

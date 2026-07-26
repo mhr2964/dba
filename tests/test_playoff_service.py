@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from data.repositories import series_repo
 from services import playoff_service
 
 pytestmark = pytest.mark.asyncio
@@ -220,6 +221,40 @@ async def test_run_one_game_resolves_injury_channel_when_guild_provided():
     _, kwargs = mock_persist_injuries.call_args
     assert kwargs["injury_channel"] is fake_channel
     assert kwargs["guild"] is fake_guild
+
+
+# ---------------------------------------------------------------------------
+# Cross-league series access (Finding #1, playoff-audit sweep) -- a
+# commissioner in league A must not be able to sim a game in league B's
+# series by passing league B's series_id.
+# ---------------------------------------------------------------------------
+
+
+async def test_sim_series_game_rejects_cross_league_series_id(db_pool):
+    """sim_series_game(league_a.id, series_b_id, ...) must raise the same
+    'not found' ValueError it raises for a genuinely nonexistent series_id --
+    it must not silently succeed and mutate league B's series/standings."""
+    league_a, _, _ = await _seed_league_two_teams(db_pool, 646301)
+    league_b, east_b, west_b = await _seed_league_two_teams(db_pool, 646302)
+
+    series_b = await series_repo.create_series(
+        db_pool,
+        league_id=league_b,
+        season=2025,
+        round="first_round",
+        high_seed_id=east_b,
+        low_seed_id=west_b,
+        games_needed=7,
+    )
+
+    with pytest.raises(ValueError, match=f"Series {series_b.id} not found"):
+        await playoff_service.sim_series_game(league_a, series_b.id, MagicMock(), 2025)
+
+    # The series must be completely untouched -- no game was simmed, no wins recorded.
+    untouched = await series_repo.get_series(db_pool, league_b, series_b.id)
+    assert untouched.wins_high == 0
+    assert untouched.wins_low == 0
+    assert untouched.status == "active"
 
 
 # ---------------------------------------------------------------------------

@@ -384,7 +384,7 @@ async def sim_series_game(
     """
     pool = await get_pool()
 
-    series = await series_repo.get_series(pool, series_id)
+    series = await series_repo.get_series(pool, league_id, series_id)
     if series is None:
         raise ValueError(f"Series {series_id} not found")
     if series.status == "complete":

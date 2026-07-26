@@ -68,8 +68,12 @@ async def create_series(
     return _series_from_record(row)
 
 
-async def get_series(pool: asyncpg.Pool, series_id: int) -> Optional[Series]:
-    row = await pool.fetchrow("SELECT * FROM series WHERE id = $1", series_id)
+async def get_series(pool: asyncpg.Pool, league_id: int, series_id: int) -> Optional[Series]:
+    row = await pool.fetchrow(
+        "SELECT * FROM series WHERE league_id = $1 AND id = $2",
+        league_id,
+        series_id,
+    )
     return _series_from_record(row) if row else None
 
 

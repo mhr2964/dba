@@ -13,14 +13,15 @@ from data.repositories import series_repo
 # ---------------------------------------------------------------------------
 
 
-async def _create_test_league_and_teams(pool) -> tuple[int, int, int]:
+async def _create_test_league_and_teams(pool, guild_id: int = 777001) -> tuple[int, int, int]:
     """Insert a league and two teams. Returns (league_id, team_a_id, team_b_id)."""
     league_row = await pool.fetchrow(
         """
         INSERT INTO leagues (discord_guild_id, name, start_season_year, current_season, commissioner_user_id)
-        VALUES (777001, 'Series Test League', 2025, 2025, 11111)
+        VALUES ($1, 'Series Test League', 2025, 2025, 11111)
         RETURNING id
         """,
+        guild_id,
     )
     league_id = league_row["id"]
 
@@ -134,6 +135,33 @@ async def test_play_in_completes_at_one_win(db_pool):
 
     assert updated.status == "complete"
     assert updated.winner_team_id == team_b
+
+
+async def test_get_series_scoped_to_league(db_pool):
+    """get_series only returns a series when the caller's league_id matches --
+    a series_id that belongs to a different league must not be findable,
+    otherwise a commissioner in league A could view/sim league B's series."""
+    league_a, team_a1, team_a2 = await _create_test_league_and_teams(db_pool, guild_id=777001)
+    league_b, team_b1, team_b2 = await _create_test_league_and_teams(db_pool, guild_id=777002)
+
+    series_b = await series_repo.create_series(
+        db_pool,
+        league_id=league_b,
+        season=2025,
+        round="first_round",
+        high_seed_id=team_b1,
+        low_seed_id=team_b2,
+        games_needed=7,
+    )
+
+    # Cross-league lookup must fail to find a series that genuinely exists,
+    # just under a different league -- indistinguishable from "not found".
+    assert await series_repo.get_series(db_pool, league_a, series_b.id) is None
+
+    # Same-league lookup still works (regression guard).
+    found = await series_repo.get_series(db_pool, league_b, series_b.id)
+    assert found is not None
+    assert found.id == series_b.id
 
 
 async def test_get_active_series_returns_only_active(db_pool):
