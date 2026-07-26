@@ -169,8 +169,38 @@ async def _maybe_advance_season_complete(
     REGULAR_SEASON_COMPLETE, auto-run the four individual awards, and post
     an announcement.
     Returns True when the phase was advanced.
+
+    PT4: re-checks current_phase before advancing, mirroring the pattern its
+    sibling hooks (_maybe_advance_trade_deadline, _maybe_close_trade_window)
+    already use. Previously this fired unconditionally once all games were
+    complete -- a single long sim call that crosses both the trade deadline
+    and season-end boundaries in the same call (deadline opened mid-call via
+    _maybe_advance_trade_deadline, then the season finishes before
+    _maybe_close_trade_window ever gets to run at the *start* of a
+    subsequent call) landed straight on REGULAR_SEASON_COMPLETE from
+    TRADE_DEADLINE_OPEN, silently skipping REGULAR_SEASON_POSTDEADLINE.
     """
     if not await game_repo.all_regular_season_games_complete(pool, league_id, season):
+        return False
+
+    row = await pool.fetchrow("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    current_phase = row["current_phase"] if row else None
+
+    if current_phase == Phase.TRADE_DEADLINE_OPEN.value:
+        # Same boundary-crossing bug class as _maybe_close_trade_window guards
+        # against -- step through REGULAR_SEASON_POSTDEADLINE here too instead
+        # of jumping straight to REGULAR_SEASON_COMPLETE.
+        await league_service.advance_phase(league_id, Phase.REGULAR_SEASON_POSTDEADLINE.value)
+        log.info(
+            f"League {league_id} season {season}: trade window auto-closed "
+            "mid-call (deadline and season-end crossed in the same sim call) "
+            "before advancing to REGULAR_SEASON_COMPLETE"
+        )
+        current_phase = Phase.REGULAR_SEASON_POSTDEADLINE.value
+
+    if current_phase not in (Phase.REGULAR_SEASON_ACTIVE.value, Phase.REGULAR_SEASON_POSTDEADLINE.value):
+        # Already advanced past this point (re-entrant call on an already-complete
+        # season) or in some unexpected phase -- don't blindly stomp current_phase.
         return False
 
     await league_service.advance_phase(league_id, Phase.REGULAR_SEASON_COMPLETE.value)

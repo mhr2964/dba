@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from core.errors import DBAError
+from core.errors import DBAError, PhaseError
 from data.repositories import league_repo, team_repo
+from phase.states import Phase
 from services import league_service
 
 
@@ -179,3 +180,180 @@ async def test_remove_manager_cpu_team_raises_dba_error(
             team_code="LAL",
             requester=mock_commissioner,
         )
+
+
+# ---------------------------------------------------------------------------
+# PT1 -- advance_phase phase-graph validation
+#
+# Before this sweep, advance_phase() performed zero validation that a
+# transition was a legal *move* between phases -- it accepted any string that
+# parsed as a valid Phase enum member and blindly wrote it, regardless of the
+# league's actual current phase. See docs/design/phase-transition-logic-rules.md.
+# ---------------------------------------------------------------------------
+
+
+async def _create_league_in_phase(pool, phase: str, guild_id: int = 780001) -> int:
+    """Insert a minimal league row at the given phase; returns its id."""
+    row = await pool.fetchrow(
+        """
+        INSERT INTO leagues
+            (discord_guild_id, name, start_season_year, current_season,
+             commissioner_user_id, current_phase)
+        VALUES ($1, 'PT1 Phase Test League', 2025, 2025, 99999, $2)
+        RETURNING id
+        """,
+        guild_id, phase,
+    )
+    return row["id"]
+
+
+async def test_advance_phase_allows_legal_forward_transition(db_pool):
+    """The ordinary, expected case: one legal hop must succeed and persist."""
+    league_id = await _create_league_in_phase(db_pool, "REGULAR_SEASON_ACTIVE")
+
+    await league_service.advance_phase(league_id, "TRADE_DEADLINE_OPEN")
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == "TRADE_DEADLINE_OPEN"
+
+
+async def test_advance_phase_rejects_illegal_forward_skip(db_pool):
+    """PT1 -- MANDATORY live smoke test, case 2.
+
+    REGULAR_SEASON_ACTIVE -> FA_OPEN skips 13 intermediate phases
+    (TRADE_DEADLINE_OPEN through WAIVERS_OPEN/PROGRESSION_PENDING). Nothing
+    stopped this pre-fix -- advance_phase only checked that "FA_OPEN" parsed
+    as a valid Phase member, not that it was reachable from
+    REGULAR_SEASON_ACTIVE. Proven to silently succeed pre-fix via `git stash`
+    on services/league_service.py (see session verification notes for the
+    captured pre-fix output); must raise PhaseError post-fix and must NOT
+    have written the new phase to the DB.
+    """
+    league_id = await _create_league_in_phase(db_pool, "REGULAR_SEASON_ACTIVE")
+
+    with pytest.raises(PhaseError):
+        await league_service.advance_phase(league_id, "FA_OPEN")
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == "REGULAR_SEASON_ACTIVE", "Rejected transition must not have written the DB"
+
+
+async def test_advance_phase_rejects_backward_jump(db_pool):
+    """NBA_FINALS -> SETUP is a full-cycle backward jump -- must be rejected."""
+    league_id = await _create_league_in_phase(db_pool, "NBA_FINALS")
+
+    with pytest.raises(PhaseError):
+        await league_service.advance_phase(league_id, "SETUP")
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == "NBA_FINALS"
+
+
+async def test_advance_phase_rejects_same_phase_noop(db_pool):
+    """A league can't "advance" to the phase it's already in."""
+    league_id = await _create_league_in_phase(db_pool, "REGULAR_SEASON_ACTIVE")
+
+    with pytest.raises(PhaseError):
+        await league_service.advance_phase(league_id, "REGULAR_SEASON_ACTIVE")
+
+
+async def test_advance_phase_error_message_lists_legal_next_phases(db_pool):
+    """PT2 rides on this message -- it must name the current phase, the
+    rejected target, and what IS legal, not a bare/generic failure."""
+    league_id = await _create_league_in_phase(db_pool, "FA_OPEN")
+
+    with pytest.raises(PhaseError) as exc_info:
+        await league_service.advance_phase(league_id, "WAIVERS_OPEN")
+
+    msg = str(exc_info.value)
+    assert "FA_OPEN" in msg
+    assert "WAIVERS_OPEN" in msg
+    assert "FA_CLOSED" in msg, "FA_OPEN's one legal next phase (FA_CLOSED) should be named in the message"
+
+
+async def test_advance_phase_unknown_phase_string_raises_value_error(db_pool):
+    """A string that isn't a real Phase member at all is a caller bug, not a
+    phase-graph rejection -- still raises, just via the enum lookup."""
+    league_id = await _create_league_in_phase(db_pool, "REGULAR_SEASON_ACTIVE")
+
+    with pytest.raises(ValueError):
+        await league_service.advance_phase(league_id, "NOT_A_REAL_PHASE")
+
+
+# ---------------------------------------------------------------------------
+# PT1 -- deliberate graph branch points (see phase/graph.py's module docstring)
+# ---------------------------------------------------------------------------
+
+
+async def test_advance_phase_allows_rollover_skip_from_awards_closed(db_pool):
+    """OFFSEASON_AWARDS_CLOSED -> PROGRESSION_PENDING: the real rollover skip
+    that bypasses the draft phases entirely (RO9 / PT1's disclosed deviation
+    from the enum's declared order)."""
+    league_id = await _create_league_in_phase(db_pool, "OFFSEASON_AWARDS_CLOSED")
+
+    await league_service.advance_phase(league_id, Phase.PROGRESSION_PENDING.value)
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == Phase.PROGRESSION_PENDING.value
+
+
+async def test_advance_phase_allows_rollover_skip_from_draft_lottery_done(db_pool):
+    """DRAFT_LOTTERY_DONE -> PROGRESSION_PENDING: same rollover skip, the
+    other phase /offseason rollover's precondition allows calling from."""
+    league_id = await _create_league_in_phase(db_pool, "DRAFT_LOTTERY_DONE")
+
+    await league_service.advance_phase(league_id, Phase.PROGRESSION_PENDING.value)
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == Phase.PROGRESSION_PENDING.value
+
+
+async def test_advance_phase_allows_champion_decided_skip_to_awards_closed(db_pool):
+    """NBA_FINALS -> OFFSEASON_AWARDS_CLOSED: playoff_cog's champion-decided
+    auto-advance, which skips the OFFSEASON_AWARDS_OPEN voting phase."""
+    league_id = await _create_league_in_phase(db_pool, "NBA_FINALS")
+
+    await league_service.advance_phase(league_id, Phase.OFFSEASON_AWARDS_CLOSED.value)
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == Phase.OFFSEASON_AWARDS_CLOSED.value
+
+
+async def test_advance_phase_allows_progression_pending_to_fa_open(db_pool):
+    """PROGRESSION_PENDING -> FA_OPEN: the real /offseason progression call
+    site -- PROGRESSION_PENDING is declared LAST in the enum, but this is a
+    real mid-cycle transition, not a wraparound."""
+    league_id = await _create_league_in_phase(db_pool, "PROGRESSION_PENDING")
+
+    await league_service.advance_phase(league_id, Phase.FA_OPEN.value)
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == Phase.FA_OPEN.value
+
+
+async def test_advance_phase_allows_waivers_open_to_preseason_ready(db_pool):
+    """WAIVERS_OPEN -> PRESEASON_READY: closes the season loop into next
+    season via the manual /league advance path (phase/helpers.py's own hint
+    text points here)."""
+    league_id = await _create_league_in_phase(db_pool, "WAIVERS_OPEN")
+
+    await league_service.advance_phase(league_id, Phase.PRESEASON_READY.value)
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == Phase.PRESEASON_READY.value
+
+
+async def test_advance_phase_allows_setup_to_skip_preseason_ready(db_pool):
+    """SETUP -> REGULAR_SEASON_ACTIVE directly: a league's very first season
+    can skip PRESEASON_READY entirely (/season start accepts either phase)."""
+    league_id = await _create_league_in_phase(db_pool, "SETUP")
+
+    await league_service.advance_phase(league_id, Phase.REGULAR_SEASON_ACTIVE.value)
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == Phase.REGULAR_SEASON_ACTIVE.value
+
+
+async def test_advance_phase_nonexistent_league_raises_dba_error(db_pool):
+    with pytest.raises(DBAError, match="not found"):
+        await league_service.advance_phase(999_999_999, "REGULAR_SEASON_ACTIVE")

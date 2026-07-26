@@ -568,12 +568,37 @@ async def get_league(guild_id: int) -> Optional[league_repo.League]:
 
 
 async def advance_phase(league_id: int, new_phase: str) -> None:
-    """Update the league's current_phase in DB."""
+    """Update the league's current_phase in DB.
+
+    PT1: validates the transition against the phase-adjacency graph
+    (phase/graph.py) before writing. Previously this was a blind UPDATE that
+    accepted any string parsing as a valid Phase member, with zero check that
+    the move was legal from the league's actual current phase -- see
+    docs/design/phase-transition-logic-rules.md.
+    """
+    from core.errors import PhaseError  # deferred to avoid circular import
+    from phase.graph import is_legal_transition, legal_next_phases
     from phase.states import Phase  # deferred to avoid circular import
     pool = await get_pool()
+
+    target = Phase(new_phase)  # raises ValueError for a string that isn't a real Phase member
+
+    row = await pool.fetchrow("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    if row is None:
+        raise DBAError(f"League {league_id} not found.")
+    current = row["current_phase"]
+
+    if not is_legal_transition(current, target.value):
+        legal = legal_next_phases(current)
+        legal_str = ", ".join(legal) if legal else "(no legal next phase from here)"
+        raise PhaseError(
+            f"Cannot advance from `{current}` to `{target.value}` — not a legal phase "
+            f"transition. Legal next phase(s) from `{current}`: {legal_str}."
+        )
+
     await pool.execute(
         "UPDATE leagues SET current_phase = $1 WHERE id = $2",
-        Phase(new_phase).value,
+        target.value,
         league_id,
     )
 

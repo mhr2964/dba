@@ -749,8 +749,8 @@ async def _setup_unsigned_player(
         """
         INSERT INTO leagues
             (discord_guild_id, name, start_season_year, current_season,
-             commissioner_user_id, salary_cap)
-        VALUES (888300, 'RO4 Test League', 2025, 2025, 99999, 140000000)
+             commissioner_user_id, salary_cap, current_phase)
+        VALUES (888300, 'RO4 Test League', 2025, 2025, 99999, 140000000, 'FA_OPEN')
         RETURNING id
         """
     )
