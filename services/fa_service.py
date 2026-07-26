@@ -891,7 +891,18 @@ async def _sign_player(
     salary: int,
     years: int,
 ) -> None:
-    """Assign player to team, deactivate old contracts, create new FA contract."""
+    """Assign player to team, deactivate old contracts, create new FA contract.
+
+    RA1 real-bug fix: mirrors draft_service.py's _add_drafted_player_to_lineup
+    exactly. Without this, an FA signing or waiver claim (both routes here,
+    since claim_waiver signs via this same helper) left the player active and
+    under contract but with NO `lineups` row -- a roster *ghost*, invisible to
+    both sim_persistence._load_lineup_for_team and role_service.derive_roles
+    (both INNER/JOIN lineups) and thus to sim_engine (zero touch_share, zero
+    minutes) until some unrelated later event (a trade, an admin rebuild)
+    happened to touch that team and incidentally re-derive roles. The draft
+    path already got this fix; FA/waivers never did.
+    """
     # Deactivate any lingering active contract (e.g. partial remains from prior season).
     await pool.execute(
         """
@@ -919,6 +930,35 @@ async def _sign_player(
         years,
         season,
     )
+
+    # RA1: insert at MAX(slot)+1 for the receiving team, then invalidate the
+    # role cache and re-derive roles immediately so player_roles is consistent
+    # with the new lineup right away -- same two calls draft_service.py's
+    # _add_drafted_player_to_lineup already makes after a pick.
+    next_slot = await pool.fetchval(
+        "SELECT COALESCE(MAX(slot), 0) + 1 FROM lineups WHERE league_id = $1 AND team_id = $2",
+        league_id,
+        team_id,
+    )
+    await pool.execute(
+        """INSERT INTO lineups
+               (league_id, team_id, is_starter, slot, player_id, set_by)
+           VALUES ($1, $2, FALSE, $3, $4, NULL)
+           ON CONFLICT (league_id, team_id, slot) DO NOTHING""",
+        league_id,
+        team_id,
+        next_slot,
+        player_id,
+    )
+
+    from services import role_service
+    from services.sim_persistence import invalidate_role_cache
+
+    invalidate_role_cache(league_id, team_id, season)
+    async with pool.acquire() as conn:
+        await role_service.derive_and_persist_all_for_team(
+            conn, league_id, team_id, season, silent_emit=True,
+        )
 
 
 async def _get_team_wins(
