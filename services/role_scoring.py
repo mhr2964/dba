@@ -228,6 +228,16 @@ _DEFENSIVE_ANCHOR_ROLES = (
 )
 
 
+# RA2 (realism sweep Plan D): every team must get a primary scorer and (roster
+# permitting) a defensive anchor -- Step 1's bottom-3-OVR depth-role slicing
+# used to run unconditionally, which for a roster of <=4 players could consume
+# the entire (or nearly entire) roster before Steps 2/3 ever ran, leaving the
+# module's own documented "exactly one primary scorer, exactly one defensive
+# anchor" guarantee silently violated. This is how many players Step 1 must
+# leave available for Steps 2 (primary scorer) + 3 (defensive anchor).
+_MIN_RESERVED_FOR_PRIMARY_AND_ANCHOR = 2
+
+
 # Tendency thresholds (DB stores 0-100 integers)
 _3PT_SHOOTER_THRESHOLD = 40
 
@@ -536,6 +546,11 @@ def _derive_tendency_respecter(
 
     Assignment order:
     1. Bottom-3 OVR → depth roles (end_of_bench / developmental / veteran_mentor).
+       RA2 guard: capped so at least _MIN_RESERVED_FOR_PRIMARY_AND_ANCHOR players
+       (or the whole roster, if smaller) are held back for Steps 2-3 -- see
+       `depth_count` below. Without this, a roster of <=4 players could be fully
+       (or almost fully) consumed here, leaving nothing for the primary-scorer /
+       defensive-anchor steps despite this docstring's own guarantee.
     2. Top-3 OVR → primary scoring role candidates (one winner per team).
     3. Top-3 OVR (or top non-assigned big) → defensive anchor (one winner per team).
     4. Remaining players → best available role by fit score, excluding already-claimed
@@ -557,8 +572,17 @@ def _derive_tendency_respecter(
     rationales: dict[int, str] = {}
 
     # --- Step 1: Depth slots for bottom-3 OVR ---
+    # RA2 guard: reserve at least _MIN_RESERVED_FOR_PRIMARY_AND_ANCHOR players
+    # (capped to roster size) for Steps 2-3 before handing anyone to depth
+    # roles. For n >= 5 this reproduces the original "always take the bottom
+    # 3" behaviour exactly (reserve=2, so n-reserve >= 3 -> depth_count=3).
+    # For n in {3, 4} it shrinks the depth slice so the primary/anchor steps
+    # still have candidates. For n in {1, 2} it takes zero depth slots so the
+    # entire (tiny) roster is available for primary (+ anchor, if n >= 2).
+    reserved = min(n, _MIN_RESERVED_FOR_PRIMARY_AND_ANCHOR)
+    depth_count = max(0, min(3, n - reserved))
     # List (not set): deterministic iteration order preserves idempotent assignment.
-    bottom_3_ids = [p["player_id"] for p in sorted_by_ovr[max(0, n - 3):]]
+    bottom_3_ids = [p["player_id"] for p in sorted_by_ovr[n - depth_count:]]
     for pid in bottom_3_ids:
         p = next(x for x in players if x["player_id"] == pid)
         age = p.get("_age")

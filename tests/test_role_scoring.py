@@ -305,6 +305,116 @@ def test_score_role_fit_top5_rookie_scores_higher_than_equivalent_non_rookie():
     assert rookie_score > non_rookie_score
 
 
+# ---------------------------------------------------------------------------
+# RA2 -- minimum-roster guard (realism sweep Plan D). Pre-fix, Step 1's
+# unconditional bottom-3-OVR depth slice could consume the ENTIRE roster (n<=3)
+# or leave nothing for the anchor step (n==4), leaving the team with ZERO
+# primary scorer and ZERO defensive anchor -- a much stronger violation than
+# the "exactly one" duplicate-role edge case those roles' overlap (post_anchor
+# is reachable from both the Step 2 big-primary pool and the Step 3 anchor
+# pool -- see test_derive_tendency_respecter_exactly_one_guard_wing_primary_scorer
+# above) can produce. These assertions are deliberately >= 1 (occurrence), not
+# == 1 (exclusivity) -- RA2 fixes the "assigned at all" guarantee; the
+# separate "exactly one" exclusivity invariant is covered elsewhere and isn't
+# what regressed here. These sizes (1-6) were completely unexercised before --
+# the smallest existing fixture above is 12 players.
+# ---------------------------------------------------------------------------
+
+_GUARD_WING_PRIMARY_ROLES = {"iso_scorer", "primary_initiator", "movement_shooter", "slashing_lead"}
+_BIG_PRIMARY_ROLES = {"post_anchor", "pick_and_pop", "rim_runner", "screen_roller"}
+_ANCHOR_ROLES = {"rim_protector", "two_way_big", "switching_big", "post_anchor"}
+_ALL_PRIMARY_ROLES = _GUARD_WING_PRIMARY_ROLES | _BIG_PRIMARY_ROLES
+
+
+def test_derive_tendency_respecter_one_player_roster_still_gets_primary_scorer():
+    # n=1: pre-fix, Step 1's bottom_3 slice consumed the single player into a
+    # depth role, leaving Step 2's primary-scorer pool empty AND the Step 2
+    # fallback loop (which only checks unassigned players) with nothing left.
+    roster = [_roster_player(1, 80, position="PG")]
+    assignments = rs._derive_tendency_respecter(roster)
+    assert len(assignments) == 1
+    assert assignments[0]["role"] in _ALL_PRIMARY_ROLES
+
+
+def test_derive_tendency_respecter_two_player_roster_gets_primary_and_anchor():
+    roster = [
+        _roster_player(1, 85, position="PG"),
+        _roster_player(2, 80, position="C", reb_tendency=70, blk_tendency=60),
+    ]
+    assignments = rs._derive_tendency_respecter(roster)
+    assert len(assignments) == 2
+    roles = {a["player_id"]: a["role"] for a in assignments}
+    primary_count = sum(1 for r in roles.values() if r in _ALL_PRIMARY_ROLES)
+    anchor_count = sum(1 for r in roles.values() if r in _ANCHOR_ROLES)
+    assert primary_count >= 1
+    assert anchor_count >= 1
+
+
+def test_derive_tendency_respecter_three_player_roster_gets_primary_and_anchor():
+    roster = [
+        _roster_player(1, 88, position="PG"),
+        _roster_player(2, 82, position="C", reb_tendency=70, blk_tendency=60),
+        _roster_player(3, 70, position="SF", age=34),
+    ]
+    assignments = rs._derive_tendency_respecter(roster)
+    assert len(assignments) == 3
+    roles = [a["role"] for a in assignments]
+    primary_count = sum(1 for r in roles if r in _ALL_PRIMARY_ROLES)
+    anchor_count = sum(1 for r in roles if r in _ANCHOR_ROLES)
+    assert primary_count >= 1
+    assert anchor_count >= 1
+
+
+def test_derive_tendency_respecter_four_player_roster_gets_primary_and_anchor():
+    # n=4 is the case the plan called out specifically: pre-fix, Step 1 took
+    # 3 for depth roles and Step 2 took the last remaining player for primary,
+    # leaving literally zero candidates for Step 3's anchor pool.
+    roster = [
+        _roster_player(1, 90, position="PG"),
+        _roster_player(2, 85, position="C", reb_tendency=70, blk_tendency=60),
+        _roster_player(3, 75, position="SF"),
+        _roster_player(4, 65, position="SF", age=34),
+    ]
+    assignments = rs._derive_tendency_respecter(roster)
+    assert len(assignments) == 4
+    roles = [a["role"] for a in assignments]
+    primary_count = sum(1 for r in roles if r in _ALL_PRIMARY_ROLES)
+    anchor_count = sum(1 for r in roles if r in _ANCHOR_ROLES)
+    assert primary_count >= 1
+    assert anchor_count >= 1
+
+
+def test_derive_tendency_respecter_five_player_roster_gets_primary_and_anchor():
+    roster = [
+        _roster_player(1, 90, position="PG"),
+        _roster_player(2, 85, position="C", reb_tendency=70, blk_tendency=60),
+        _roster_player(3, 80, position="SF"),
+        _roster_player(4, 72, position="SG"),
+        _roster_player(5, 65, position="SF", age=34),
+    ]
+    assignments = rs._derive_tendency_respecter(roster)
+    assert len(assignments) == 5
+    roles = [a["role"] for a in assignments]
+    primary_count = sum(1 for r in roles if r in _ALL_PRIMARY_ROLES)
+    anchor_count = sum(1 for r in roles if r in _ANCHOR_ROLES)
+    assert primary_count >= 1
+    assert anchor_count >= 1
+
+
+def test_derive_tendency_respecter_n_ge_5_depth_slice_unchanged_by_guard():
+    # RA2's guard must reproduce the ORIGINAL "always take bottom 3" behaviour
+    # once n >= 5 (reserve=2 leaves n-2 >= 3, so depth_count is still capped at
+    # 3) -- this asserts the existing 12+-player characterization in
+    # test_derive_tendency_respecter_bottom_3_get_depth_roles still holds at
+    # the n=5 boundary specifically.
+    roster = [_roster_player(i, 90 - i, position="SF", age=27) for i in range(5)]
+    assignments = rs._derive_tendency_respecter(roster)
+    depth_roles = {"end_of_bench", "developmental", "veteran_mentor"}
+    bottom_3_ids = {a["player_id"] for a in sorted(roster, key=lambda p: p["overall"])[:3]}
+    depth_assigned = {a["player_id"] for a in assignments if a["role"] in depth_roles}
+    assert depth_assigned == bottom_3_ids
+
+
 def test_score_role_fit_rookie_bonus_applies_alongside_philosophy_bias():
     """The rookie bonus is additive on top of whatever the philosophy bias
     already contributed -- both signals should stack, not override."""
