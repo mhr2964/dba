@@ -300,9 +300,20 @@ async def refresh_team_block(pool: asyncpg.Pool, league_id: int, team_id: int) -
     await trade_block_repo.clear_team_block(pool, league_id, team_id)
 
     for p, c, note in top:
+        # TB2 [real bug]: player_trade_value's raw return is used as an unscaled
+        # comparison score at every other call site in the codebase (trade_grading,
+        # cpu_trade_evaluation, cpu_trade_acceptance, trade_gates, trade_magnitude,
+        # trade_proposal_scoring, trade_return_builder, cpu_trade_proposal_runner --
+        # none apply a dollar multiplier). The old `* 1_000_000` here was the lone
+        # departure from that convention, producing asking prices completely
+        # disconnected from real player value (e.g. a $2M/yr OVR-68 bench player
+        # scored ~40 raw trade-value points -> a fabricated $40M/yr ask; an elite
+        # $50M-contract 23yo star scored ~98.5 -> a fabricated ask exceeding the
+        # entire $136M team salary cap for one player). Removed so asking_price
+        # is numerically identical to what a live trade proposal computes for the
+        # same player via this same function. See docs/design/trade-block-logic-rules.md TB2.
         asking_price = int(
             player_trade_value({"overall": p.overall, "age": age_map[p.id]}, c, salary_cap)
-            * 1_000_000
         )
         await trade_block_repo.add_to_block(
             pool,
