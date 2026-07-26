@@ -57,22 +57,35 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
 
     @app_commands.command(name="propose", description="Propose a trade with another team")
     @app_commands.describe(
-        counterparty="The Discord member managing the other team",
         give_players="Space-separated player IDs you are giving up",
         receive_players="Space-separated player IDs you want to receive",
+        counterparty="The Discord member managing the other team (use this OR team_code, not both)",
+        team_code="NBA team code of a CPU-managed team, e.g. LAL (use this OR counterparty, not both)",
         give_picks="Space-separated pick IDs you are giving up (optional)",
         receive_picks="Space-separated pick IDs you want to receive (optional)",
     )
     async def propose(
         self,
         interaction: discord.Interaction,
-        counterparty: discord.Member,
         give_players: str,
         receive_players: str,
+        counterparty: Optional[discord.Member] = None,
+        team_code: Optional[str] = None,
         give_picks: str = "",
         receive_picks: str = "",
     ) -> None:
         await safe_defer(interaction)
+
+        if (counterparty is None) == (team_code is None):
+            await safe_respond(
+                interaction,
+                content=(
+                    "Provide either `counterparty` (a Discord member) or `team_code` "
+                    "(a CPU team's code) — not both, not neither."
+                ),
+                ephemeral=True,
+            )
+            return
 
         league = await league_service.get_league(interaction.guild_id)
         if not league:
@@ -88,23 +101,46 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
             await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
             return
 
-        counterparty_team = await team_repo.get_by_manager(pool, league.id, counterparty.id)
-        if not counterparty_team:
-            # Allow targeting CPU teams by checking if the member is a bot/has no team — but
-            # the caller passes a Member, so if no human team is found, reject.
-            await safe_respond(
-                interaction,
-                content=(
-                    f"{counterparty.mention} does not manage a team in this league. "
-                    "To trade with a CPU team, use their team code instead — this command requires a human manager."
-                ),
-                ephemeral=True,
-            )
-            return
+        if team_code is not None:
+            counterparty_team = await team_repo.get_by_code(pool, league.id, team_code.upper())
+            if not counterparty_team:
+                await safe_respond(
+                    interaction,
+                    content=f"No team found with code **{team_code.upper()}**.",
+                    ephemeral=True,
+                )
+                return
 
-        if proposer_team.id == counterparty_team.id:
-            await safe_respond(interaction, content="You cannot trade with yourself.", ephemeral=True)
-            return
+            if counterparty_team.manager_user_id is not None:
+                await safe_respond(
+                    interaction,
+                    content=(
+                        f"**{counterparty_team.full_name}** is managed by a human. "
+                        "Use `/trade propose` with `counterparty` set to them instead."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            if proposer_team.id == counterparty_team.id:
+                await safe_respond(interaction, content="You cannot trade with yourself.", ephemeral=True)
+                return
+        else:
+            counterparty_team = await team_repo.get_by_manager(pool, league.id, counterparty.id)
+            if not counterparty_team:
+                await safe_respond(
+                    interaction,
+                    content=(
+                        f"{counterparty.mention} does not manage a team in this league. "
+                        "To trade with a CPU team, use `/trade propose` with `team_code` instead."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            if proposer_team.id == counterparty_team.id:
+                await safe_respond(interaction, content="You cannot trade with yourself.", ephemeral=True)
+                return
 
         give_player_ids = _parse_ids(give_players) if give_players.strip() else []
         receive_player_ids = _parse_ids(receive_players) if receive_players.strip() else []
@@ -217,149 +253,6 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
                     counterparty_team_id=counterparty_team.id,
                     status=trade.status,
                     headline=f"{proposer_team.full_name} / {counterparty_team.full_name} (Trade #{trade.id})",
-                )
-
-    @app_commands.command(
-        name="propose-cpu",
-        description="[MOVED] Use /trade propose with a team code instead",
-    )
-    @app_commands.describe(
-        team_code="NBA team code of the CPU team (e.g. LAL)",
-        give_players="Space-separated player IDs you are giving up",
-        receive_players="Space-separated player IDs you want to receive",
-        give_picks="Space-separated pick IDs you are giving up (optional)",
-        receive_picks="Space-separated pick IDs you want to receive (optional)",
-    )
-    async def propose_cpu(
-        self,
-        interaction: discord.Interaction,
-        team_code: str,
-        give_players: str,
-        receive_players: str,
-        give_picks: str = "",
-        receive_picks: str = "",
-    ) -> None:
-        await safe_defer(interaction)
-
-        # Deprecation notice — one-time per session.
-        if not hasattr(self, "_propose_cpu_dep_warned"):
-            self._propose_cpu_dep_warned: set[int] = set()
-        if interaction.user.id not in self._propose_cpu_dep_warned:
-            self._propose_cpu_dep_warned.add(interaction.user.id)
-            try:
-                await interaction.followup.send(
-                    "**Heads up:** `/trade propose-cpu` will be removed after the next rollover. "
-                    "Use `/trade propose` with a team code — it auto-detects CPU teams.",
-                    ephemeral=True,
-                )
-            except Exception:
-                pass
-
-        league = await league_service.get_league(interaction.guild_id)
-        if not league:
-            await safe_respond(interaction, content="No active league in this server.", ephemeral=True)
-            return
-
-        await require_phase(league, "trade_propose")
-
-        pool = await get_pool()
-
-        proposer_team = await team_repo.get_by_manager(pool, league.id, interaction.user.id)
-        if not proposer_team:
-            await safe_respond(interaction, content="You don't manage a team in this league.", ephemeral=True)
-            return
-
-        cpu_team = await team_repo.get_by_code(pool, league.id, team_code.upper())
-        if not cpu_team:
-            await safe_respond(
-                interaction,
-                content=f"No team found with code **{team_code.upper()}**.",
-                ephemeral=True,
-            )
-            return
-
-        if cpu_team.manager_user_id is not None:
-            await safe_respond(
-                interaction,
-                content=(
-                    f"**{cpu_team.full_name}** is managed by a human. "
-                    "Use `/trade propose` to send them a trade offer instead."
-                ),
-                ephemeral=True,
-            )
-            return
-
-        if proposer_team.id == cpu_team.id:
-            await safe_respond(interaction, content="You cannot trade with yourself.", ephemeral=True)
-            return
-
-        give_player_ids = _parse_ids(give_players) if give_players.strip() else []
-        receive_player_ids = _parse_ids(receive_players) if receive_players.strip() else []
-        give_pick_ids = _parse_ids(give_picks) if give_picks.strip() else []
-        receive_pick_ids = _parse_ids(receive_picks) if receive_picks.strip() else []
-
-        trade = await trade_service.propose(
-            league=league,
-            proposer_team=proposer_team,
-            counterparty_team=cpu_team,
-            proposer_player_ids=give_player_ids,
-            proposer_pick_ids=give_pick_ids,
-            counterparty_player_ids=receive_player_ids,
-            counterparty_pick_ids=receive_pick_ids,
-        )
-
-        assets = await trade_repo.get_assets(pool, trade.id)
-        players_by_id, picks_by_id = await _build_asset_lookup(pool, assets)
-        card = trade_embeds.trade_card(trade, assets, proposer_team, cpu_team, players_by_id, picks_by_id)
-
-        if trade.status in ("declined", "rejected"):
-            await safe_respond(
-                interaction,
-                content=(
-                    f"The CPU **{cpu_team.full_name}** declined the trade.\n"
-                    f"Reason: {trade.cpu_rationale or 'No reason given.'}"
-                ),
-                ephemeral=True,
-            )
-            return
-
-        if trade.status == "counter_offered":
-            counter_assets = await trade_repo.get_assets(pool, trade.id)
-            counter_players_by_id, counter_picks_by_id = await _build_asset_lookup(pool, counter_assets)
-            counter_card = trade_embeds.trade_card(
-                trade, counter_assets, cpu_team, proposer_team,
-                counter_players_by_id, counter_picks_by_id,
-            )
-            await safe_respond(
-                interaction,
-                content=(
-                    f"The CPU **{cpu_team.full_name}** sent back a counter-offer (Trade #{trade.id}). "
-                    f"Use `/trade accept {trade.id}` or `/trade decline {trade.id}` to respond."
-                ),
-                embed=counter_card,
-            )
-            return
-
-        transactions_channel_id = await league_repo.get_channel(pool, league.id, "transactions")
-
-        await safe_respond(
-            interaction,
-            content=f"The CPU **{cpu_team.full_name}** accepted! Trade is now pending commissioner approval.",
-            embed=card,
-        )
-        if transactions_channel_id:
-            tx_channel = interaction.guild.get_channel(transactions_channel_id)
-            if tx_channel and tx_channel.id != interaction.channel_id:
-                announced = trade_embeds.trade_proposed(trade, proposer_team, cpu_team)
-                _sent = await tx_channel.send(embed=announced)
-                await feedback_log.register_trade_announcement(
-                    pool, _sent,
-                    league_id=league.id, season=league.current_season,
-                    trade_id=trade.id,
-                    proposer_team_id=proposer_team.id,
-                    counterparty_team_id=cpu_team.id,
-                    status=trade.status,
-                    headline=f"{proposer_team.full_name} / {cpu_team.full_name} (Trade #{trade.id})",
                 )
 
     @app_commands.command(name="accept", description="Accept an incoming trade offer")
