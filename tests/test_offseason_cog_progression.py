@@ -30,7 +30,7 @@ async def test_progression_command_uses_pending_progression_season(
         INSERT INTO leagues (
             discord_guild_id, name, start_season_year, current_season,
             current_phase, commissioner_user_id
-        ) VALUES ($1, 'Progression Smoke League', 2025, 2025, 'REGULAR_SEASON_ACTIVE', $2)
+        ) VALUES ($1, 'Progression Smoke League', 2025, 2025, 'OFFSEASON_AWARDS_CLOSED', $2)
         RETURNING id
         """,
         mock_guild.id,

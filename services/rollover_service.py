@@ -9,6 +9,7 @@ from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import extension_repo, history_repo, trade_repo
 from phase.states import Phase
+from services import league_service
 
 log = get_logger(__name__)
 
@@ -75,17 +76,23 @@ async def run_rollover(league_id: int) -> dict:
         league_id,
     )
 
-    # Set phase to PROGRESSION_PENDING and stash the pre-increment season in the
-    # same statement — pending_progression_season is what /offseason progression
-    # must filter games/injuries on, since current_season above has already moved
-    # past the season that just finished (see progression_service._avg_minutes /
-    # _has_season_ending_injury callers).
+    # Stash the pre-increment season — pending_progression_season is what
+    # /offseason progression must filter games/injuries on, since current_season
+    # above has already moved past the season that just finished (see
+    # progression_service._avg_minutes / _has_season_ending_injury callers).
     await pool.execute(
-        "UPDATE leagues SET current_phase = $1, pending_progression_season = $2 WHERE id = $3",
-        Phase.PROGRESSION_PENDING.value,
+        "UPDATE leagues SET pending_progression_season = $1 WHERE id = $2",
         season,
         league_id,
     )
+
+    # PT3: route the phase write through league_service.advance_phase instead
+    # of a second, independent `UPDATE leagues SET current_phase = ...` that
+    # bypassed PT1's phase-graph validation entirely. Legal from either
+    # OFFSEASON_AWARDS_CLOSED or DRAFT_LOTTERY_DONE — the two phases
+    # /offseason rollover's own precondition allows calling run_rollover from
+    # (see phase/graph.py).
+    await league_service.advance_phase(league_id, Phase.PROGRESSION_PENDING.value)
 
     # Seed the new frontier draft season so the 7-season pick window rolls forward.
     await trade_repo.seed_picks_for_league(pool, league_id, next_season + 6, num_seasons=1)

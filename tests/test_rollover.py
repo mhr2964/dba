@@ -26,8 +26,10 @@ async def _create_minimal_league(
     pool,
 ) -> tuple[int, int, int, int]:
     """
-    Insert league (current_season=2025, phase=PROGRESSION_PENDING),
-    two teams, one active player on team 1 with a 3-year contract.
+    Insert league (current_season=2025, phase=OFFSEASON_AWARDS_CLOSED -- a
+    real precondition /offseason rollover allows calling run_rollover from,
+    per phase/graph.py PT3), two teams, one active player on team 1 with a
+    3-year contract.
     Returns (league_id, team_id, player_id, contract_id).
     """
     league_row = await pool.fetchrow(
@@ -35,7 +37,7 @@ async def _create_minimal_league(
         INSERT INTO leagues (
             discord_guild_id, name, start_season_year, current_season,
             current_phase, commissioner_user_id
-        ) VALUES (777001, 'Rollover Test League', 2025, 2025, 'PROGRESSION_PENDING', 99999)
+        ) VALUES (777001, 'Rollover Test League', 2025, 2025, 'OFFSEASON_AWARDS_CLOSED', 99999)
         RETURNING id
         """,
     )
@@ -484,7 +486,7 @@ async def test_rollover_extension_activates_with_full_new_years_term(db_pool):
         INSERT INTO leagues (
             discord_guild_id, name, start_season_year, current_season,
             current_phase, commissioner_user_id
-        ) VALUES (777010, 'RO1 Smoke League', 2025, 2025, 'PROGRESSION_PENDING', 99999)
+        ) VALUES (777010, 'RO1 Smoke League', 2025, 2025, 'OFFSEASON_AWARDS_CLOSED', 99999)
         RETURNING id
         """
     )
@@ -608,7 +610,7 @@ async def test_hof_induction_runs_after_progression_not_rollover(db_pool):
         INSERT INTO leagues (
             discord_guild_id, name, start_season_year, current_season,
             current_phase, commissioner_user_id
-        ) VALUES (777011, 'RO3 Smoke League', 2025, 2025, 'PROGRESSION_PENDING', 99999)
+        ) VALUES (777011, 'RO3 Smoke League', 2025, 2025, 'OFFSEASON_AWARDS_CLOSED', 99999)
         RETURNING id
         """
     )
