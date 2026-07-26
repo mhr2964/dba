@@ -13,8 +13,10 @@ a future change to this domain can be checked against *why* the rule exists,
 not just *that* it exists.
 
 **Current implementation status (as of 2026-07-25):** RO1, RO2, RO3, RO4, RO5,
-RO6, RO8, RO10 shipped. RO7 and RO9 deferred (documented decisions — see their
-entries below). This is the fourth realism sweep in this project
+RO6, RO8, RO10 shipped. RO7 deferred (documented decision — see its entry
+below). RO9 originally deferred, now resolved by the dedicated follow-up
+sweep in `docs/design/phase-transition-logic-rules.md` — see its entry below.
+This is the fourth realism sweep in this project
 (`docs/design/{fa,draft,progression,playoffs-awards-hof}-logic-rules.md`
 covered the prior three); Season Rollover was the last piece of season-to-
 season connective tissue without a dedicated audit, despite running once for
@@ -236,7 +238,8 @@ assert a `trade_block` row is cleared.
 
 ## RO9. Phase state-machine has no validated transition graph
 
-**Status:** DEFERRED — corrected finding, real gap reframed out of scope
+**Status:** RESOLVED — see `docs/design/phase-transition-logic-rules.md`
+(PT1-PT5), a dedicated follow-up sweep. No longer deferred.
 
 **Evidence (correction):** Initial research claimed `phase/transitions.py`'s
 `is_allowed()` was dead code. This is false — it's called via
@@ -248,12 +251,23 @@ cycle does skip several phases the enum's declared order implies should occur
 (`DRAFT_LOTTERY_DONE`, `DRAFT_IN_PROGRESS`, `POST_DRAFT_TRADES_OPEN` between
 rollover and FA).
 
-**Reasoning for deferring:** This spans 6 files and 11 `advance_phase` call
-sites, none of which is `rollover_service.py` — a repo-wide state-machine
-consistency question, not a rollover-focused fix. Flagged for a future
-dedicated phase/state-machine sweep.
+**Original reasoning for deferring (now resolved):** This spans 6 files and
+11 `advance_phase` call sites, none of which is `rollover_service.py` — a
+repo-wide state-machine consistency question, not a rollover-focused fix.
+Flagged for a future dedicated phase/state-machine sweep.
 
-**Files:** *(deferred — no files touched)*
+**Resolution:** `phase-transition-logic-rules.md`'s PT1 built the actual
+adjacency graph (`phase/graph.py`), confirming the enum's declared order
+doesn't match the real season cycle in several places (including the exact
+draft-phase skip this rule originally flagged) and encoding the real
+branches instead of the naive "next enum member" model. PT3 additionally
+routed this file's own `run_rollover` phase write through
+`league_service.advance_phase` — closing the one write path that would
+otherwise have bypassed the new gate entirely.
+
+**Files:** *(resolved in `docs/design/phase-transition-logic-rules.md` —
+`services/league_service.py`, `phase/graph.py`, `services/rollover_service.py`,
+`services/sim_batch_hooks.py`, `bot/cogs/setup_cog.py`)*
 
 ---
 
