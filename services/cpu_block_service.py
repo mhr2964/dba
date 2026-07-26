@@ -16,7 +16,8 @@ from typing import Optional
 
 import asyncpg
 
-from data.repositories import trade_block_repo, team_repo, player_repo
+from data.repositories import trade_block_repo, team_repo, player_repo, league_repo
+from services import team_intel
 from services.trade_value_math import player_trade_value
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,22 @@ _BLOCKED_PHASES = frozenset({
 })
 
 _MAX_LISTED = 4
+
+# TB1: posture.mode (from team_intel.build_team_intel) -> candidate-selection
+# branch. Mirrors fa_service.py's _POSTURE_FA_TERMS mapping (FA1) -- same
+# live-posture fix applied here so a team's actual current situation, not its
+# creation-time cpu_mode column, drives which players get listed on the block.
+# "transition" is never actually returned by trade_context_builder.compute_team_mode
+# (only referenced in internal floor checks) but is mapped defensively in case
+# that ever changes.
+_POSTURE_BLOCK_BRANCH: dict[str, str] = {
+    "contending": "contending",
+    "play_in_fringe": "contending",
+    "soft_rebuild": "rebuilding",
+    "rebuilding": "rebuilding",
+    "developing": "developing",
+    "transition": "developing",
+}
 
 
 def _compute_age(birth_date: Optional[datetime.date], years_pro: int) -> int:
@@ -238,14 +255,44 @@ async def refresh_team_block(pool: asyncpg.Pool, league_id: int, team_id: int) -
             contracts[p.id] = c
         age_map[p.id] = _compute_age(p.birth_date, p.years_pro)
 
-    cpu_mode = team.cpu_mode  # "rebuilding" | "contending" | "developing"
+    # TB1: read live posture instead of the static team.cpu_mode column, which
+    # is set once at team creation and never updated -- a team that started
+    # "developing" but is now clearly tanking (or vice versa) kept generating
+    # its trade-block list off its creation-time label forever.
+    league_row = await pool.fetchrow("SELECT * FROM leagues WHERE id = $1", league_id)
+    branch: Optional[str] = None
+    if league_row is not None:
+        league = league_repo._league_from_record(league_row)
+        intel = await team_intel.build_team_intel(
+            pool, league, league.current_season, [team_id], include=("posture",)
+        )
+        posture: dict = intel.get(team_id, {}).get("posture") or {}
+        mode: Optional[str] = posture.get("mode")
+        branch = _POSTURE_BLOCK_BRANCH.get(mode) if mode else None
 
-    if cpu_mode == "rebuilding":
+    if branch is None:
+        # Defensive fallback: no live posture data yet for this team (e.g. no
+        # standings_cache row, or league not found) -- fall back to the old
+        # static cpu_mode column rather than crashing (mirrors fa_service.py's
+        # FA1 fallback).
+        log.warning(
+            f"refresh_team_block: no posture data for team {team_id} "
+            f"(league {league_id}) — falling back to static cpu_mode"
+        )
+        cpu_mode = team.cpu_mode  # "rebuilding" | "contending" | "developing"
+        if cpu_mode == "rebuilding":
+            branch = "rebuilding"
+        elif cpu_mode == "contending":
+            branch = "contending"
+        else:
+            branch = "developing"
+
+    if branch == "rebuilding":
         candidates = _candidates_rebuilding(players, contracts, age_map)
-    elif cpu_mode == "contending":
+    elif branch == "contending":
         candidates = _candidates_contending(players, contracts, age_map, salary_cap)
     else:
-        # "developing" is the default for any unrecognized mode as well
+        # "developing" is the default for any unrecognized branch as well
         candidates = _candidates_developing(players, contracts, age_map)
 
     top = _pick_top(candidates, salary_cap, _MAX_LISTED)
