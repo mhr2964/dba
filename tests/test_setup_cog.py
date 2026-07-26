@@ -256,3 +256,83 @@ async def test_assign_command_propagates_dba_error(mock_interaction, mock_manage
         group = TeamGroup()
         with pytest.raises(DBAError, match="already manages"):
             await group.assign.callback(group, mock_interaction, user=mock_manager, team_code="LAL")
+
+
+# ---------------------------------------------------------------------------
+# LeagueGroup.advance (PT2) -- real DB, real league_service.advance_phase
+#
+# Unlike the rest of this file, these drive the REAL service call (not
+# mocked) against a real seeded league, since PT2's whole point is proving
+# the user-facing message PT1's phase-graph gate produces, not just routing.
+# ---------------------------------------------------------------------------
+
+
+async def test_advance_command_rejects_invalid_jump_with_clear_message(db_pool, mock_interaction):
+    """PT2: /league advance surfaces a clear, actionable rejection message for
+    an invalid phase jump -- not a raw exception and not the generic
+    'Something went wrong' fallback the global error handler would otherwise
+    show. Also asserts the rejected transition never touched the DB."""
+    import datetime as _dt
+    mock_interaction.created_at = _dt.datetime.now(_dt.timezone.utc)
+
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues
+            (discord_guild_id, name, start_season_year, current_season,
+             commissioner_user_id, current_phase)
+        VALUES ($1, 'PT2 Advance League', 2025, 2025, $2, 'REGULAR_SEASON_ACTIVE')
+        RETURNING id
+        """,
+        mock_interaction.guild.id,
+        mock_interaction.user.id,
+    )
+    league_id: int = league_row["id"]
+
+    group = LeagueGroup()
+    await group.advance.callback(group, mock_interaction, phase_name="FA_OPEN")
+
+    # safe_respond picks edit_original_response vs. followup.send/send_message
+    # depending on whether response.is_done() reads truthy on this mock --
+    # check whichever one actually fired, same pattern as
+    # tests/test_offseason_cog_progression.py's real-command smoke test.
+    responded_mocks = [
+        mock_interaction.edit_original_response,
+        mock_interaction.followup.send,
+        mock_interaction.response.send_message,
+    ]
+    fired = [m for m in responded_mocks if m.await_count > 0]
+    assert fired, "/league advance never sent any response"
+
+    call_kwargs = fired[0].call_args.kwargs
+    content = call_kwargs.get("content") or ""
+    assert "REGULAR_SEASON_ACTIVE" in content, f"Expected current phase named in message, got: {content!r}"
+    assert "FA_OPEN" in content, f"Expected rejected target phase named in message, got: {content!r}"
+    assert "Something went wrong" not in content
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == "REGULAR_SEASON_ACTIVE", "Rejected transition must not have changed the DB"
+
+
+async def test_advance_command_allows_legal_jump(db_pool, mock_interaction):
+    """Regression check: a legal jump still succeeds and reports success."""
+    import datetime as _dt
+    mock_interaction.created_at = _dt.datetime.now(_dt.timezone.utc)
+
+    league_row = await db_pool.fetchrow(
+        """
+        INSERT INTO leagues
+            (discord_guild_id, name, start_season_year, current_season,
+             commissioner_user_id, current_phase)
+        VALUES ($1, 'PT2 Advance Legal League', 2025, 2025, $2, 'REGULAR_SEASON_ACTIVE')
+        RETURNING id
+        """,
+        mock_interaction.guild.id,
+        mock_interaction.user.id,
+    )
+    league_id: int = league_row["id"]
+
+    group = LeagueGroup()
+    await group.advance.callback(group, mock_interaction, phase_name="TRADE_DEADLINE_OPEN")
+
+    phase = await db_pool.fetchval("SELECT current_phase FROM leagues WHERE id = $1", league_id)
+    assert phase == "TRADE_DEADLINE_OPEN"

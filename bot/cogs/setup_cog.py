@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from bot.embeds import intel_embeds, league_embeds, season_embeds
 from bot.embeds.info_embeds import audit_embed, help_embed, status_embed
-from core.errors import DBAError, safe_defer, safe_respond
+from core.errors import DBAError, PhaseError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import admin_repo, game_repo, league_repo, team_repo, trade_repo
@@ -395,7 +395,16 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
                 )
                 return
 
-        await league_service.advance_phase(league.id, phase_name)
+        # PT2: advance_phase now validates the transition against the phase
+        # graph (PT1) — surface an invalid jump as a clear, actionable
+        # rejection instead of letting a PhaseError fall through to the
+        # generic global error handler.
+        try:
+            await league_service.advance_phase(league.id, phase_name)
+        except PhaseError as exc:
+            await safe_respond(interaction, content=exc.message, ephemeral=True)
+            return
+
         await safe_respond(
             interaction,
             content=f"Phase advanced from `{league.current_phase}` to `{phase_name}`.",
