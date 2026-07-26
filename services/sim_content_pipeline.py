@@ -1170,7 +1170,7 @@ async def _maybe_post_columnist(
     Marcus Brooks also fires every ~200 games (every 20 batches of 10), independently.
     hot_take_hour uses a JSON debate format instead of a plain article embed.
 
-    force=True cadence gate: when running a forced bulk sim (e.g. /sim deadline
+    force=True cadence gate: when running a forced bulk sim (e.g. /sim to-deadline
     force:True), columnist articles are capped to at most one per
     _COLUMNIST_FORCE_MIN_GAP games.  This avoids ~10s LLM calls on every
     game-day when the sim is covering hundreds of games at once.  The Darius Cole

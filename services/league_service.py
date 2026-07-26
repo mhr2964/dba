@@ -468,12 +468,12 @@ async def _post_onboarding_guide(guild: discord.Guild, pool, league_id: int, nam
     )
     embed.add_field(
         name="Step 3 — Sim Games",
-        value="All managers `/ready` up, then commissioner runs `/sim rivalry` to advance to the first human matchup",
+        value="All managers `/team ready` up, then commissioner runs `/sim to-next-rival` to advance to the first human matchup",
         inline=False,
     )
     embed.add_field(
         name="Useful Commands",
-        value="`/league status` · `/standings` · `/roster [team]` · `/help` · `/strategy view`",
+        value="`/league status` · `/season standings` · `/roster [team]` · `/help` · `/strategy view`",
         inline=False,
     )
     embed.set_footer(text="Good luck! 🏆 Use /help at any time for phase-aware command guidance.")

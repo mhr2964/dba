@@ -360,7 +360,7 @@ async def derive_and_persist_all_for_team(
         When True and ride-along is active, role events are written to the JSONL
         log but the input() pause is skipped.  Pass True from trade-execution
         call sites so automated re-derives don't block mid-trade.  Manual calls
-        (e.g. /coach assign-role) should leave this False (default) so the user
+        (e.g. /coach role assign) should leave this False (default) so the user
         sees each result interactively.
     """
     from services.ride_along import is_role_pause_enabled, emit_role_assignment, emit_role_change

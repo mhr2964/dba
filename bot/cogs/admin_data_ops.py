@@ -455,7 +455,7 @@ async def force_fa_sign(
 async def reseed_rosters(
     interaction: discord.Interaction,
     year: int,
-    mode: app_commands.Choice[str] = None,
+    mode: Optional[app_commands.Choice[str]] = None,
 ) -> None:
     await safe_defer(interaction, ephemeral=True)
 
@@ -566,9 +566,9 @@ async def reseed_rosters(
     name="purge-server",
     description="Remove all DBA categories, channels, and roles left over after a DB reset",
 )
-@app_commands.describe(confirm="Type CONFIRM to proceed — this deletes all DBA channels and roles")
+@app_commands.describe(confirm="Type the exact string CONFIRM to proceed — this deletes all DBA channels and roles")
 @app_commands.default_permissions(administrator=True)
-async def purge_server(interaction: discord.Interaction, confirm: str = "") -> None:
+async def purge_server(interaction: discord.Interaction, confirm: str) -> None:
     """Scans the guild by name pattern and deletes DBA artifacts.
     Safe to run after a DB wipe when league_channels/league_roles tables are empty.
     """

@@ -11,15 +11,15 @@ from core.errors import DBAError, PhaseError
 PHASE_SUGGESTIONS: dict[str, str] = {
     "SETUP": "Use `/league advance` to move to PRESEASON_READY, then `/season start` to begin.",
     "PRESEASON_READY": "Use `/season start` to create the schedule and start the season.",
-    "REGULAR_SEASON_ACTIVE": "The regular season is underway. Use `/sim rivalry` or `/sim season`.",
+    "REGULAR_SEASON_ACTIVE": "The regular season is underway. Use `/sim to-next-rival` or `/sim to-end`.",
     "TRADE_DEADLINE_OPEN": "The trade deadline window is open — make your moves before it closes.",
-    "REGULAR_SEASON_POSTDEADLINE": "Trade deadline passed. Continue simming with `/sim season`.",
+    "REGULAR_SEASON_POSTDEADLINE": "Trade deadline passed. Continue simming with `/sim to-end`.",
     "REGULAR_SEASON_COMPLETE": "Regular season over. The commissioner should advance to play-in/playoffs.",
-    "PLAYIN_ACTIVE": "Play-in tournament is live. Use `/sim playin` to advance.",
-    "PLAYOFFS_R1": "First round of playoffs is active. Use `/sim round` to advance.",
-    "PLAYOFFS_R2": "Second round of playoffs is active. Use `/sim round` to advance.",
-    "CONFERENCE_FINALS": "Conference finals are active. Use `/sim round` to advance.",
-    "NBA_FINALS": "The DBA Finals are happening! Use `/sim round` to crown a champion.",
+    "PLAYIN_ACTIVE": "Play-in tournament is live. Use `/playoffs sim playin` to advance.",
+    "PLAYOFFS_R1": "First round of playoffs is active. Use `/playoffs sim round` to advance.",
+    "PLAYOFFS_R2": "Second round of playoffs is active. Use `/playoffs sim round` to advance.",
+    "CONFERENCE_FINALS": "Conference finals are active. Use `/playoffs sim round` to advance.",
+    "NBA_FINALS": "The DBA Finals are happening! Use `/playoffs sim round` to crown a champion.",
     "OFFSEASON_AWARDS_OPEN": "Awards voting is open. Use `/awards vote` to cast your ballot.",
     "OFFSEASON_AWARDS_CLOSED": "Use `/awards open` to begin voting or advance to draft prep.",
     "DRAFT_LOTTERY_DONE": "Lottery complete. Commissioner should advance to DRAFT_IN_PROGRESS.",
@@ -38,18 +38,18 @@ _NEXT_COMMAND_HINT: dict[str, str] = {
     "OFFSEASON_AWARDS_OPEN": "Run `/awards close` to tally votes.",
     "DRAFT_LOTTERY_DONE": "Run `/draft start` to begin the draft.",
     "DRAFT_IN_PROGRESS": "Run `/draft pick` to make a pick.",
-    "POST_DRAFT_TRADES_OPEN": "Run `/sim deadline` or `/league advance` to open free agency.",
+    "POST_DRAFT_TRADES_OPEN": "Run `/sim to-deadline` or `/league advance` to open free agency.",
     "FA_OPEN": "Run `/fa advance` to process FA signings.",
     "FA_CLOSED": "Run `/waivers open` to begin waiver claims.",
     "WAIVERS_OPEN": "Run `/waiver claim` or `/league advance` to close waivers.",
     "PROGRESSION_PENDING": "Run `/progression run` to apply player development.",
     "PRESEASON_READY": "Run `/season start` to begin the next season.",
     "REGULAR_SEASON_COMPLETE": "Run `/playoffs seed` to start the playoffs.",
-    "PLAYIN_ACTIVE": "Run `/playoffs sim-playin` to resolve the play-in.",
-    "PLAYOFFS_R1": "Run `/playoffs sim-round` to sim the next round.",
-    "PLAYOFFS_R2": "Run `/playoffs sim-round` to sim the next round.",
-    "CONFERENCE_FINALS": "Run `/playoffs sim-round` to sim the Conference Finals.",
-    "NBA_FINALS": "Run `/playoffs sim-round` to sim the DBA Finals.",
+    "PLAYIN_ACTIVE": "Run `/playoffs sim playin` to resolve the play-in.",
+    "PLAYOFFS_R1": "Run `/playoffs sim round` to sim the next round.",
+    "PLAYOFFS_R2": "Run `/playoffs sim round` to sim the next round.",
+    "CONFERENCE_FINALS": "Run `/playoffs sim round` to sim the Conference Finals.",
+    "NBA_FINALS": "Run `/playoffs sim round` to sim the DBA Finals.",
 }
 
 
@@ -96,7 +96,7 @@ async def require_all_ready(interaction: discord.Interaction, league: league_rep
         mentions = ", ".join(
             f"<@{r['manager_user_id']}>" for r in rows if r["manager_user_id"]
         )
-        raise DBAError(f"Waiting for managers to `/ready`: {mentions}")
+        raise DBAError(f"Waiting for managers to `/team ready`: {mentions}")
 
 
 async def require_no_pending_trades(league: league_repo.League) -> None:

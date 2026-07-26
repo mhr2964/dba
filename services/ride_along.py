@@ -400,7 +400,7 @@ def emit_role_change(
         {player_id, name, old_role, old_touch_share, new_role, new_touch_share}
 
     No veto option — role changes from roster moves are structural; the user
-    can override individual roles via /coach assign-role (Phase 5).
+    can override individual roles via /coach role assign (Phase 5).
 
     Parameters
     ----------

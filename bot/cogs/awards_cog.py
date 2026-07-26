@@ -211,7 +211,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
     @app_commands.describe(
         award_type="Which award to vote for",
         player="Player name to vote for (e.g. LeBron James)",
-        rank="All-NBA team rank: 1=First, 2=Second, 3=Third (only for All-NBA)",
+        rank="All-NBA team rank: 1=First, 2=Second, 3=Third (required for All-NBA, ignored otherwise)",
     )
     @app_commands.choices(award_type=_ALL_AWARD_CHOICES)
     async def vote(
@@ -219,7 +219,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
         interaction: discord.Interaction,
         award_type: app_commands.Choice[str],
         player: str,
-        rank: Optional[int] = 1,
+        rank: Optional[int] = None,
     ) -> None:
         await safe_defer(interaction, ephemeral=True)
         league = await _require_league(interaction.guild_id)
@@ -238,6 +238,10 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
 
         # Resolve the actual award_type string for All-NBA (rank determines which).
         if value == "all_nba":
+            if rank is None:
+                raise DBAError(
+                    "For All-NBA, you must specify `rank`: 1 (First), 2 (Second), or 3 (Third)."
+                )
             if rank not in (1, 2, 3):
                 raise DBAError("For All-NBA, rank must be 1 (First), 2 (Second), or 3 (Third).")
             at = f"all_nba_{rank}"

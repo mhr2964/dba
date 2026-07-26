@@ -119,6 +119,7 @@ _GET_POOL_PATCH_TARGETS = [
     "bot.cogs.setup_cog.get_pool",
     "bot.cogs.team_cog.get_pool",
     "bot.cogs.roster_cog.get_pool",
+    "bot.cogs.awards_cog.get_pool",
     "bot.cogs.draft_cog.get_pool",
     "bot.cogs.offseason_cog.get_pool",
     "bot.cogs.strategy_cog.get_pool",

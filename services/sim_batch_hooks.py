@@ -64,7 +64,7 @@ async def _maybe_advance_trade_deadline(
                 title="🚨 Trade Deadline Is Open",
                 description=(
                     "The trade window is now open. Use `/trade propose` to negotiate deals.\n"
-                    "When ready, run `/sim games count:5` (or `/sim season`) to close the window and resume."
+                    "When ready, run `/sim run count:5` (or `/sim to-end`) to close the window and resume."
                 ),
                 color=discord.Color.orange(),
             )

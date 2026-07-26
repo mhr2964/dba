@@ -351,7 +351,7 @@ def matchup_alert(
     )
     embed.add_field(
         name="What to do",
-        value="Both managers must use `/ready` before the commissioner can advance past this game.",
+        value="Both managers must use `/team ready` before the commissioner can advance past this game.",
         inline=False,
     )
     return embed
@@ -424,7 +424,7 @@ def user_matchup_warning(matchup_list: List[dict]) -> discord.Embed:
         title="Warning: User Matchups in Range",
         description=(
             "The following user vs. user games fall within the requested sim range. "
-            "Use `/sim rivalry` to stop before each, or pass `force:True` to skip them."
+            "Use `/sim to-next-rival` to stop before each, or pass `force:True` to skip them."
         ),
         color=discord.Color.yellow(),
     )

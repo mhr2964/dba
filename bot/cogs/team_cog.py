@@ -43,7 +43,15 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
 
         member = user
         if member is None and user_id is not None:
-            member = interaction.guild.get_member(int(user_id))
+            try:
+                member = interaction.guild.get_member(int(user_id))
+            except ValueError:
+                await safe_respond(
+                    interaction,
+                    content="That doesn't look like a valid Discord user ID.",
+                    ephemeral=True,
+                )
+                return
         if member is None:
             member = interaction.user
 

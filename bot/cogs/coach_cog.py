@@ -1,30 +1,22 @@
 """Discord slash commands for human commissioner / manager role overrides.
 
 Command tree:
-  /coach role assign <player> <role>   — was: /coach assign-role
-  /coach role show [team_member]       — was: /coach show-roles
-  /coach role unlock <player>          — was: /coach unlock
-  /coach directive set <player> …      — was: /directive set
-  /coach directive view [team]         — was: /directive view
-  /coach directive reset <player>      — was: /directive reset
+  /coach role assign <player> <role>
+  /coach role show [team_member]
+  /coach role unlock <player>
+  /coach directive set <player> …
+  /coach directive view [team]
+  /coach directive reset <player>
   /coach philosophy show [code]        — thin wrapper over /team philosophy
-
-Deprecation aliases (one-cycle window, removed after next rollover):
-  /coach assign-role  → /coach role assign
-  /coach show-roles   → /coach role show
-  /coach unlock       → /coach role unlock
-  /directive set      → /coach directive set
-  /directive view     → /coach directive view
-  /directive reset    → /coach directive reset
 
 Auth pattern mirrors strategy_cog: manager owns their team; commissioner can
 touch any team.
 
-The directive/philosophy command clusters (DirectiveSubGroup, PhilosophyGroup,
-_DirectiveLegacyGroup) live in coach_directive.py -- extracted since they have
-zero dependency on the role-assignment helpers below (Phase 3 opportunistic
-cog split, see HANDOFF.md). CoachGroup still composes all three subgroups
-into one /coach command tree, same as before the split.
+The directive/philosophy command clusters (DirectiveSubGroup, PhilosophyGroup)
+live in coach_directive.py -- extracted since they have zero dependency on
+the role-assignment helpers below (Phase 3 opportunistic cog split, see
+HANDOFF.md). CoachGroup still composes all three subgroups into one /coach
+command tree, same as before the split.
 """
 from __future__ import annotations
 
@@ -34,8 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.cogs.coach_common import _send_deprecation_warning
-from bot.cogs.coach_directive import DirectiveSubGroup, PhilosophyGroup, _DirectiveLegacyGroup
+from bot.cogs.coach_directive import DirectiveSubGroup, PhilosophyGroup
 from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
@@ -646,102 +637,11 @@ class CoachGroup(app_commands.Group, name="coach", description="CPU role managem
         self.add_command(DirectiveSubGroup())
         self.add_command(PhilosophyGroup())
 
-    # ------------------------------------------------------------------
-    # Deprecation aliases — old flat commands forwarded to canonical paths
-    # Remove these after the next season rollover.
-    # ------------------------------------------------------------------
-
-    @app_commands.command(
-        name="assign-role",
-        description="[MOVED] Use /coach role assign instead",
-    )
-    @app_commands.describe(
-        player="Player name (e.g. LeBron James)",
-        role="Role to assign",
-    )
-    @app_commands.choices(role=_ROLE_CHOICES)
-    async def assign_role_legacy(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-        role: app_commands.Choice[str],
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_deprecation_warning(
-            interaction,
-            old="/coach assign-role",
-            new="/coach role assign",
-        )
-        await _do_role_assign(interaction, player, role)
-
-    @assign_role_legacy.autocomplete("player")
-    async def _assign_role_legacy_player_ac(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        return await _player_autocomplete_own_team(interaction, current)
-
-    @app_commands.command(
-        name="show-roles",
-        description="[MOVED] Use /coach role show instead",
-    )
-    @app_commands.describe(team_member="Show roles for this member's team (defaults to your team)")
-    async def show_roles_legacy(
-        self,
-        interaction: discord.Interaction,
-        team_member: Optional[discord.Member] = None,
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_deprecation_warning(
-            interaction,
-            old="/coach show-roles",
-            new="/coach role show",
-        )
-        await _do_role_show(interaction, team_member)
-
-    @app_commands.command(
-        name="unlock",
-        description="[MOVED] Use /coach role unlock instead",
-    )
-    @app_commands.describe(player="Player name to unlock")
-    async def unlock_legacy(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_deprecation_warning(
-            interaction,
-            old="/coach unlock",
-            new="/coach role unlock",
-        )
-        await _do_role_unlock(interaction, player)
-
-    @unlock_legacy.autocomplete("player")
-    async def _unlock_legacy_player_ac(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        try:
-            pool = await get_pool()
-            league = await league_service.get_league(interaction.guild_id)
-            if not league:
-                return []
-            caller_team = await _resolve_caller_team(pool, league.id, interaction.user.id)
-            if not caller_team:
-                return []
-            return await _player_autocomplete_for_team(pool, league.id, caller_team["id"], current)
-        except Exception:
-            return []
-
 
 class CoachCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.bot.tree.add_command(CoachGroup())
-        self.bot.tree.add_command(_DirectiveLegacyGroup())
 
 
 async def setup(bot: commands.Bot) -> None:

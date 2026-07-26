@@ -55,7 +55,7 @@ Run these slash commands in Discord after the bot is online:
 2. `/season import-players` — imports 2024-25 NBA rosters (~2 min, calls nba_api)
 3. `/team assign @user TEAMCODE` — assign teams to GMs; unclaimed teams are run by CPU
 4. `/season start` — generates the 82-game schedule
-5. All GMs `/ready` → `/sim rivalry` — simulates to the first human matchup
+5. All GMs `/team ready` → `/sim to-next-rival` — simulates to the first human matchup
 
 ---
 

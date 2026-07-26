@@ -46,32 +46,8 @@ async def _resolve_team(pool, guild_id: int, team_code: Optional[str], user_id: 
     return league_id, team_row
 
 
-_LINEUP_DEP_WARNED: set[int] = set()
-
-
-async def _send_lineup_dep_warning(
-    interaction: discord.Interaction,
-    old: str,
-    new: str,
-) -> None:
-    uid = interaction.user.id
-    if uid in _LINEUP_DEP_WARNED:
-        return
-    if len(_LINEUP_DEP_WARNED) > 1000:
-        _LINEUP_DEP_WARNED.clear()
-    _LINEUP_DEP_WARNED.add(uid)
-    try:
-        await interaction.followup.send(
-            f"**Heads up:** `{old}` has moved to `{new}`. "
-            "The old path will be removed after the next season rollover.",
-            ephemeral=True,
-        )
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------------------
-# Internal helpers for lineup modification (shared by group + legacy aliases)
+# Internal helpers for lineup modification (shared by LineupGroup's commands)
 # ---------------------------------------------------------------------------
 
 async def _do_lineup_start(interaction: discord.Interaction, player: str) -> None:
@@ -389,82 +365,6 @@ class RosterCog(commands.Cog):
         cap_summary = await roster_service.get_cap_summary(league_id, team_id)
         embed = roster_embeds.roster_embed(team_row, players, contracts_by_player_id, cap_summary)
         await safe_respond(interaction, embed=embed)
-
-    # /lineup (standalone view) is now /lineup show — this is kept only as a
-    # compatibility shim so the old /lineup <team> path still works.
-    # Remove after the next season rollover.
-    # NOTE: This command cannot coexist with the LineupGroup if they share the
-    # name "lineup" — the group is registered on the bot tree directly, so this
-    # method is intentionally left WITHOUT an @app_commands.command decorator to
-    # avoid the name collision.  Users who type /lineup will hit the LineupGroup.
-    async def _lineup_view_shim(
-        self,
-        interaction: discord.Interaction,
-        team: Optional[str] = None,
-    ) -> None:
-        await safe_defer(interaction)
-        pool = await get_pool()
-
-        league_id, team_row = await _resolve_team(
-            pool, interaction.guild_id, team, interaction.user.id
-        )
-
-        if team_row is None:
-            await safe_respond(
-                interaction,
-                content="You don't manage a team. Use `/lineup show LAL` to view any team.",
-                ephemeral=True,
-            )
-            return
-
-        team_id: int = team_row["id"]
-        lineup_rows = await roster_service.get_lineup(league_id, team_id)
-
-        if not lineup_rows:
-            await safe_respond(
-                interaction,
-                content=(
-                    f"**{team_row['city']} {team_row['name']}** has no lineup set yet. "
-                    "Run `python scripts/import_players.py` to populate rosters and auto-generate lineups."
-                ),
-                ephemeral=True,
-            )
-            return
-
-        embed = roster_embeds.lineup_embed(team_row, lineup_rows)
-        await safe_respond(interaction, embed=embed)
-
-    @app_commands.command(
-        name="lineup-start",
-        description="[MOVED] Use /lineup start instead",
-    )
-    @app_commands.describe(player="Part of the player's name (e.g. 'LeBron')")
-    async def lineup_start(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_lineup_dep_warning(
-            interaction, old="/lineup-start", new="/lineup start"
-        )
-        await _do_lineup_start(interaction, player)
-
-    @app_commands.command(
-        name="lineup-bench",
-        description="[MOVED] Use /lineup bench instead",
-    )
-    @app_commands.describe(player="Part of the player's name (e.g. 'LeBron')")
-    async def lineup_bench(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_lineup_dep_warning(
-            interaction, old="/lineup-bench", new="/lineup bench"
-        )
-        await _do_lineup_bench(interaction, player)
 
     @app_commands.command(name="injury-report", description="Show all active injuries in the league")
     async def injury_report(self, interaction: discord.Interaction) -> None:

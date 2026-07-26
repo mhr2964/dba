@@ -147,7 +147,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Commissioner adm
 
         await safe_respond(
             interaction,
-            content=f"Force-readied {len(human_teams)} manager(s). Now run `/sim rivalry` to advance.",
+            content=f"Force-readied {len(human_teams)} manager(s). Now run `/sim to-next-rival` to advance.",
             ephemeral=True,
         )
 

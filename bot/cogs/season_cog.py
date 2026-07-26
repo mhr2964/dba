@@ -259,10 +259,11 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
 
     @app_commands.command(name="standings", description="Show current standings")
     async def standings(self, interaction: discord.Interaction) -> None:
+        await safe_defer(interaction)
         pool = await get_pool()
         league = await league_repo.get_by_guild(pool, interaction.guild_id)
         if not league:
-            await interaction.response.send_message("No active league.", ephemeral=True)
+            await safe_respond(interaction, content="No active league.", ephemeral=True)
             return
 
         rows = await game_repo.get_standings(pool, league.id, league.current_season)
@@ -277,7 +278,7 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
             ]
 
         embed = sim_embeds.standings_embed(rows, teams_by_id)
-        await interaction.response.send_message(embed=embed)
+        await safe_respond(interaction, embed=embed)
 
     @app_commands.command(name="box-score", description="Show full box score for a simmed game")
     @app_commands.describe(

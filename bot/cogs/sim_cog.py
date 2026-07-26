@@ -6,13 +6,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.cogs.sim_legacy_aliases import (
-    box_score_command,
-    force_ready_command,
-    ready_command,
-    schedule_command,
-    standings_command,
-)
 from bot.embeds import sim_embeds
 from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
@@ -103,30 +96,6 @@ async def _target_index_for_n_more_per_team(pool, league_id: int, n_more: int) -
     return last_idx
 
 
-_SIM_DEP_WARNED: set[int] = set()
-
-
-async def _send_sim_dep_warning(
-    interaction: discord.Interaction,
-    old: str,
-    new: str,
-) -> None:
-    uid = interaction.user.id
-    if uid in _SIM_DEP_WARNED:
-        return
-    if len(_SIM_DEP_WARNED) > 1000:
-        _SIM_DEP_WARNED.clear()
-    _SIM_DEP_WARNED.add(uid)
-    try:
-        await interaction.followup.send(
-            f"**Heads up:** `{old}` has moved to `{new}`. "
-            "The old path will be removed after the next season rollover.",
-            ephemeral=True,
-        )
-    except Exception:
-        pass
-
-
 class SimGroup(app_commands.Group, name="sim", description="Advance the league simulation"):
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -172,12 +141,6 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         await safe_respond(interaction, embed=embed)
         if summary.get("user_matchups_simmed", 0) > 0:
             await game_repo.reset_ready(pool, league.id)
-
-    @app_commands.command(name="rivalry", description="[MOVED] Use /sim to-next-rival instead")
-    async def rivalry_legacy(self, interaction: discord.Interaction) -> None:
-        await safe_defer(interaction)
-        await _send_sim_dep_warning(interaction, old="/sim rivalry", new="/sim to-next-rival")
-        await self.to_next_rival.callback(self, interaction)
 
     @app_commands.command(name="run", description="Sim until every team has played N more games")
     @app_commands.describe(
@@ -234,7 +197,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             )
             if user_matchups:
                 embed = sim_embeds.user_matchup_warning(user_matchups)
-                embed.set_footer(text="Use /sim games force:True to sim through them anyway.")
+                embed.set_footer(text="Use /sim run force:True to sim through them anyway.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
@@ -263,21 +226,6 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         if summary.get("user_matchups_simmed", 0) > 0:
             await game_repo.reset_ready(pool, league.id)
 
-    @app_commands.command(name="games", description="[MOVED] Use /sim run instead")
-    @app_commands.describe(
-        count="Number of games for each team to play (1–20)",
-        force="Skip the ready check and user-matchup warning",
-    )
-    async def games_legacy(
-        self,
-        interaction: discord.Interaction,
-        count: int,
-        force: bool = False,
-    ) -> None:
-        await safe_defer(interaction, ephemeral=True)
-        await _send_sim_dep_warning(interaction, old="/sim games", new="/sim run")
-        await self.run.callback(self, interaction, count, force)
-
     @app_commands.command(name="to-end", description="Sim to end of regular season")
     @app_commands.describe(force="Skip past user matchups without stopping")
     async def to_end(
@@ -303,7 +251,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             if user_matchups:
                 embed = sim_embeds.user_matchup_warning(user_matchups)
                 embed.set_footer(
-                    text="Use /sim season force:True to sim through them, or /sim rivalry to stop at each."
+                    text="Use /sim to-end force:True to sim through them, or /sim to-next-rival to stop at each."
                 )
                 await safe_respond(interaction, embed=embed)
                 return
@@ -318,7 +266,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                 "Season sim started — updates will appear in #box-scores as games complete, "
                 "and the final summary will post to #league-news when done.\n\n"
                 "**Note:** the sim will auto-pause at the trade deadline and post a \U0001f6a8 notification "
-                "to #league-news. Run `/sim season force:True` again after making any trades to complete the season."
+                "to #league-news. Run `/sim to-end force:True` again after making any trades to complete the season."
             ),
             ephemeral=True,
         )
@@ -340,23 +288,12 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
                     else:
                         em = discord.Embed(
                             title="✅ Regular Season Complete",
-                            description=f"Simmed {summary['games_simmed']} games. Use `/standings` to see the final standings, then `/playoffs seed` to start the playoffs.",
+                            description=f"Simmed {summary['games_simmed']} games. Use `/season standings` to see the final standings, then `/playoffs seed` to start the playoffs.",
                             color=discord.Color.green(),
                         )
                         await ch.send(embed=em)
 
         _create_logged_task(_run_sim_and_post())
-
-    @app_commands.command(name="season", description="[MOVED] Use /sim to-end instead")
-    @app_commands.describe(force="Skip past user matchups without stopping")
-    async def season_legacy(
-        self,
-        interaction: discord.Interaction,
-        force: bool = False,
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_sim_dep_warning(interaction, old="/sim season", new="/sim to-end")
-        await self.to_end.callback(self, interaction, force)
 
     @app_commands.command(name="to-deadline", description="Sim to the trade deadline and open the trade window")
     @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
@@ -407,7 +344,7 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
             if user_matchups:
                 embed = sim_embeds.user_matchup_warning(user_matchups)
                 embed.set_footer(
-                    text="Use /sim deadline force:True to sim through them, or handle them with /sim rivalry first."
+                    text="Use /sim to-deadline force:True to sim through them, or handle them with /sim to-next-rival first."
                 )
                 await safe_respond(interaction, embed=embed)
                 return
@@ -446,27 +383,10 @@ class SimGroup(app_commands.Group, name="sim", description="Advance the league s
         )
         await safe_respond(interaction, embed=embed)
 
-    @app_commands.command(name="deadline", description="[MOVED] Use /sim to-deadline instead")
-    @app_commands.describe(force="Skip past user matchups before the deadline without stopping")
-    async def deadline_legacy(
-        self,
-        interaction: discord.Interaction,
-        force: bool = False,
-    ) -> None:
-        await safe_defer(interaction)
-        await _send_sim_dep_warning(interaction, old="/sim deadline", new="/sim to-deadline")
-        await self.to_deadline.callback(self, interaction, force)
-
-
 class SimCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.bot.tree.add_command(SimGroup(bot))
-        self.bot.tree.add_command(ready_command)
-        self.bot.tree.add_command(force_ready_command)
-        self.bot.tree.add_command(standings_command)
-        self.bot.tree.add_command(schedule_command)
-        self.bot.tree.add_command(box_score_command)
 
 
 async def setup(bot: commands.Bot) -> None:

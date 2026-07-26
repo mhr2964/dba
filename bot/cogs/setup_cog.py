@@ -388,7 +388,7 @@ class LeagueGroup(app_commands.Group, name="league", description="League managem
                     interaction,
                     content=(
                         f"Cannot advance to `{phase_name}` — **{remaining} regular-season games still unsimmed** "
-                        f"for season {league.current_season}. Finish the season with `/sim season` or `/sim games`, "
+                        f"for season {league.current_season}. Finish the season with `/sim to-end` or `/sim run`, "
                         f"or use `/playoffs seed` after the season completes."
                     ),
                     ephemeral=True,

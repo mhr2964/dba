@@ -30,30 +30,6 @@ async def _require_commissioner(interaction: discord.Interaction):
     return league
 
 
-_PO_DEP_WARNED: set[int] = set()
-
-
-async def _send_po_dep_warning(
-    interaction: discord.Interaction,
-    old: str,
-    new: str,
-) -> None:
-    uid = interaction.user.id
-    if uid in _PO_DEP_WARNED:
-        return
-    if len(_PO_DEP_WARNED) > 1000:
-        _PO_DEP_WARNED.clear()
-    _PO_DEP_WARNED.add(uid)
-    try:
-        await interaction.followup.send(
-            f"**Heads up:** `{old}` has moved to `{new}`. "
-            "The old path will be removed after the next season rollover.",
-            ephemeral=True,
-        )
-    except Exception:
-        pass
-
-
 class PlayoffSimGroup(app_commands.Group, name="sim", description="Sim playoff games"):
     """Subgroup: /playoffs sim game|round|playin"""
 
@@ -302,38 +278,10 @@ class PlayoffsGroup(app_commands.Group, name="playoffs", description="Playoff ma
             interaction,
             content=(
                 f"Playoffs seeded for season {league.current_season}. "
-                f"Run `/playoffs sim-playin` to resolve the play-in tournament."
+                f"Run `/playoffs sim playin` to resolve the play-in tournament."
             ),
             embeds=[playin_em, r1_embed],
         )
-
-    @app_commands.command(name="sim-game", description="[MOVED] Use /playoffs sim game instead")
-    @app_commands.describe(series_id="ID of the series to advance")
-    async def sim_game(self, interaction: discord.Interaction, series_id: int) -> None:
-        await safe_defer(interaction)
-        await _send_po_dep_warning(
-            interaction, old="/playoffs sim-game", new="/playoffs sim game"
-        )
-        sim_sub: PlayoffSimGroup = self.get_command("sim")  # type: ignore[assignment]
-        await sim_sub.game.callback(sim_sub, interaction, series_id)
-
-    @app_commands.command(name="sim-round", description="[MOVED] Use /playoffs sim round instead")
-    async def sim_round(self, interaction: discord.Interaction) -> None:
-        await safe_defer(interaction)
-        await _send_po_dep_warning(
-            interaction, old="/playoffs sim-round", new="/playoffs sim round"
-        )
-        sim_sub: PlayoffSimGroup = self.get_command("sim")  # type: ignore[assignment]
-        await sim_sub.round.callback(sim_sub, interaction)
-
-    @app_commands.command(name="sim-playin", description="[MOVED] Use /playoffs sim playin instead")
-    async def sim_playin(self, interaction: discord.Interaction) -> None:
-        await safe_defer(interaction)
-        await _send_po_dep_warning(
-            interaction, old="/playoffs sim-playin", new="/playoffs sim playin"
-        )
-        sim_sub: PlayoffSimGroup = self.get_command("sim")  # type: ignore[assignment]
-        await sim_sub.playin.callback(sim_sub, interaction)
 
     @app_commands.command(name="bracket", description="Show the current playoff bracket")
     async def bracket(self, interaction: discord.Interaction) -> None:

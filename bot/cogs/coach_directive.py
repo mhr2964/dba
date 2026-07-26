@@ -2,30 +2,24 @@
 
 Extracted from coach_cog.py (Phase 3 opportunistic cog split, see
 HANDOFF.md) -- DirectiveSubGroup and PhilosophyGroup are added as
-subcommands of CoachGroup (still defined in coach_cog.py), and
-_DirectiveLegacyGroup is registered as its own top-level /directive
-alias by CoachCog. None of these are separate bot.client.py extensions;
-they're imported into coach_cog.py and registered from there, same as
-before the split -- this is a pure code-organization split, not a new
-command-tree shape.
+subcommands of CoachGroup (still defined in coach_cog.py). Neither is a
+separate bot.client.py extension; they're imported into coach_cog.py and
+registered from there, same as before the split -- this is a pure
+code-organization split, not a new command-tree shape.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import discord
 from discord import app_commands
 
-from bot.cogs.coach_common import _send_deprecation_warning
 from bot.embeds import intel_embeds
 from core.errors import DBAError, safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import player_repo
 from services import league_service, team_intel
-
-if TYPE_CHECKING:
-    from bot.cogs.coach_cog import CoachGroup
 
 log = get_logger(__name__)
 
@@ -416,59 +410,3 @@ class PhilosophyGroup(app_commands.Group, name="philosophy", description="Team c
             recent_role_changes=recent_role_changes,
         )
         await safe_respond(interaction, embed=embed)
-
-
-class _DirectiveLegacyGroup(app_commands.Group, name="directive", description="[MOVED] Use /coach directive instead"):
-    """Top-level /directive group kept for one-cycle backward compatibility.
-
-    /directive set  → /coach directive set
-    /directive view → /coach directive view
-    /directive reset → /coach directive reset
-
-    Remove after the next season rollover.
-    """
-
-    @app_commands.command(name="set", description="[MOVED] Use /coach directive set instead")
-    @app_commands.describe(
-        player="Player name (e.g. LeBron James)",
-        category="Category: shot_diet / usage / defense / role / clutch",
-        value="New value for that category",
-    )
-    async def set_legacy(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-        category: str,
-        value: str,
-    ) -> None:
-        await safe_defer(interaction, ephemeral=True)
-        await _send_deprecation_warning(interaction, old="/directive set", new="/coach directive set")
-        coach_group: CoachGroup = interaction.client.tree.get_command("coach")  # type: ignore[assignment]
-        directive_sub = coach_group.get_command("directive")
-        await directive_sub.set_directive.callback(directive_sub, interaction, player, category, value)
-
-    @app_commands.command(name="view", description="[MOVED] Use /coach directive view instead")
-    @app_commands.describe(team="Team code (e.g. LAL), defaults to your team")
-    async def view_legacy(
-        self,
-        interaction: discord.Interaction,
-        team: str = None,
-    ) -> None:
-        await safe_defer(interaction, ephemeral=True)
-        await _send_deprecation_warning(interaction, old="/directive view", new="/coach directive view")
-        coach_group: CoachGroup = interaction.client.tree.get_command("coach")  # type: ignore[assignment]
-        directive_sub = coach_group.get_command("directive")
-        await directive_sub.view_directives.callback(directive_sub, interaction, team)
-
-    @app_commands.command(name="reset", description="[MOVED] Use /coach directive reset instead")
-    @app_commands.describe(player="Player name to reset directives for")
-    async def reset_legacy(
-        self,
-        interaction: discord.Interaction,
-        player: str,
-    ) -> None:
-        await safe_defer(interaction, ephemeral=True)
-        await _send_deprecation_warning(interaction, old="/directive reset", new="/coach directive reset")
-        coach_group: CoachGroup = interaction.client.tree.get_command("coach")  # type: ignore[assignment]
-        directive_sub = coach_group.get_command("directive")
-        await directive_sub.reset_directive.callback(directive_sub, interaction, player)
