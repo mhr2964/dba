@@ -93,6 +93,10 @@ class ExtensionGroup(app_commands.Group, name="extension", description="Contract
             )
             return
 
+        if salary < 1_000_000:
+            await safe_respond(interaction, content="Salary must be at least $1,000,000.", ephemeral=True)
+            return
+
         max_salary = int(salary_cap * 0.35)
         if salary > max_salary:
             await safe_respond(

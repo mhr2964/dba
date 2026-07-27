@@ -246,12 +246,12 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
                 raise DBAError("For All-NBA, rank must be 1 (First), 2 (Second), or 3 (Third).")
             at = f"all_nba_{rank}"
         elif value == "all_star":
-            # Determine conference from league data — vote for both by default via two calls,
-            # but human GMs vote once and we pick east or west based on player's team.
-            # Simpler: require them to use award_type specifically.
-            raise DBAError(
-                "For All-Star, use `award_type: all_star_east` or `award_type: all_star_west`."
-            )
+            # A player belongs to exactly one conference, so there's no real
+            # choice for the voter to make — derive east/west from their team.
+            voted_team = await team_repo.get_by_id(pool, found_player.team_id)
+            if not voted_team:
+                raise DBAError(f"Could not determine a team for '{found_player.full_name}'.")
+            at = "all_star_east" if voted_team.conference == "East" else "all_star_west"
         else:
             at = value
 
@@ -390,7 +390,7 @@ class AwardsGroup(app_commands.Group, name="awards", description="League awards"
     ) -> None:
         league = await _require_league(interaction.guild_id)
         pool = await get_pool()
-        target_season = season or league.current_season
+        target_season = season if season is not None else league.current_season
         value = award_type.value
 
         if value == "all_nba":

@@ -76,6 +76,8 @@ class TradeGroup(app_commands.Group, name="trade", description="Trade management
     ) -> None:
         await safe_defer(interaction)
 
+        team_code = (team_code or "").strip() or None
+
         if (counterparty is None) == (team_code is None):
             await safe_respond(
                 interaction,
