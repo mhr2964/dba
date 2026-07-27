@@ -41,10 +41,18 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
     ) -> None:
         await safe_defer(interaction)
 
+        if user is not None and user_id is not None:
+            await safe_respond(
+                interaction,
+                content="Provide either `user` (a Discord member) or `user_id` (a raw ID) — not both, not neither.",
+                ephemeral=True,
+            )
+            return
+
         member = user
         if member is None and user_id is not None:
             try:
-                member = interaction.guild.get_member(int(user_id))
+                uid = int(user_id)
             except ValueError:
                 await safe_respond(
                     interaction,
@@ -52,6 +60,24 @@ class TeamGroup(app_commands.Group, name="team", description="Team management co
                     ephemeral=True,
                 )
                 return
+            member = interaction.guild.get_member(uid)
+            if member is None:
+                try:
+                    member = await interaction.guild.fetch_member(uid)
+                except discord.NotFound:
+                    await safe_respond(
+                        interaction,
+                        content=f"No member with ID `{uid}` found in this server.",
+                        ephemeral=True,
+                    )
+                    return
+                except discord.HTTPException:
+                    await safe_respond(
+                        interaction,
+                        content="Failed to look up that Discord user ID. Try again.",
+                        ephemeral=True,
+                    )
+                    return
         if member is None:
             member = interaction.user
 

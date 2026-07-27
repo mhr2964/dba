@@ -389,6 +389,14 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
             await safe_respond(interaction, content=exc.message, ephemeral=True)
             return
 
+        if p_a.id == p_b.id:
+            await safe_respond(
+                interaction,
+                content="Pick two different players to compare.",
+                ephemeral=True,
+            )
+            return
+
         stats_a = await _season_stats_for_player(pool, p_a.id)
         stats_b = await _season_stats_for_player(pool, p_b.id)
 
@@ -502,6 +510,13 @@ class StatsGroup(app_commands.Group, name="stats", description="League statistic
             return
         if not team_b:
             await safe_respond(interaction, content=f"Team `{team2_code.upper()}` not found.", ephemeral=True)
+            return
+        if team_a.id == team_b.id:
+            await safe_respond(
+                interaction,
+                content="Pick two different teams to compare.",
+                ephemeral=True,
+            )
             return
 
         rows = await pool.fetch(

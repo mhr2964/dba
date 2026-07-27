@@ -300,6 +300,13 @@ class SeasonGroup(app_commands.Group, name="season", description="Season managem
                 ephemeral=True,
             )
             return
+        if game is not None and game_id is not None:
+            await safe_respond(
+                interaction,
+                content="Provide either `game` or `game_id` — not both, not neither.",
+                ephemeral=True,
+            )
+            return
 
         pool = await get_pool()
         league = await get_league_or_error(interaction.guild_id)

@@ -63,6 +63,16 @@ _FIELD_TO_COLUMN: dict[str, str] = {
 
 _STRING_FIELDS: frozenset[str] = frozenset({"position"})
 
+# Rating scale used throughout this codebase (see
+# services/progression_service.py's _clamp(..., ceiling=99) and
+# services/draft_class_generator.py's generation clamps).
+_RATING_MIN = 0
+_RATING_MAX = 99
+
+# Position codes used elsewhere in this codebase (see
+# services/cpu_trade_proposal_runner.py).
+_VALID_POSITIONS: frozenset[str] = frozenset({"PG", "SG", "SF", "PF", "C"})
+
 
 @app_commands.command(name="edit-player", description="Commissioner: edit a player attribute")
 @app_commands.describe(
@@ -105,7 +115,14 @@ async def edit_player(
     old_value = getattr(found_player, column if column != "overall" else "overall", None)
 
     if field in _STRING_FIELDS:
-        typed_value: str | int = value
+        typed_value: str | int = value.strip().upper()
+        if typed_value not in _VALID_POSITIONS:
+            await safe_respond(
+                interaction,
+                content=f"Invalid position `{value}`. Must be one of: {', '.join(sorted(_VALID_POSITIONS))}",
+                ephemeral=True,
+            )
+            return
     else:
         try:
             typed_value = int(value)
@@ -113,6 +130,13 @@ async def edit_player(
             await safe_respond(
                 interaction,
                 content=f"Field `{field}` requires an integer value.",
+                ephemeral=True,
+            )
+            return
+        if typed_value < _RATING_MIN or typed_value > _RATING_MAX:
+            await safe_respond(
+                interaction,
+                content=f"Field `{field}` must be between {_RATING_MIN} and {_RATING_MAX} (got {typed_value}).",
                 ephemeral=True,
             )
             return
@@ -358,6 +382,21 @@ async def force_fa_sign(
 
     league = await get_league_or_error(interaction.guild_id)
     await require_commissioner(interaction, league)
+
+    if salary < 1_000_000:
+        await safe_respond(
+            interaction,
+            content="Salary must be at least $1,000,000.",
+            ephemeral=True,
+        )
+        return
+    if years < 1 or years > 5:
+        await safe_respond(
+            interaction,
+            content="Contract length must be between 1 and 5 years.",
+            ephemeral=True,
+        )
+        return
 
     pool = await get_pool()
 

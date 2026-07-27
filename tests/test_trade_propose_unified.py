@@ -417,3 +417,26 @@ async def test_propose_rejects_when_neither_counterparty_nor_team_code_given(moc
     content = call.kwargs.get("content") or ""
     assert "not both" in content.lower()
     assert "not neither" in content.lower()
+
+
+async def test_propose_rejects_whitespace_only_team_code_with_no_counterparty(mock_interaction):
+    """Round-2 finding #7: `(counterparty is None) == (team_code is None)` is a
+    pure identity check -- a whitespace-only team_code (e.g. ' ') is not None,
+    so it previously slipped past the guard and produced a confusing "team not
+    found" message instead of the intended either/or rejection."""
+    mock_interaction.created_at = _dt.datetime.now(_dt.timezone.utc)
+
+    group = TradeGroup()
+    await group.propose.callback(
+        group, mock_interaction,
+        give_players="1",
+        receive_players="2",
+        counterparty=None,
+        team_code=" ",
+    )
+
+    call = _fired_call(mock_interaction)
+    content = call.kwargs.get("content") or ""
+    assert "not both" in content.lower()
+    assert "not neither" in content.lower()
+    assert "not found" not in content.lower()

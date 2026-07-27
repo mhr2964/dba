@@ -124,6 +124,12 @@ _GET_POOL_PATCH_TARGETS = [
     "bot.cogs.offseason_cog.get_pool",
     "bot.cogs.strategy_cog.get_pool",
     "bot.cogs.feedback_cog.get_pool",
+    "bot.cogs.admin_data_ops.get_pool",
+    "bot.cogs.extension_cog.get_pool",
+    "bot.cogs.trade_cog.get_pool",
+    "bot.cogs.season_cog.get_pool",
+    "bot.cogs.stats_cog.get_pool",
+    "bot.cogs.fa_cog.get_pool",
     "bot.ui.stats_views.get_pool",
     "phase.helpers.get_pool",
 ]

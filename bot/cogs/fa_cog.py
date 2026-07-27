@@ -9,6 +9,7 @@ from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import league_repo, player_repo, team_repo
+from phase.helpers import require_commissioner
 from services import fa_service, league_service
 
 log = get_logger(__name__)
@@ -29,6 +30,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
         if not league:
             await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
+        await require_commissioner(interaction, league)
 
         state = await fa_service.open_fa(league.id, league.current_season)
 
@@ -118,6 +120,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
         if not league:
             await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
+        await require_commissioner(interaction, league)
 
         decisions = await fa_service.advance_to_responses(
             league.id, league.current_season, interaction.guild
@@ -204,6 +207,7 @@ class FAGroup(app_commands.Group, name="fa", description="Free agency commands")
         if not league:
             await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
+        await require_commissioner(interaction, league)
 
         summary = await fa_service.close_fa(league.id, league.current_season)
         embed = fa_embeds.fa_closed_embed(

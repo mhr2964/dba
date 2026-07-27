@@ -12,6 +12,7 @@ from core.errors import safe_defer, safe_respond
 from core.logging import get_logger
 from data.db import get_pool
 from data.repositories import draft_repo, league_repo
+from phase.helpers import require_commissioner
 from services import draft_service, league_service
 
 log = get_logger(__name__)
@@ -32,6 +33,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
         if not league:
             await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
+        await require_commissioner(interaction, league)
 
         pool = await get_pool()
         await draft_repo.create_draft(pool, league.id, league.current_season)
@@ -56,6 +58,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
         if not league:
             await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
+        await require_commissioner(interaction, league)
 
         pool = await get_pool()
         await draft_service.ensure_draft_class(league.id, league.current_season)
@@ -167,6 +170,7 @@ class DraftGroup(app_commands.Group, name="draft", description="Draft management
         if not league:
             await safe_respond(interaction, content="No active league found.", ephemeral=True)
             return
+        await require_commissioner(interaction, league)
 
         count = await draft_service.ensure_draft_class(league.id, year)
 
